@@ -178,6 +178,10 @@ const NAV = [
   { id:'store',         label:'Store & Materials', icon:'📦' },
   { section:'Finance' },
   { id:'ledger',        label:'Daily Cash Book',  icon:'₹' },
+  { section:'Finance' },
+  { id:'ledger',        label:'Daily Cash Book',  icon:'₹' },
+  { section:'Settings' },                                    // ADD THIS
+  { id:'product-master',label:'Product Master',   icon:'⚙️' }, // ADD THIS
 ];
 
 // ═══════════════════════════════════════════════════════════
@@ -1280,6 +1284,173 @@ function Reconciliation(){
 }
 
 // ═══════════════════════════════════════════════════════════
+// SETTINGS / PRODUCT MASTER
+// ═══════════════════════════════════════════════════════════
+function ProductSettings() {
+  const [products, setProducts] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const blank = { 
+    product_code: '', product_name: '', category: 'Finished Goods', 
+    packet_weight_kg: '', packets_per_bag: 50, base_price_per_unit: '', 
+    gst_percent: 0, hsn_code: '', min_stock_alert: 0 
+  };
+  const [form, setForm] = useState(blank);
+  const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  useEffect(() => {
+    sb.from('product_master').select('*').order('product_name').then(({ data }) => {
+      setProducts(data || []);
+      setLoading(false);
+    });
+  }, []);
+
+  const saveProduct = async () => {
+    if (!form.product_name || !form.packet_weight_kg) return alert('Product Name and Packet Weight are required.');
+    setSaving(true);
+    
+    // 1. Save to Product Master
+    const { data, error } = await sb.from('product_master').insert({
+      ...form,
+      packet_weight_kg: Number(form.packet_weight_kg),
+      packets_per_bag: Number(form.packets_per_bag),
+      base_price_per_unit: Number(form.base_price_per_unit),
+      gst_percent: Number(form.gst_percent),
+      min_stock_alert: Number(form.min_stock_alert)
+    }).select().single();
+    
+    if (error) { alert(error.message); setSaving(false); return; }
+
+    // 2. Automatically initialize this product in your current_stock table with 0 stock
+    // This ensures it instantly shows up on the "Flour Stock" page!
+    const totalBagWeight = Number(form.packet_weight_kg) * Number(form.packets_per_bag);
+    await sb.from('current_stock').insert({
+      product_type: form.product_name,
+      pack_size_kg: totalBagWeight,
+      min_threshold: Number(form.min_stock_alert),
+      packets_per_bag: Number(form.packets_per_bag),
+      qty_bags: 0
+    });
+
+    setProducts(p => [data, ...p]);
+    setForm(blank);
+    setShowForm(false);
+    setSaving(false);
+  };
+
+  const toggleActive = async (id, currentStatus) => {
+    await sb.from('product_master').update({ is_active: !currentStatus }).eq('id', id);
+    setProducts(p => p.map(x => x.id === id ? { ...x, is_active: !currentStatus } : x));
+  };
+
+  if (loading) return <Loading />;
+
+  return (
+    <div className="page">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+        <div className="page-header" style={{ marginBottom: 0 }}>
+          <div className="page-label">System Settings</div>
+          <div className="page-title">Product Master List</div>
+        </div>
+        <button className="btn btn-amber" onClick={() => setShowForm(v => !v)}>+ Add New Product</button>
+      </div>
+
+      {showForm && (
+        <FormCard title="Register New Product" col="var(--amber)" onSave={saveProduct} onCancel={() => setShowForm(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Product Code / SKU"><input className="form-input" placeholder="e.g. AAY-47" value={form.product_code} onChange={e => f('product_code', e.target.value)} /></Field>
+            <Field label="Product Name ★"><input className="form-input" placeholder="e.g. Premium Maida" value={form.product_name} onChange={e => f('product_name', e.target.value)} /></Field>
+            <Field label="Category">
+              <select className="form-input" value={form.category} onChange={e => f('category', e.target.value)}>
+                <option>Finished Goods</option><option>By-Products</option><option>Trading Goods</option>
+              </select>
+            </Field>
+            <Field label="HSN Code"><input className="form-input" placeholder="11010000" value={form.hsn_code} onChange={e => f('hsn_code', e.target.value)} /></Field>
+            
+            <div style={{gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '8px 0'}} />
+            
+            <Field label="Single Packet Weight (kg) ★"><input type="number" className="form-input" placeholder="e.g. 1" value={form.packet_weight_kg} onChange={e => f('packet_weight_kg', e.target.value)} /></Field>
+            <Field label="Packets per Master Bag"><input type="number" className="form-input" value={form.packets_per_bag} onChange={e => f('packets_per_bag', e.target.value)} /></Field>
+            <Field label="Min. Alert (Bags)"><input type="number" className="form-input" value={form.min_stock_alert} onChange={e => f('min_stock_alert', e.target.value)} /></Field>
+            
+            <div style={{gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '8px 0'}} />
+
+            <Field label="Base Price / Packet (₹)"><input type="number" className="form-input" value={form.base_price_per_unit} onChange={e => f('base_price_per_unit', e.target.value)} /></Field>
+            <Field label="GST (%)">
+              <select className="form-input" value={form.gst_percent} onChange={e => f('gst_percent', e.target.value)}>
+                <option value="0">0% (Exempt)</option><option value="5">5%</option><option value="12">12%</option><option value="18">18%</option>
+              </select>
+            </Field>
+          </div>
+          
+          {/* Helpful summary calculator for the user */}
+          {form.packet_weight_kg && form.packets_per_bag && (
+            <div style={{ marginTop: 16, padding: '12px 16px', background: 'var(--surface2)', borderRadius: 6, fontSize: 12, border: '1px solid var(--border)' }}>
+              <strong>Configuration Summary:</strong> Master bag will weigh <strong>{Number(form.packet_weight_kg) * Number(form.packets_per_bag)} kg</strong>. 
+              {form.base_price_per_unit && (
+                <span> Final price to customer (incl. GST): <strong>₹{(Number(form.base_price_per_unit) * (1 + Number(form.gst_percent)/100)).toFixed(2)}</strong> per packet.</span>
+              )}
+            </div>
+          )}
+        </FormCard>
+      )}
+
+      <TableWrap>
+        <table>
+          <thead>
+            <tr>
+              <th>Code / HSN</th>
+              <th>Product Details</th>
+              <th>Packaging</th>
+              <th>Pricing (₹)</th>
+              <th>Min Alert</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {products.length === 0 && <tr><td colSpan={6}><Empty msg="No products configured yet." /></td></tr>}
+            {products.map(p => {
+              const finalPrice = p.base_price_per_unit * (1 + p.gst_percent / 100);
+              const totalBagKg = p.packet_weight_kg * p.packets_per_bag;
+              return (
+                <tr key={p.id} style={{ opacity: p.is_active ? 1 : 0.5 }}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{p.product_code || '—'}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>HSN: {p.hsn_code || '—'}</div>
+                  </td>
+                  <td>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{p.product_name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p.category}</div>
+                  </td>
+                  <td>
+                    <div><strong className="mono">{p.packet_weight_kg}kg</strong> pkt</div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p.packets_per_bag} pkts / bag ({totalBagKg}kg total)</div>
+                  </td>
+                  <td>
+                    <div className="mono">₹{fmt(p.base_price_per_unit, 2)} base</div>
+                    <div style={{ fontSize: 11, color: 'var(--green)' }}>₹{fmt(finalPrice, 2)} incl. {p.gst_percent}% GST</div>
+                  </td>
+                  <td className="mono dim">{p.min_stock_alert} bags</td>
+                  <td>
+                    <button 
+                      className={`btn btn-sm ${p.is_active ? 'btn-green' : 'btn-ghost'}`} 
+                      onClick={() => toggleActive(p.id, p.is_active)}>
+                      {p.is_active ? 'Active' : 'Archived'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // APP ROOT
 // ═══════════════════════════════════════════════════════════
 function App(){
@@ -1304,6 +1475,7 @@ function App(){
     'flour-stock':<FlourStock/>,
     'store':<Store/>,
     'ledger':<Ledger/>,
+    'product-master':<ProductSettings/>, // ADD THIS
   };
 
   return(
