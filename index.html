@@ -875,7 +875,7 @@ function Store(){
                   <td className="mono dim">{item.min_qty}</td>
                   <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
                   <td>
-                    <div style={{display:'flex',gap:6'}}>
+                    <div style={{display:'flex',gap:6}}>
                       <button className="btn btn-green btn-sm" onClick={()=>setShowTxn(item.id)}>+ / −</button>
                     </div>
                     {showTxn===item.id&&(
