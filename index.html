@@ -552,13 +552,16 @@ function Dispatch(){
   const df=(k,v)=>setDForm(p=>({...p,[k]:v}));
   const wf=(k,v)=>setWForm(p=>({...p,[k]:v}));
 
+  const [stockConfig, setStockConfig] = useState([]); // Add this near your other state variables
+
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:d},{data:w}]=await Promise.all([
+    const [{data:d},{data:w},{data:s}]=await Promise.all([
       sb.from('supplyco_dispatches').select('*').gte('date',monthStart).order('date',{ascending:false}),
       sb.from('work_orders').select('*').order('work_order_date',{ascending:false}),
+      sb.from('current_stock').select('*') // Fetch stock config
     ]);
-    setDispatches(d||[]); setWorkOrders(w||[]); setLoading(false);
+    setDispatches(d||[]); setWorkOrders(w||[]); setStockConfig(s||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
@@ -595,8 +598,15 @@ function Dispatch(){
   if(loading) return <Loading/>;
 
   const woBalances=workOrders.map(wo=>{
-    const sent=dispatches.filter(d=>d.work_order_id===wo.id).reduce((s,d)=>s+d.qty_bags,0);
-    return{...wo,sent,balance:wo.total_pkts-sent};
+    // Map scheme to product type to find the right conversion factor
+    const productMap = {'NPS':'NPS Atta', 'PHH':'PHH Atta', 'AAY':'AAY Atta'};
+    const stockItem = stockConfig.find(s => s.product_type === productMap[wo.scheme]);
+    const pktsPerBag = stockItem?.packets_per_bag || 50; // Fallback to 50 if empty
+
+    const sentBags = dispatches.filter(d=>d.work_order_id===wo.id).reduce((s,d)=>s+d.qty_bags,0);
+    const sentPkts = sentBags * pktsPerBag; // Do the conversion!
+
+    return{...wo, sentBags, sentPkts, balance: wo.total_pkts - sentPkts};
   });
 
   return(
@@ -664,16 +674,18 @@ function Dispatch(){
               <thead><tr><th>Work order</th><th>Date</th><th>Scheme</th><th>Allotted</th><th>Dispatched</th><th>Balance</th><th>Status</th></tr></thead>
               <tbody>
                 {woBalances.map(wo=>{
-                  const pct=wo.total_pkts>0?Math.round((wo.sent/wo.total_pkts)*100):0;
+                  const pct=wo.total_pkts>0?Math.round((wo.sentPkts/wo.total_pkts)*100):0;
                   const col=pct>=100?'var(--green)':pct>50?'var(--amber)':'var(--red)';
                   return(
                     <tr key={wo.id}>
                       <td><strong className="mono">{wo.work_order_no}</strong></td>
                       <td className="dim">{wo.work_order_date}</td>
                       <td><span className="badge badge-blue">{wo.scheme}</span></td>
-                      <td className="mono">{fmt(wo.total_pkts)}</td>
-                      <td className="mono" style={{color:'var(--green)'}}>{fmt(wo.sent)}</td>
-                      <td className="mono" style={{color:wo.balance>0?'var(--red)':'var(--green)',fontWeight:600}}>{fmt(wo.balance)}</td>
+                      <td className="mono">{fmt(wo.total_pkts)} pkts</td>
+                      <td className="mono" style={{color:'var(--green)'}}>
+                        {fmt(wo.sentPkts)} pkts <span style={{fontSize:10, color:'var(--muted)'}}>({fmt(wo.sentBags)} bags)</span>
+                      </td>
+                      <td className="mono" style={{color:wo.balance>0?'var(--red)':'var(--green)',fontWeight:600}}>{fmt(wo.balance)} pkts</td>
                       <td><span className="badge" style={{background:col+'20',color:col}}>{pct}% done</span></td>
                     </tr>
                   );
@@ -734,8 +746,9 @@ function FlourStock(){
   const saveEdit=async(row)=>{
     const nq=Number(editVal.qty_bags??row.qty_bags);
     const nt=Number(editVal.min_threshold??row.min_threshold);
-    await sb.from('current_stock').update({qty_bags:nq,min_threshold:nt,updated_at:new Date().toISOString()}).eq('id',row.id);
-    setStock(p=>p.map(s=>s.id===row.id?{...s,qty_bags:nq,min_threshold:nt}:s));
+    const npb=Number(editVal.packets_per_bag??row.packets_per_bag??50); // New conversion factor
+    await sb.from('current_stock').update({qty_bags:nq, min_threshold:nt, packets_per_bag:npb, updated_at:new Date().toISOString()}).eq('id',row.id);
+    setStock(p=>p.map(s=>s.id===row.id?{...s, qty_bags:nq, min_threshold:nt, packets_per_bag:npb}:s));
     setEditId(null); setEditVal({});
   };
 
@@ -748,11 +761,11 @@ function FlourStock(){
         <div className="page-title">Flour stock position</div>
       </div>
       <div style={{marginBottom:16,padding:'10px 16px',background:'var(--blue)10',border:'1px solid var(--blue)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
-        Stock updates automatically when you log production or dispatch. Adjust manually below for physical count corrections.
+        Adjust stock physically and set the <strong>Packets per Bag</strong> conversion factor for Work Orders.
       </div>
       <TableWrap>
         <table>
-          <thead><tr><th>Product</th><th>Pack size</th><th>Current stock</th><th>In MT</th><th>Min. alert</th><th>Status</th><th>Edit</th></tr></thead>
+          <thead><tr><th>Product</th><th>Pack size</th><th>Current stock</th><th>Packets / Bag</th><th>Min. alert</th><th>Status</th><th>Edit</th></tr></thead>
           <tbody>
             {stock.map(row=>{
               const st=row.qty_bags===0?'Out of stock':row.min_threshold>0&&row.qty_bags<row.min_threshold?'Low':'OK';
@@ -764,7 +777,11 @@ function FlourStock(){
                   <td className="mono dim">{row.pack_size_kg}kg</td>
                   <td>{isE?<input type="number" style={{width:80}} value={editVal.qty_bags??row.qty_bags} onChange={e=>setEditVal(v=>({...v,qty_bags:e.target.value}))}/>
                     :<strong style={{color:col,fontFamily:'var(--mono)',fontSize:15}}>{fmt(row.qty_bags)}</strong>}</td>
-                  <td className="mono dim">{fmtMT(row.qty_bags*row.pack_size_kg)}</td>
+                  
+                  {/* NEW PACKETS PER BAG COLUMN */}
+                  <td>{isE?<input type="number" style={{width:80}} value={editVal.packets_per_bag??row.packets_per_bag??50} onChange={e=>setEditVal(v=>({...v,packets_per_bag:e.target.value}))}/>
+                    :<span className="mono dim">{fmt(row.packets_per_bag||50)}</span>}</td>
+                  
                   <td>{isE?<input type="number" style={{width:80}} value={editVal.min_threshold??row.min_threshold} onChange={e=>setEditVal(v=>({...v,min_threshold:e.target.value}))}/>
                     :<span className="dim mono">{fmt(row.min_threshold)}</span>}</td>
                   <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
