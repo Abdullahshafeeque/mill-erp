@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PRFM Mill Operations</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:       #0E0F11;
+    --surface:  #16181C;
+    --surface2: #1E2127;
+    --border:   #2A2D35;
+    --border2:  #363A44;
+    --text:     #E8EAF0;
+    --muted:    #7A8099;
+    --dim:      #4A5068;
+    --amber:    #F5A623;
+    --green:    #34C97A;
+    --red:      #F05050;
+    --blue:     #4F9EF8;
+    --purple:   #A78BFA;
+    --mono:     'IBM Plex Mono', monospace;
+    --sans:     'IBM Plex Sans', sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  input, select, textarea { font-family: var(--sans); font-size: 13px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 7px 10px; outline: none; transition: border-color .15s; }
+  input:focus, select:focus, textarea:focus { border-color: var(--blue); }
+  select option { background: var(--surface); color: var(--text); }
+  button { font-family: var(--sans); cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; }
+  th { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); font-weight: 500; }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+
+  /* Layout */
+  .app { display: flex; height: 100vh; overflow: hidden; }
+  .sidebar { width: 220px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow-y: auto; }
+  .main { flex: 1; overflow-y: auto; }
+
+  /* Sidebar */
+  .sidebar-logo { padding: 20px 16px 16px; border-bottom: 1px solid var(--border); }
+  .sidebar-logo .mill-name { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .15em; color: var(--amber); text-transform: uppercase; }
+  .sidebar-logo .mill-sub  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .sidebar-section { padding: 16px 10px 4px; font-family: var(--mono); font-size: 9px; letter-spacing: .15em; color: var(--dim); text-transform: uppercase; }
+  .nav-btn { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 12px; border: none; background: transparent; color: var(--muted); font-size: 13px; border-radius: 6px; margin: 1px 4px; width: calc(100% - 8px); text-align: left; transition: all .12s; }
+  .nav-btn:hover  { background: var(--surface2); color: var(--text); }
+  .nav-btn.active { background: var(--amber)18; color: var(--amber); }
+  .nav-btn .icon  { font-size: 15px; width: 18px; text-align: center; }
+  .sidebar-footer { margin-top: auto; padding: 12px; border-top: 1px solid var(--border); }
+  .hr-link-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 1px solid var(--border2); background: transparent; color: var(--muted); font-size: 12px; border-radius: 6px; transition: all .15s; }
+  .hr-link-btn:hover { border-color: var(--purple); color: var(--purple); }
+
+  /* Page */
+  .page { padding: 28px 28px 60px; max-width: 1100px; }
+  .page-header { margin-bottom: 24px; }
+  .page-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+  .page-title { font-size: 22px; font-weight: 600; color: var(--text); }
+
+  /* Cards & surfaces */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .card.amber-l { border-left: 3px solid var(--amber); }
+  .card.green-l { border-left: 3px solid var(--green); }
+  .card.red-l   { border-left: 3px solid var(--red); }
+  .card.blue-l  { border-left: 3px solid var(--blue); }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .section-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; margin-bottom: 12px; }
+
+  /* Stat cards */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+  .stat-label { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+  .stat-val   { font-size: 24px; font-weight: 600; line-height: 1; }
+  .stat-sub   { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* Buttons */
+  .btn { padding: 7px 16px; border-radius: 6px; font-size: 12px; font-weight: 500; border: 1px solid transparent; letter-spacing: .02em; transition: all .12s; }
+  .btn-amber  { background: var(--amber)22; color: var(--amber); border-color: var(--amber)44; }
+  .btn-amber:hover { background: var(--amber)33; }
+  .btn-green  { background: var(--green)22; color: var(--green); border-color: var(--green)44; }
+  .btn-green:hover { background: var(--green)33; }
+  .btn-red    { background: var(--red)22; color: var(--red); border-color: var(--red)44; }
+  .btn-red:hover { background: var(--red)33; }
+  .btn-blue   { background: var(--blue)22; color: var(--blue); border-color: var(--blue)44; }
+  .btn-blue:hover { background: var(--blue)33; }
+  .btn-ghost  { background: transparent; color: var(--muted); border-color: var(--border); }
+  .btn-ghost:hover { border-color: var(--border2); color: var(--text); }
+  .btn-sm     { padding: 4px 10px; font-size: 11px; }
+
+  /* Forms */
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .form-field { display: flex; flex-direction: column; gap: 4px; }
+  .form-label { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+  .form-input { width: 100%; }
+  .form-actions { display: flex; gap: 8px; margin-top: 16px; }
+
+  /* Badges */
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 500; font-family: var(--mono); }
+  .badge-amber  { background: var(--amber)20; color: var(--amber); }
+  .badge-green  { background: var(--green)20; color: var(--green); }
+  .badge-red    { background: var(--red)20;   color: var(--red); }
+  .badge-blue   { background: var(--blue)20;  color: var(--blue); }
+  .badge-muted  { background: var(--border);  color: var(--muted); }
+
+  /* Alerts */
+  .alert { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; border-radius: 7px; margin-bottom: 8px; }
+  .alert-red    { background: var(--red)12;   border: 1px solid var(--red)30; }
+  .alert-amber  { background: var(--amber)12; border: 1px solid var(--amber)30; }
+  .alert-green  { background: var(--green)12; border: 1px solid var(--green)30; }
+  .alert-icon   { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+  .alert-body   { flex: 1; }
+  .alert-title  { font-weight: 500; font-size: 13px; }
+  .alert-sub    { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* Misc */
+  .divider { height: 1px; background: var(--border); margin: 20px 0; }
+  .mono    { font-family: var(--mono); }
+  .dim     { color: var(--muted); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .bar-track { height: 4px; background: var(--border); border-radius: 2px; margin-top: 4px; }
+  .bar-fill  { height: 4px; border-radius: 2px; transition: width .3s; }
+  .login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 40px; width: 360px; }
+
+  @media(max-width:700px){
+    .sidebar { display: none; }
+    .two-col { grid-template-columns: 1fr; }
+    .page { padding: 16px 14px 40px; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ── CONFIG — paste your Supabase credentials here ──────────
+const SUPABASE_URL = 'https://ulkvltoctpjydloonwcw.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVsa3ZsdG9jdHBqeWRsb29ud2N3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1NDExNTEsImV4cCI6MjA5MzExNzE1MX0.mWoQUKYCozIA-rROhhCXVE6JoJZEBQTCh3AtqnztW-E';
+const HR_APP_URL   = 'https://facility-app-sigma.vercel.app';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ── CONSTANTS ───────────────────────────────────────────────
+const PRODUCTS  = ['NPS Atta','PHH Atta','AAY Atta','Sooji','Maida','Fine Bran','Dust','Feed','Ragi Powder','PU Atta','Broken Wheat','Puttu Podi'];
+const PACK_SIZES= {'NPS Atta':50,'PHH Atta':47.5,'AAY Atta':47.5,'Sooji':50,'Maida':50,'Fine Bran':45,'Dust':50,'Feed':50,'Ragi Powder':30,'PU Atta':50,'Broken Wheat':30,'Puttu Podi':1};
+const DISTRICTS = ['KNR','TLY','TPB','KHD','KSD','IRTTY','VLPRAMBA','NLSR','MJSR','VKND','OTHER'];
+const SCHEMES   = ['NPS','PHH','AAY'];
+const STORE_CATS= ['Packaging','Raw Material','Spare Parts','Lubricants / Oils','Chemicals','Electrical','Hardware','Miscellaneous'];
+const LEDGER_TYPES = ['Sales Receipt','Wheat Purchase','Packing Material Purchase','Salary / Wages','Fuel / Transport','Repairs & Maintenance','Electricity','Supplyco Payment Received','Supplier Payment','Daily Expenses','Loan / Advance','Other Income','Other Expense'];
+
+const today = (() => { const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().split('T')[0]; })();
+const fmt   = (n,dec=0) => Number(n).toLocaleString('en-IN',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+const fmtMT = (kg) => (Number(kg)/1000).toFixed(3)+' MT';
+const monthStart = today.slice(0,7)+'-01';
+
+// ── NAV CONFIG ──────────────────────────────────────────────
+const NAV = [
+  { section:'Mill Operations' },
+  { id:'dashboard',     label:'Dashboard',        icon:'⬡' },
+  { id:'production',    label:'Production',       icon:'⚙' },
+  { id:'dispatch',      label:'Supplyco Dispatch',icon:'🚛' },
+  { id:'wheat',         label:'Wheat Inwards',    icon:'🌾' },
+  { id:'reconciliation',label:'Reconciliation',   icon:'📊' },
+  { section:'Inventory' },
+  { id:'flour-stock',   label:'Flour Stock',      icon:'◫' },
+  { id:'store',         label:'Store & Materials', icon:'📦' },
+  { section:'Finance' },
+  { id:'ledger',        label:'Daily Cash Book',  icon:'₹' },
+];
+
+// ═══════════════════════════════════════════════════════════
+// SHARED COMPONENTS
+// ═══════════════════════════════════════════════════════════
+function StatCard({label,value,sub,col='var(--amber)'}){
+  return(
+    <div className="stat-card" style={{borderTop:`2px solid ${col}`}}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-val" style={{color:col}}>{value}</div>
+      {sub&&<div className="stat-sub">{sub}</div>}
+    </div>
+  );
+}
+function Alert({type='amber',icon,title,sub}){
+  return(
+    <div className={`alert alert-${type}`}>
+      <span className="alert-icon" style={{color:type==='red'?'var(--red)':type==='green'?'var(--green)':'var(--amber)'}}>{icon}</span>
+      <div className="alert-body"><div className="alert-title">{title}</div>{sub&&<div className="alert-sub">{sub}</div>}</div>
+    </div>
+  );
+}
+function FormCard({title,col='var(--amber)',children,onSave,onCancel,saving}){
+  return(
+    <div className="card" style={{marginBottom:20,borderColor:col+'44',borderLeftColor:col,borderLeftWidth:3}}>
+      <div className="section-label" style={{marginBottom:16}}>{title}</div>
+      {children}
+      <div className="form-actions">
+        <button className="btn btn-green" onClick={onSave} disabled={saving}>{saving?'Saving…':'Save'}</button>
+        <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+function TableWrap({children}){ return <div className="table-wrap" style={{overflowX:'auto'}}>{children}</div>; }
+function Field({label,children}){
+  return(
+    <div className="form-field">
+      <div className="form-label">{label}</div>
+      {children}
+    </div>
+  );
+}
+function Loading(){ return <div style={{padding:60,textAlign:'center',color:'var(--muted)',fontFamily:'var(--mono)',fontSize:13}}>loading…</div>; }
+function Empty({msg}){ return <div style={{padding:40,textAlign:'center',color:'var(--muted)',fontSize:13}}>{msg||'No entries yet.'}</div>; }
+
+// ═══════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════
+function Login({onLogin}){
+  const [email,setEmail]=useState('');
+  const [pass,setPass]=useState('');
+  const [err,setErr]=useState('');
+  const [loading,setLoading]=useState(false);
+  const submit=async()=>{
+    setLoading(true); setErr('');
+    const {data,error}=await sb.auth.signInWithPassword({email,password:pass});
+    if(error) setErr(error.message);
+    else onLogin(data.user);
+    setLoading(false);
+  };
+  return(
+    <div className="login-wrap">
+      <div className="login-card">
+        <div style={{fontFamily:'var(--mono)',fontSize:11,letterSpacing:'.15em',color:'var(--amber)',marginBottom:4}}>PRFM</div>
+        <div style={{fontSize:20,fontWeight:600,marginBottom:4}}>Mill Operations</div>
+        <div style={{fontSize:13,color:'var(--muted)',marginBottom:28}}>Sign in to continue</div>
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} style={{width:'100%'}} type="email"/>
+          <input placeholder="Password" value={pass} onChange={e=>setPass(e.target.value)} style={{width:'100%'}} type="password"
+            onKeyDown={e=>e.key==='Enter'&&submit()}/>
+          {err&&<div style={{color:'var(--red)',fontSize:12}}>{err}</div>}
+          <button className="btn btn-amber" style={{marginTop:4,padding:'10px'}} onClick={submit} disabled={loading}>
+            {loading?'Signing in…':'Sign in'}
+          </button>
+        </div>
+        <div style={{marginTop:20,padding:'10px 14px',background:'var(--surface2)',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
+          Uses the same login as your HR system.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════
+function Dashboard(){
+  const [stock,setStock]=useState([]);
+  const [prod,setProd]=useState([]);
+  const [disp,setDisp]=useState([]);
+  const [ledger,setLedger]=useState([]);
+  const [store,setStore]=useState([]);
+  const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    Promise.all([
+      sb.from('current_stock').select('*'),
+      sb.from('production_log').select('*').gte('date',monthStart),
+      sb.from('supplyco_dispatches').select('*').gte('date',monthStart),
+      sb.from('daily_ledger').select('*').gte('date',monthStart),
+      sb.from('store_stock').select('*').lt('qty','min_qty'), // low items
+    ]).then(([{data:s},{data:p},{data:d},{data:l},{data:st}])=>{
+      setStock(s||[]); setProd(p||[]); setDisp(d||[]); setLedger(l||[]); setStore(st||[]);
+      setLoading(false);
+    });
+  },[]);
+
+  if(loading) return <Loading/>;
+
+  const prodMT   = prod.reduce((s,r)=>s+(r.qty_produced*r.pack_size_kg),0)/1000;
+  const dispBags = disp.reduce((s,r)=>s+r.qty_bags,0);
+  const cashIn   = ledger.filter(r=>['Sales Receipt','Supplyco Payment Received','Other Income'].includes(r.txn_type)).reduce((s,r)=>s+Number(r.amount),0);
+  const cashOut  = ledger.filter(r=>!['Sales Receipt','Supplyco Payment Received','Other Income'].includes(r.txn_type)).reduce((s,r)=>s+Number(r.amount),0);
+
+  const stockAlerts = stock.filter(r=>r.min_threshold>0&&r.qty_bags<r.min_threshold);
+  const lowStoreItems = store; // already filtered
+
+  return(
+    <div className="page">
+      <div className="page-header">
+        <div className="page-label">Mill Operations · {today}</div>
+        <div className="page-title">Good day — here's your mill</div>
+      </div>
+
+      <div className="stat-grid">
+        <StatCard label="NPS Atta" value={fmt(stock.find(r=>r.product_type==='NPS Atta')?.qty_bags||0)+' bags'} sub="50 kg bags" col="var(--blue)"/>
+        <StatCard label="PHH Atta" value={fmt(stock.find(r=>r.product_type==='PHH Atta')?.qty_bags||0)+' bags'} sub="47.5 kg bags"
+          col={(stock.find(r=>r.product_type==='PHH Atta')?.qty_bags||0)<300?'var(--red)':'var(--green)'}/>
+        <StatCard label="Produced this month" value={prodMT.toFixed(2)+' MT'} sub="all products" col="var(--amber)"/>
+        <StatCard label="Dispatched this month" value={fmt(dispBags)+' bags'} sub="to Supplyco" col="var(--green)"/>
+        <StatCard label="Cash in (month)" value={'₹'+fmt(cashIn)} sub="receipts & income" col="var(--green)"/>
+        <StatCard label="Cash out (month)" value={'₹'+fmt(cashOut)} sub="expenses & payments" col="var(--red)"/>
+      </div>
+
+      {(stockAlerts.length>0||lowStoreItems.length>0)&&(
+        <div style={{marginBottom:24}}>
+          <div className="section-label">Alerts</div>
+          {stockAlerts.map(r=>(
+            <Alert key={r.id} type="red" icon="✕"
+              title={`${r.product_type} stock low — ${fmt(r.qty_bags)} bags remaining`}
+              sub={`Minimum threshold is ${fmt(r.min_threshold)} bags. Schedule a production run.`}/>
+          ))}
+          {lowStoreItems.map(r=>(
+            <Alert key={r.id} type="amber" icon="⚠"
+              title={`${r.item_name} — only ${r.qty} ${r.unit} left`}
+              sub={`Minimum: ${r.min_qty} ${r.unit}. Category: ${r.category}`}/>
+          ))}
+        </div>
+      )}
+      {stockAlerts.length===0&&lowStoreItems.length===0&&(
+        <Alert type="green" icon="✓" title="All stock levels are above minimum thresholds." sub="No urgent alerts today."/>
+      )}
+
+      <div className="two-col" style={{marginTop:24}}>
+        <div className="card">
+          <div className="section-label">Flour stock position</div>
+          {['NPS Atta','PHH Atta','AAY Atta'].map(p=>{
+            const row=stock.find(r=>r.product_type===p);
+            const bags=row?.qty_bags||0; const thresh=row?.min_threshold||0;
+            const col=bags===0?'var(--red)':bags<thresh?'var(--amber)':'var(--green)';
+            const max=Math.max(...stock.filter(r=>['NPS Atta','PHH Atta','AAY Atta'].includes(r.product_type)).map(r=>r.qty_bags),1);
+            return(
+              <div key={p} style={{marginBottom:12}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
+                  <span>{p}</span><span style={{color:col,fontWeight:600}}>{fmt(bags)} bags</span>
+                </div>
+                <div className="bar-track"><div className="bar-fill" style={{width:Math.min(100,(bags/max)*100)+'%',background:col}}/></div>
+              </div>
+            );
+          })}
+          <div className="divider"/>
+          <div className="section-label">Other products</div>
+          {stock.filter(r=>!['NPS Atta','PHH Atta','AAY Atta'].includes(r.product_type)&&r.qty_bags>0).map(r=>(
+            <div key={r.id} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',fontSize:13}}>
+              <span className="dim">{r.product_type}</span><span style={{fontFamily:'var(--mono)'}}>{fmt(r.qty_bags)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="card">
+          <div className="section-label">This month — district dispatches</div>
+          {DISTRICTS.map(d=>{
+            const bags=disp.filter(r=>r.district===d).reduce((s,r)=>s+r.qty_bags,0);
+            if(!bags) return null;
+            return(
+              <div key={d} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--border)',fontSize:13}}>
+                <span className="mono dim">{d}</span><strong style={{fontFamily:'var(--mono)'}}>{fmt(bags)} bags</strong>
+              </div>
+            );
+          })}
+          {disp.length===0&&<Empty msg="No dispatches this month yet."/>}
+
+          <div className="divider"/>
+          <div className="section-label">Cash book — this month</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div style={{textAlign:'center',padding:'10px',background:'var(--green)12',borderRadius:6,border:'1px solid var(--green)30'}}>
+              <div style={{fontSize:10,color:'var(--muted)',fontFamily:'var(--mono)',marginBottom:4}}>TOTAL IN</div>
+              <div style={{fontSize:18,fontWeight:600,color:'var(--green)'}}>₹{fmt(cashIn)}</div>
+            </div>
+            <div style={{textAlign:'center',padding:'10px',background:'var(--red)12',borderRadius:6,border:'1px solid var(--red)30'}}>
+              <div style={{fontSize:10,color:'var(--muted)',fontFamily:'var(--mono)',marginBottom:4}}>TOTAL OUT</div>
+              <div style={{fontSize:18,fontWeight:600,color:'var(--red)'}}>₹{fmt(cashOut)}</div>
+            </div>
+          </div>
+          <div style={{marginTop:10,textAlign:'center',padding:'8px',background:'var(--surface2)',borderRadius:6}}>
+            <span style={{fontSize:11,color:'var(--muted)'}}>Net balance: </span>
+            <strong style={{color:cashIn-cashOut>=0?'var(--green)':'var(--red)'}}> ₹{fmt(cashIn-cashOut)}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// PRODUCTION
+// ═══════════════════════════════════════════════════════════
+function Production(){
+  const [entries,setEntries]=useState([]);
+  const [batches,setBatches]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const blank={date:today,shift:'Morning',product_type:'NPS Atta',pack_size_kg:50,qty_produced:'',wheat_used_kg:'',qty_repacked:0,qty_refeed:0,batch_id:'',notes:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const [{data:e},{data:b}]=await Promise.all([
+      sb.from('production_log').select('*').gte('date',monthStart).order('date',{ascending:false}),
+      sb.from('wheat_receipts').select('*').order('date',{ascending:false}),
+    ]);
+    setEntries(e||[]); setBatches(b||[]); setLoading(false);
+  },[]);
+
+  useEffect(()=>{load();},[load]);
+
+  const save=async()=>{
+    if(!form.qty_produced||Number(form.qty_produced)<=0) return alert('Enter bags produced.');
+    setSaving(true);
+    const row={date:form.date,shift:form.shift,product_type:form.product_type,pack_size_kg:Number(form.pack_size_kg),
+      qty_produced:Number(form.qty_produced),qty_repacked:Number(form.qty_repacked)||0,qty_refeed:Number(form.qty_refeed)||0,
+      wheat_used_kg:Number(form.wheat_used_kg)||0,batch_id:form.batch_id||null,notes:form.notes};
+    const {data,error}=await sb.from('production_log').insert(row).select().single();
+    if(error){alert('Error: '+error.message);setSaving(false);return;}
+    // update flour stock
+    const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg)).single();
+    if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg));
+    setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+  };
+
+  const del=async(e)=>{
+    if(!confirm('Delete entry? Stock will be adjusted.')) return;
+    await sb.from('production_log').delete().eq('id',e.id);
+    const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',e.product_type).eq('pack_size_kg',e.pack_size_kg).single();
+    if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,s.qty_bags-e.qty_produced)}).eq('product_type',e.product_type).eq('pack_size_kg',e.pack_size_kg);
+    setEntries(p=>p.filter(x=>x.id!==e.id));
+  };
+
+  if(loading) return <Loading/>;
+
+  const byDate={};
+  entries.forEach(e=>{if(!byDate[e.date])byDate[e.date]=[];byDate[e.date].push(e);});
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Mill Operations</div>
+          <div className="page-title">Daily production log</div>
+        </div>
+        <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ New entry</button>
+      </div>
+
+      {showForm&&(
+        <FormCard title="Log production" col="var(--green)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
+            <Field label="Shift">
+              <select className="form-input" value={form.shift} onChange={e=>f('shift',e.target.value)}>
+                {['Morning','Night','Full Day'].map(s=><option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Product">
+              <select className="form-input" value={form.product_type} onChange={e=>{f('product_type',e.target.value);f('pack_size_kg',PACK_SIZES[e.target.value]||50);}}>
+                {PRODUCTS.map(p=><option key={p}>{p}</option>)}
+              </select>
+            </Field>
+            <Field label="Pack size (kg)"><input type="number" className="form-input" value={form.pack_size_kg} onChange={e=>f('pack_size_kg',e.target.value)}/></Field>
+            <Field label="Bags produced ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} placeholder="e.g. 850" value={form.qty_produced} onChange={e=>f('qty_produced',e.target.value)}/></Field>
+            <Field label="Wheat used (kg)"><input type="number" className="form-input" placeholder="e.g. 42500" value={form.wheat_used_kg} onChange={e=>f('wheat_used_kg',e.target.value)}/></Field>
+            <Field label="Re-packed (damage)"><input type="number" className="form-input" value={form.qty_repacked} onChange={e=>f('qty_repacked',e.target.value)}/></Field>
+            <Field label="Re-feed bags"><input type="number" className="form-input" value={form.qty_refeed} onChange={e=>f('qty_refeed',e.target.value)}/></Field>
+            <Field label="Wheat batch">
+              <select className="form-input" value={form.batch_id} onChange={e=>f('batch_id',e.target.value)}>
+                <option value="">-- Select batch --</option>
+                {batches.map(b=><option key={b.id} value={b.id}>{b.batch_no} · {b.scheme} · {b.date}</option>)}
+              </select>
+            </Field>
+            <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
+          </div>
+          {form.qty_produced&&form.wheat_used_kg&&Number(form.wheat_used_kg)>0&&(
+            <div style={{marginTop:12,padding:'8px 14px',background:'var(--green)15',borderRadius:6,fontSize:12,color:'var(--green)',fontFamily:'var(--mono)'}}>
+              Yield: {((Number(form.qty_produced)*Number(form.pack_size_kg)/Number(form.wheat_used_kg))*100).toFixed(1)}%
+              &nbsp;·&nbsp; Output: {((Number(form.qty_produced)*Number(form.pack_size_kg))/1000).toFixed(2)} MT
+            </div>
+          )}
+        </FormCard>
+      )}
+
+      {Object.keys(byDate).length===0&&!showForm&&<div className="table-wrap"><Empty msg="No production entries this month. Click '+ New entry' to start."/></div>}
+
+      {Object.keys(byDate).sort().reverse().map(date=>{
+        const rows=byDate[date];
+        const totalMT=rows.reduce((s,r)=>s+(r.qty_produced*r.pack_size_kg),0)/1000;
+        return(
+          <div key={date} style={{marginBottom:20}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+              <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--amber)'}}>
+                {new Date(date+'T12:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long'})}
+              </div>
+              <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total: {totalMT.toFixed(2)} MT</div>
+            </div>
+            <TableWrap>
+              <table>
+                <thead><tr><th>Shift</th><th>Product</th><th>Pack</th><th>Bags</th><th>Wheat used</th><th>Yield</th><th>Repacked</th><th>Refeed</th><th>Notes</th><th></th></tr></thead>
+                <tbody>
+                  {rows.map(e=>{
+                    const yp=e.wheat_used_kg>0?((e.qty_produced*e.pack_size_kg/e.wheat_used_kg)*100).toFixed(1):null;
+                    const yCol=yp?(Number(yp)>=68?'var(--green)':Number(yp)>=64?'var(--amber)':'var(--red)'):'var(--muted)';
+                    return(
+                      <tr key={e.id}>
+                        <td><span className={`badge badge-${e.shift==='Morning'?'blue':'muted'}`}>{e.shift}</span></td>
+                        <td><strong>{e.product_type}</strong></td>
+                        <td className="mono dim">{e.pack_size_kg}kg</td>
+                        <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmt(e.qty_produced)}</strong></td>
+                        <td className="mono dim">{e.wheat_used_kg?fmtMT(e.wheat_used_kg):'—'}</td>
+                        <td style={{color:yCol,fontFamily:'var(--mono)'}}>{yp?yp+'%':'—'}</td>
+                        <td className="dim mono">{e.qty_repacked||0}</td>
+                        <td className="dim mono">{e.qty_refeed||0}</td>
+                        <td className="dim">{e.notes||'—'}</td>
+                        <td><button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </TableWrap>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// SUPPLYCO DISPATCH
+// ═══════════════════════════════════════════════════════════
+function Dispatch(){
+  const [dispatches,setDispatches]=useState([]);
+  const [workOrders,setWorkOrders]=useState([]);
+  const [showDF,setShowDF]=useState(false);
+  const [showWO,setShowWO]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const blankD={date:today,invoice_no:'',delivery_order_no:'',work_order_id:'',scheme:'NPS',batch_no:'',depot_name:'',district:'KNR',qty_bags:'',vehicle_no:'',notes:''};
+  const blankW={work_order_no:'',work_order_date:today,scheme:'NPS',batch_no:'',knr_pkts:0,tly_pkts:0,tpb_pkts:0,khd_pkts:0,ksd_pkts:0,irtty_pkts:0,vlparamba_pkts:0,other_pkts:0};
+  const [dForm,setDForm]=useState(blankD);
+  const [wForm,setWForm]=useState(blankW);
+  const df=(k,v)=>setDForm(p=>({...p,[k]:v}));
+  const wf=(k,v)=>setWForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const [{data:d},{data:w}]=await Promise.all([
+      sb.from('supplyco_dispatches').select('*').gte('date',monthStart).order('date',{ascending:false}),
+      sb.from('work_orders').select('*').order('work_order_date',{ascending:false}),
+    ]);
+    setDispatches(d||[]); setWorkOrders(w||[]); setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const saveDispatch=async()=>{
+    if(!dForm.invoice_no||!dForm.depot_name||!dForm.qty_bags) return alert('Invoice, depot and quantity required.');
+    setSaving(true);
+    const {data,error}=await sb.from('supplyco_dispatches').insert({...dForm,qty_bags:Number(dForm.qty_bags),work_order_id:dForm.work_order_id||null}).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    const packKg=dForm.scheme==='NPS'?50:47.5;
+    const prod=dForm.scheme==='NPS'?'NPS Atta':dForm.scheme==='PHH'?'PHH Atta':'AAY Atta';
+    const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',prod).eq('pack_size_kg',packKg).single();
+    if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,s.qty_bags-Number(dForm.qty_bags))}).eq('product_type',prod).eq('pack_size_kg',packKg);
+    setDispatches(p=>[data,...p]); setDForm(blankD); setShowDF(false); setSaving(false);
+  };
+
+  const saveWO=async()=>{
+    if(!wForm.work_order_no) return alert('Work order number required.');
+    setSaving(true);
+    const {data,error}=await sb.from('work_orders').insert(wForm).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setWorkOrders(p=>[data,...p]); setWForm(blankW); setShowWO(false); setSaving(false);
+  };
+
+  const delD=async(d)=>{
+    if(!confirm('Delete dispatch? Stock will be restored.')) return;
+    await sb.from('supplyco_dispatches').delete().eq('id',d.id);
+    const packKg=d.scheme==='NPS'?50:47.5;
+    const prod=d.scheme==='NPS'?'NPS Atta':d.scheme==='PHH'?'PHH Atta':'AAY Atta';
+    const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',prod).eq('pack_size_kg',packKg).single();
+    if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+d.qty_bags}).eq('product_type',prod).eq('pack_size_kg',packKg);
+    setDispatches(p=>p.filter(x=>x.id!==d.id));
+  };
+
+  if(loading) return <Loading/>;
+
+  const woBalances=workOrders.map(wo=>{
+    const sent=dispatches.filter(d=>d.work_order_id===wo.id).reduce((s,d)=>s+d.qty_bags,0);
+    return{...wo,sent,balance:wo.total_pkts-sent};
+  });
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Supplyco Operations</div>
+          <div className="page-title">Dispatch & work orders</div>
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-amber" onClick={()=>setShowWO(v=>!v)}>+ Work order</button>
+          <button className="btn btn-green" onClick={()=>setShowDF(v=>!v)}>+ Log dispatch</button>
+        </div>
+      </div>
+
+      {showWO&&(
+        <FormCard title="Register work order" col="var(--amber)" onSave={saveWO} onCancel={()=>setShowWO(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Work order no. ★"><input className="form-input" value={wForm.work_order_no} onChange={e=>wf('work_order_no',e.target.value)}/></Field>
+            <Field label="Date"><input type="date" className="form-input" value={wForm.work_order_date} onChange={e=>wf('work_order_date',e.target.value)}/></Field>
+            <Field label="Scheme"><select className="form-input" value={wForm.scheme} onChange={e=>wf('scheme',e.target.value)}>{SCHEMES.map(s=><option key={s}>{s}</option>)}</select></Field>
+            <Field label="Batch no."><input className="form-input" value={wForm.batch_no} onChange={e=>wf('batch_no',e.target.value.toUpperCase())}/></Field>
+          </div>
+          <div style={{marginTop:12}}>
+            <div className="section-label" style={{marginBottom:8}}>District allotments (packets)</div>
+            <div className="form-grid">
+              {[['KNR','knr_pkts'],['TLY','tly_pkts'],['TPB','tpb_pkts'],['KHD','khd_pkts'],['KSD','ksd_pkts'],['IRTTY','irtty_pkts'],['V.Paramba','vlparamba_pkts'],['Other','other_pkts']].map(([l,k])=>(
+                <Field key={k} label={l}><input type="number" className="form-input" value={wForm[k]} onChange={e=>wf(k,Number(e.target.value))}/></Field>
+              ))}
+            </div>
+            <div style={{marginTop:8,fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>
+              Total: {fmt(Object.entries(wForm).filter(([k])=>k.endsWith('_pkts')).reduce((s,[,v])=>s+Number(v),0))} packets
+            </div>
+          </div>
+        </FormCard>
+      )}
+
+      {showDF&&(
+        <FormCard title="Log Supplyco dispatch" col="var(--green)" onSave={saveDispatch} onCancel={()=>setShowDF(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" className="form-input" value={dForm.date} max={today} onChange={e=>df('date',e.target.value)}/></Field>
+            <Field label="Scheme"><select className="form-input" value={dForm.scheme} onChange={e=>df('scheme',e.target.value)}>{SCHEMES.map(s=><option key={s}>{s}</option>)}</select></Field>
+            <Field label="Invoice no. ★"><input className="form-input" placeholder="e.g. NPS/42" value={dForm.invoice_no} onChange={e=>df('invoice_no',e.target.value)}/></Field>
+            <Field label="Delivery order no."><input className="form-input" value={dForm.delivery_order_no} onChange={e=>df('delivery_order_no',e.target.value)}/></Field>
+            <Field label="Work order">
+              <select className="form-input" value={dForm.work_order_id} onChange={e=>df('work_order_id',e.target.value)}>
+                <option value="">-- Select --</option>
+                {workOrders.map(w=><option key={w.id} value={w.id}>{w.work_order_no} · {w.scheme}</option>)}
+              </select>
+            </Field>
+            <Field label="Depot name ★"><input className="form-input" value={dForm.depot_name} onChange={e=>df('depot_name',e.target.value)}/></Field>
+            <Field label="District"><select className="form-input" value={dForm.district} onChange={e=>df('district',e.target.value)}>{DISTRICTS.map(d=><option key={d}>{d}</option>)}</select></Field>
+            <Field label="Bags dispatched ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={dForm.qty_bags} onChange={e=>df('qty_bags',e.target.value)}/></Field>
+            <Field label="Vehicle no."><input className="form-input" value={dForm.vehicle_no} onChange={e=>df('vehicle_no',e.target.value)}/></Field>
+            <Field label="Batch no."><input className="form-input" value={dForm.batch_no} placeholder="PU-220" onChange={e=>df('batch_no',e.target.value)}/></Field>
+          </div>
+        </FormCard>
+      )}
+
+      {woBalances.length>0&&(
+        <>
+          <div className="section-label">Work order balances</div>
+          <TableWrap>
+            <table>
+              <thead><tr><th>Work order</th><th>Date</th><th>Scheme</th><th>Allotted</th><th>Dispatched</th><th>Balance</th><th>Status</th></tr></thead>
+              <tbody>
+                {woBalances.map(wo=>{
+                  const pct=wo.total_pkts>0?Math.round((wo.sent/wo.total_pkts)*100):0;
+                  const col=pct>=100?'var(--green)':pct>50?'var(--amber)':'var(--red)';
+                  return(
+                    <tr key={wo.id}>
+                      <td><strong className="mono">{wo.work_order_no}</strong></td>
+                      <td className="dim">{wo.work_order_date}</td>
+                      <td><span className="badge badge-blue">{wo.scheme}</span></td>
+                      <td className="mono">{fmt(wo.total_pkts)}</td>
+                      <td className="mono" style={{color:'var(--green)'}}>{fmt(wo.sent)}</td>
+                      <td className="mono" style={{color:wo.balance>0?'var(--red)':'var(--green)',fontWeight:600}}>{fmt(wo.balance)}</td>
+                      <td><span className="badge" style={{background:col+'20',color:col}}>{pct}% done</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </TableWrap>
+          <div style={{marginBottom:24}}/>
+        </>
+      )}
+
+      <div className="section-label">This month's dispatch log</div>
+      <TableWrap>
+        <table>
+          <thead><tr><th>Date</th><th>Invoice</th><th>D.O. No.</th><th>Scheme</th><th>Depot</th><th>District</th><th>Bags</th><th>Vehicle</th><th></th></tr></thead>
+          <tbody>
+            {dispatches.length===0&&<tr><td colSpan={9}><Empty msg="No dispatches this month."/></td></tr>}
+            {dispatches.map(d=>(
+              <tr key={d.id}>
+                <td className="mono dim">{d.date}</td>
+                <td><strong>{d.invoice_no}</strong></td>
+                <td className="dim">{d.delivery_order_no||'—'}</td>
+                <td><span className="badge badge-blue">{d.scheme}</span></td>
+                <td>{d.depot_name}</td>
+                <td className="mono">{d.district}</td>
+                <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmt(d.qty_bags)}</strong></td>
+                <td className="dim">{d.vehicle_no||'—'}</td>
+                <td><button className="btn btn-red btn-sm" onClick={()=>delD(d)}>✕</button></td>
+              </tr>
+            ))}
+          </tbody>
+          {dispatches.length>0&&(
+            <tfoot><tr style={{borderTop:'2px solid var(--border2)'}}>
+              <td colSpan={6} style={{textAlign:'right',fontWeight:600,color:'var(--muted)',fontSize:11,fontFamily:'var(--mono)',textTransform:'uppercase',letterSpacing:'.05em'}}>Month total</td>
+              <td style={{fontFamily:'var(--mono)',fontWeight:700,color:'var(--green)'}}>{fmt(dispatches.reduce((s,d)=>s+d.qty_bags,0))}</td>
+              <td colSpan={2}/>
+            </tr></tfoot>
+          )}
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// FLOUR STOCK
+// ═══════════════════════════════════════════════════════════
+function FlourStock(){
+  const [stock,setStock]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [editId,setEditId]=useState(null);
+  const [editVal,setEditVal]=useState({});
+
+  useEffect(()=>{
+    sb.from('current_stock').select('*').order('product_type').then(({data})=>{setStock(data||[]);setLoading(false);});
+  },[]);
+
+  const saveEdit=async(row)=>{
+    const nq=Number(editVal.qty_bags??row.qty_bags);
+    const nt=Number(editVal.min_threshold??row.min_threshold);
+    await sb.from('current_stock').update({qty_bags:nq,min_threshold:nt,updated_at:new Date().toISOString()}).eq('id',row.id);
+    setStock(p=>p.map(s=>s.id===row.id?{...s,qty_bags:nq,min_threshold:nt}:s));
+    setEditId(null); setEditVal({});
+  };
+
+  if(loading) return <Loading/>;
+
+  return(
+    <div className="page">
+      <div className="page-header">
+        <div className="page-label">Inventory</div>
+        <div className="page-title">Flour stock position</div>
+      </div>
+      <div style={{marginBottom:16,padding:'10px 16px',background:'var(--blue)10',border:'1px solid var(--blue)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
+        Stock updates automatically when you log production or dispatch. Adjust manually below for physical count corrections.
+      </div>
+      <TableWrap>
+        <table>
+          <thead><tr><th>Product</th><th>Pack size</th><th>Current stock</th><th>In MT</th><th>Min. alert</th><th>Status</th><th>Edit</th></tr></thead>
+          <tbody>
+            {stock.map(row=>{
+              const st=row.qty_bags===0?'Out of stock':row.min_threshold>0&&row.qty_bags<row.min_threshold?'Low':'OK';
+              const col=st==='Out of stock'?'var(--red)':st==='Low'?'var(--amber)':'var(--green)';
+              const isE=editId===row.id;
+              return(
+                <tr key={row.id}>
+                  <td><strong>{row.product_type}</strong></td>
+                  <td className="mono dim">{row.pack_size_kg}kg</td>
+                  <td>{isE?<input type="number" style={{width:80}} value={editVal.qty_bags??row.qty_bags} onChange={e=>setEditVal(v=>({...v,qty_bags:e.target.value}))}/>
+                    :<strong style={{color:col,fontFamily:'var(--mono)',fontSize:15}}>{fmt(row.qty_bags)}</strong>}</td>
+                  <td className="mono dim">{fmtMT(row.qty_bags*row.pack_size_kg)}</td>
+                  <td>{isE?<input type="number" style={{width:80}} value={editVal.min_threshold??row.min_threshold} onChange={e=>setEditVal(v=>({...v,min_threshold:e.target.value}))}/>
+                    :<span className="dim mono">{fmt(row.min_threshold)}</span>}</td>
+                  <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
+                  <td>{isE
+                    ?<div style={{display:'flex',gap:6}}><button className="btn btn-green btn-sm" onClick={()=>saveEdit(row)}>Save</button><button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(null);setEditVal({});}}>Cancel</button></div>
+                    :<button className="btn btn-ghost btn-sm" onClick={()=>setEditId(row.id)}>Edit</button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// STORE & MATERIALS (consumables, spares, packaging)
+// ═══════════════════════════════════════════════════════════
+function Store(){
+  const [items,setItems]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [showTxn,setShowTxn]=useState(null); // item id for transaction
+  const [txnForm,setTxnForm]=useState({type:'Received',qty:'',notes:'',date:today});
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const [filterCat,setFilterCat]=useState('All');
+  const blank={item_name:'',category:'Packaging',unit:'Nos',qty:0,min_qty:0,notes:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  useEffect(()=>{
+    sb.from('store_stock').select('*').order('category').then(({data})=>{setItems(data||[]);setLoading(false);});
+  },[]);
+
+  const saveItem=async()=>{
+    if(!form.item_name) return alert('Item name required.');
+    setSaving(true);
+    const {data,error}=await sb.from('store_stock').insert(form).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setItems(p=>[...p,data]); setForm(blank); setShowForm(false); setSaving(false);
+  };
+
+  const doTxn=async(item)=>{
+    if(!txnForm.qty||Number(txnForm.qty)<=0) return alert('Enter quantity.');
+    setSaving(true);
+    const delta=txnForm.type==='Received'?Number(txnForm.qty):-Number(txnForm.qty);
+    const newQty=Math.max(0,item.qty+delta);
+    await sb.from('store_stock').update({qty:newQty,updated_at:new Date().toISOString()}).eq('id',item.id);
+    await sb.from('store_transactions').insert({item_id:item.id,date:txnForm.date,txn_type:txnForm.type,qty:Number(txnForm.qty),notes:txnForm.notes});
+    setItems(p=>p.map(x=>x.id===item.id?{...x,qty:newQty}:x));
+    setShowTxn(null); setTxnForm({type:'Received',qty:'',notes:'',date:today}); setSaving(false);
+  };
+
+  if(loading) return <Loading/>;
+
+  const cats=['All',...STORE_CATS];
+  const filtered=filterCat==='All'?items:items.filter(x=>x.category===filterCat);
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Inventory</div>
+          <div className="page-title">Store & materials</div>
+        </div>
+        <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Add item</button>
+      </div>
+
+      {showForm&&(
+        <FormCard title="Add store item" col="var(--amber)" onSave={saveItem} onCancel={()=>setShowForm(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Item name ★"><input className="form-input" placeholder="e.g. PP Woven Bag 50kg" value={form.item_name} onChange={e=>f('item_name',e.target.value)}/></Field>
+            <Field label="Category">
+              <select className="form-input" value={form.category} onChange={e=>f('category',e.target.value)}>
+                {STORE_CATS.map(c=><option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Unit (Nos / kg / litre / roll / etc.)"><input className="form-input" value={form.unit} onChange={e=>f('unit',e.target.value)}/></Field>
+            <Field label="Current qty"><input type="number" className="form-input" value={form.qty} onChange={e=>f('qty',Number(e.target.value))}/></Field>
+            <Field label="Min. alert qty"><input type="number" className="form-input" value={form.min_qty} onChange={e=>f('min_qty',Number(e.target.value))}/></Field>
+            <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
+          </div>
+        </FormCard>
+      )}
+
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+        {cats.map(c=>(
+          <button key={c} className={`btn btn-sm ${filterCat===c?'btn-amber':'btn-ghost'}`} onClick={()=>setFilterCat(c)}>{c}</button>
+        ))}
+      </div>
+
+      <TableWrap>
+        <table>
+          <thead><tr><th>Item</th><th>Category</th><th>Qty</th><th>Unit</th><th>Min. alert</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>
+            {filtered.length===0&&<tr><td colSpan={7}><Empty/></td></tr>}
+            {filtered.map(item=>{
+              const st=item.qty===0?'Out':item.min_qty>0&&item.qty<=item.min_qty?'Low':'OK';
+              const col=st==='Out'?'var(--red)':st==='Low'?'var(--amber)':'var(--green)';
+              return(
+                <tr key={item.id}>
+                  <td><strong>{item.item_name}</strong>{item.notes&&<div style={{fontSize:11,color:'var(--muted)'}}>{item.notes}</div>}</td>
+                  <td><span className="badge badge-muted">{item.category}</span></td>
+                  <td><strong style={{color:col,fontFamily:'var(--mono)',fontSize:15}}>{item.qty}</strong></td>
+                  <td className="dim">{item.unit}</td>
+                  <td className="mono dim">{item.min_qty}</td>
+                  <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
+                  <td>
+                    <div style={{display:'flex',gap:6'}}>
+                      <button className="btn btn-green btn-sm" onClick={()=>setShowTxn(item.id)}>+ / −</button>
+                    </div>
+                    {showTxn===item.id&&(
+                      <div style={{marginTop:8,padding:'12px',background:'var(--surface2)',borderRadius:6,border:'1px solid var(--border)'}}>
+                        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
+                          <div>
+                            <div className="form-label" style={{marginBottom:4}}>Type</div>
+                            <select style={{width:110}} value={txnForm.type} onChange={e=>setTxnForm(p=>({...p,type:e.target.value}))}>
+                              <option>Received</option><option>Used / Issued</option><option>Damaged</option><option>Returned</option>
+                            </select>
+                          </div>
+                          <div>
+                            <div className="form-label" style={{marginBottom:4}}>Qty</div>
+                            <input type="number" style={{width:80}} value={txnForm.qty} onChange={e=>setTxnForm(p=>({...p,qty:e.target.value}))}/>
+                          </div>
+                          <div>
+                            <div className="form-label" style={{marginBottom:4}}>Date</div>
+                            <input type="date" style={{width:130}} value={txnForm.date} onChange={e=>setTxnForm(p=>({...p,date:e.target.value}))}/>
+                          </div>
+                          <div style={{flex:1,minWidth:120}}>
+                            <div className="form-label" style={{marginBottom:4}}>Notes</div>
+                            <input style={{width:'100%'}} value={txnForm.notes} onChange={e=>setTxnForm(p=>({...p,notes:e.target.value}))}/>
+                          </div>
+                          <button className="btn btn-green btn-sm" onClick={()=>doTxn(item)} disabled={saving}>Save</button>
+                          <button className="btn btn-ghost btn-sm" onClick={()=>setShowTxn(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// DAILY CASH BOOK / LEDGER
+// ═══════════════════════════════════════════════════════════
+function Ledger(){
+  const [entries,setEntries]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const [filterDate,setFilterDate]=useState(today);
+  const blank={date:today,txn_type:'Sales Receipt',direction:'in',amount:'',party_name:'',description:'',payment_mode:'Cash',reference_no:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const {data}=await sb.from('daily_ledger').select('*').gte('date',monthStart).order('date',{ascending:false}).order('created_at',{ascending:false});
+    setEntries(data||[]); setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const save=async()=>{
+    if(!form.amount||Number(form.amount)<=0) return alert('Enter amount.');
+    setSaving(true);
+    const isIn=['Sales Receipt','Supplyco Payment Received','Other Income','Loan / Advance'].includes(form.txn_type);
+    const row={...form,amount:Number(form.amount),direction:isIn?'in':'out'};
+    const {data,error}=await sb.from('daily_ledger').insert(row).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+  };
+
+  const del=async(id)=>{
+    if(!confirm('Delete this entry?')) return;
+    await sb.from('daily_ledger').delete().eq('id',id);
+    setEntries(p=>p.filter(x=>x.id!==id));
+  };
+
+  if(loading) return <Loading/>;
+
+  const dayEntries=entries.filter(e=>e.date===filterDate);
+  const dayIn=dayEntries.filter(e=>e.direction==='in').reduce((s,e)=>s+Number(e.amount),0);
+  const dayOut=dayEntries.filter(e=>e.direction==='out').reduce((s,e)=>s+Number(e.amount),0);
+  const monthIn=entries.filter(e=>e.direction==='in').reduce((s,e)=>s+Number(e.amount),0);
+  const monthOut=entries.filter(e=>e.direction==='out').reduce((s,e)=>s+Number(e.amount),0);
+
+  const incomeTypes=['Sales Receipt','Supplyco Payment Received','Other Income','Loan / Advance'];
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Finance</div>
+          <div className="page-title">Daily cash book</div>
+        </div>
+        <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ New entry</button>
+      </div>
+
+      <div className="stat-grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))'}}>
+        <StatCard label="Today in" value={'₹'+fmt(dayIn)} col="var(--green)"/>
+        <StatCard label="Today out" value={'₹'+fmt(dayOut)} col="var(--red)"/>
+        <StatCard label="Today balance" value={'₹'+fmt(dayIn-dayOut)} col={dayIn-dayOut>=0?'var(--green)':'var(--red)'}/>
+        <StatCard label="Month in" value={'₹'+fmt(monthIn)} col="var(--blue)"/>
+        <StatCard label="Month out" value={'₹'+fmt(monthOut)} col="var(--amber)"/>
+        <StatCard label="Month balance" value={'₹'+fmt(monthIn-monthOut)} col={monthIn-monthOut>=0?'var(--green)':'var(--red)'}/>
+      </div>
+
+      {showForm&&(
+        <FormCard title="New cash book entry" col="var(--green)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
+            <Field label="Transaction type">
+              <select className="form-input" value={form.txn_type} onChange={e=>f('txn_type',e.target.value)}>
+                <optgroup label="— Money In">{incomeTypes.map(t=><option key={t}>{t}</option>)}</optgroup>
+                <optgroup label="— Money Out">{LEDGER_TYPES.filter(t=>!incomeTypes.includes(t)).map(t=><option key={t}>{t}</option>)}</optgroup>
+              </select>
+            </Field>
+            <Field label="Amount (₹) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.amount} onChange={e=>f('amount',e.target.value)}/></Field>
+            <Field label="Party name"><input className="form-input" placeholder="Supplier / customer name" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
+            <Field label="Description"><input className="form-input" placeholder="What is this for?" value={form.description} onChange={e=>f('description',e.target.value)}/></Field>
+            <Field label="Payment mode">
+              <select className="form-input" value={form.payment_mode} onChange={e=>f('payment_mode',e.target.value)}>
+                <option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>UPI</option><option>Other</option>
+              </select>
+            </Field>
+            <Field label="Reference / Cheque no."><input className="form-input" value={form.reference_no} onChange={e=>f('reference_no',e.target.value)}/></Field>
+          </div>
+          <div style={{marginTop:10,fontSize:12,color:incomeTypes.includes(form.txn_type)?'var(--green)':'var(--red)',fontFamily:'var(--mono)'}}>
+            This will be recorded as: {incomeTypes.includes(form.txn_type)?'↑ MONEY IN':'↓ MONEY OUT'}
+          </div>
+        </FormCard>
+      )}
+
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16,flexWrap:'wrap'}}>
+        <div className="form-label">Filter by date:</div>
+        <input type="date" value={filterDate} max={today} onChange={e=>setFilterDate(e.target.value)} style={{width:160}}/>
+        {dayEntries.length>0&&(
+          <span style={{fontSize:12,color:'var(--muted)',fontFamily:'var(--mono)'}}>
+            {dayEntries.length} entries · In: ₹{fmt(dayIn)} · Out: ₹{fmt(dayOut)} · Balance: <span style={{color:dayIn-dayOut>=0?'var(--green)':'var(--red)'}}>₹{fmt(dayIn-dayOut)}</span>
+          </span>
+        )}
+      </div>
+
+      <TableWrap>
+        <table>
+          <thead><tr><th>Date</th><th>Type</th><th>Flow</th><th>Amount</th><th>Party</th><th>Description</th><th>Mode</th><th>Ref.</th><th></th></tr></thead>
+          <tbody>
+            {dayEntries.length===0&&<tr><td colSpan={9}><Empty msg="No entries for this date."/></td></tr>}
+            {dayEntries.map(e=>{
+              const isIn=e.direction==='in';
+              return(
+                <tr key={e.id}>
+                  <td className="mono dim">{e.date}</td>
+                  <td>{e.txn_type}</td>
+                  <td><span className={`badge badge-${isIn?'green':'red'}`}>{isIn?'↑ IN':'↓ OUT'}</span></td>
+                  <td><strong style={{color:isIn?'var(--green)':'var(--red)',fontFamily:'var(--mono)',fontSize:14}}>₹{fmt(e.amount)}</strong></td>
+                  <td>{e.party_name||<span className="dim">—</span>}</td>
+                  <td className="dim">{e.description||'—'}</td>
+                  <td className="dim">{e.payment_mode}</td>
+                  <td className="mono dim">{e.reference_no||'—'}</td>
+                  <td><button className="btn btn-red btn-sm" onClick={()=>del(e.id)}>✕</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+          {dayEntries.length>0&&(
+            <tfoot><tr style={{borderTop:'2px solid var(--border2)'}}>
+              <td colSpan={3} style={{textAlign:'right',fontFamily:'var(--mono)',fontSize:10,color:'var(--muted)',letterSpacing:'.05em',textTransform:'uppercase'}}>Day total</td>
+              <td style={{fontFamily:'var(--mono)',fontWeight:700,color:dayIn-dayOut>=0?'var(--green)':'var(--red)'}}>₹{fmt(dayIn-dayOut)}</td>
+              <td colSpan={5}/>
+            </tr></tfoot>
+          )}
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// WHEAT RECEIPTS
+// ═══════════════════════════════════════════════════════════
+function Wheat(){
+  const [receipts,setReceipts]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const blank={date:today,batch_no:'',scheme:'NPS',received_kg:'',allotment_kg:'',vehicle_no:'',lorry_receipt_no:'',supplier_name:'Supplyco',notes:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  useEffect(()=>{
+    sb.from('wheat_receipts').select('*').gte('date',monthStart).order('date',{ascending:false}).then(({data})=>{setReceipts(data||[]);setLoading(false);});
+  },[]);
+
+  const save=async()=>{
+    if(!form.batch_no||!form.received_kg) return alert('Batch no. and received KG required.');
+    setSaving(true);
+    const {data,error}=await sb.from('wheat_receipts').insert({...form,received_kg:Number(form.received_kg),allotment_kg:Number(form.allotment_kg)||0}).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setReceipts(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+  };
+
+  if(loading) return <Loading/>;
+  const total=receipts.reduce((s,r)=>s+r.received_kg,0);
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Raw Materials</div>
+          <div className="page-title">Wheat receipts — this month: {fmtMT(total)}</div>
+        </div>
+        <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Log receipt</button>
+      </div>
+
+      {showForm&&(
+        <FormCard title="New wheat receipt" col="var(--amber)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
+            <Field label="Batch no. ★"><input className="form-input" placeholder="PU-220" value={form.batch_no} onChange={e=>f('batch_no',e.target.value.toUpperCase())}/></Field>
+            <Field label="Scheme"><select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>{SCHEMES.map(s=><option key={s}>{s}</option>)}</select></Field>
+            <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} placeholder="48000" value={form.received_kg} onChange={e=>f('received_kg',e.target.value)}/></Field>
+            <Field label="Allotment (kg)"><input type="number" className="form-input" value={form.allotment_kg} onChange={e=>f('allotment_kg',e.target.value)}/></Field>
+            <Field label="Vehicle no."><input className="form-input" placeholder="KL-XX-XXXX" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
+            <Field label="Lorry receipt no."><input className="form-input" value={form.lorry_receipt_no} onChange={e=>f('lorry_receipt_no',e.target.value)}/></Field>
+            <Field label="Supplier"><input className="form-input" value={form.supplier_name} onChange={e=>f('supplier_name',e.target.value)}/></Field>
+            <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
+          </div>
+        </FormCard>
+      )}
+
+      <TableWrap>
+        <table>
+          <thead><tr><th>Date</th><th>Batch no.</th><th>Scheme</th><th>Received</th><th>Allotment</th><th>Vehicle</th><th>Lorry receipt</th><th>Supplier</th></tr></thead>
+          <tbody>
+            {receipts.length===0&&<tr><td colSpan={8}><Empty/></td></tr>}
+            {receipts.map(r=>(
+              <tr key={r.id}>
+                <td className="mono dim">{r.date}</td>
+                <td><strong style={{color:'var(--amber)',fontFamily:'var(--mono)'}}>{r.batch_no}</strong></td>
+                <td><span className="badge badge-blue">{r.scheme}</span></td>
+                <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmtMT(r.received_kg)}</strong></td>
+                <td className="mono dim">{r.allotment_kg?fmtMT(r.allotment_kg):'—'}</td>
+                <td className="dim">{r.vehicle_no||'—'}</td>
+                <td className="dim">{r.lorry_receipt_no||'—'}</td>
+                <td className="dim">{r.supplier_name||'—'}</td>
+              </tr>
+            ))}
+          </tbody>
+          {receipts.length>0&&<tfoot><tr style={{borderTop:'2px solid var(--border2)'}}>
+            <td colSpan={3} style={{textAlign:'right',fontFamily:'var(--mono)',fontSize:10,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'.05em'}}>Month total</td>
+            <td style={{fontFamily:'var(--mono)',fontWeight:700,color:'var(--green)'}}>{fmtMT(total)}</td>
+            <td colSpan={4}/>
+          </tr></tfoot>}
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// RECONCILIATION
+// ═══════════════════════════════════════════════════════════
+function Reconciliation(){
+  const now=new Date();
+  const [month,setMonth]=useState(now.getMonth()+1);
+  const [year,setYear]=useState(now.getFullYear());
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(false);
+
+  const generate=async()=>{
+    setLoading(true);
+    const ms=String(month).padStart(2,'0');
+    const start=`${year}-${ms}-01`;
+    const endDt=new Date(year,month,0);
+    const end=`${year}-${ms}-${String(endDt.getDate()).padStart(2,'0')}`;
+    const [{data:prod},{data:disp},{data:wheat}]=await Promise.all([
+      sb.from('production_log').select('*').gte('date',start).lte('date',end),
+      sb.from('supplyco_dispatches').select('*').gte('date',start).lte('date',end),
+      sb.from('wheat_receipts').select('*').gte('date',start).lte('date',end),
+    ]);
+    const rec=(scheme,product,packKg)=>{
+      const prodBags=(prod||[]).filter(r=>r.product_type===product).reduce((s,r)=>s+r.qty_produced,0);
+      const dispBags=(disp||[]).filter(r=>r.scheme===scheme).reduce((s,r)=>s+r.qty_bags,0);
+      const byDist={};
+      DISTRICTS.forEach(d=>{byDist[d]=(disp||[]).filter(r=>r.scheme===scheme&&r.district===d).reduce((s,r)=>s+r.qty_bags,0);});
+      return{prodBags,dispBags,balanceBags:prodBags-dispBags,byDist,prodKg:prodBags*packKg,dispKg:dispBags*packKg};
+    };
+    const wheatRec=(wheat||[]).reduce((s,r)=>s+r.received_kg,0);
+    const wheatUsed=(prod||[]).reduce((s,r)=>s+(r.wheat_used_kg||0),0);
+    const totalOut=(prod||[]).reduce((s,r)=>s+(r.qty_produced*r.pack_size_kg),0);
+    setData({nps:rec('NPS','NPS Atta',50),phh:rec('PHH','PHH Atta',47.5),aay:rec('AAY','AAY Atta',47.5),
+      wheatRec,wheatUsed,wheatBalance:wheatRec-wheatUsed,totalOut,
+      yieldPct:wheatUsed>0?((totalOut/wheatUsed)*100).toFixed(2):'—'});
+    setLoading(false);
+  };
+
+  const monthName=new Date(year,month-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Compliance</div>
+          <div className="page-title">Monthly reconciliation</div>
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
+          <div><div className="form-label" style={{marginBottom:4}}>Month</div>
+            <select style={{width:130}} value={month} onChange={e=>setMonth(Number(e.target.value))}>
+              {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
+            </select>
+          </div>
+          <div><div className="form-label" style={{marginBottom:4}}>Year</div>
+            <select style={{width:90}} value={year} onChange={e=>setYear(Number(e.target.value))}>
+              {[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}
+            </select>
+          </div>
+          <button className="btn btn-blue" onClick={generate} disabled={loading}>{loading?'Calculating…':'Generate'}</button>
+        </div>
+      </div>
+
+      {!data&&<div className="card" style={{textAlign:'center',padding:40,color:'var(--muted)'}}>Select month and year, then click Generate.</div>}
+
+      {data&&(
+        <>
+          <div style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--muted)',marginBottom:16,letterSpacing:'.05em'}}>
+            RECONCILIATION STATEMENT — {monthName.toUpperCase()}
+          </div>
+
+          <div className="card amber-l" style={{marginBottom:16}}>
+            <div className="section-label">Wheat</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:12}}>
+              {[['Received',fmtMT(data.wheatRec),'var(--blue)'],['Used in production',fmtMT(data.wheatUsed),'var(--amber)'],
+                ['Closing stock',fmtMT(data.wheatBalance),data.wheatBalance>=0?'var(--green)':'var(--red)'],
+                ['Overall yield',data.yieldPct!=='—'?data.yieldPct+'%':'—',Number(data.yieldPct)>=68?'var(--green)':'var(--amber)']
+              ].map(([l,v,c])=>(
+                <div key={l} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,color:'var(--muted)',fontFamily:'var(--mono)',marginBottom:4}}>{l}</div>
+                  <div style={{fontSize:20,fontWeight:600,color:c}}>{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {[['NPS','NPS Atta',50,'var(--blue)'],['PHH','PHH Atta',47.5,'var(--green)'],['AAY','AAY Atta',47.5,'var(--amber)']].map(([scheme,product,packKg,col])=>{
+            const r=data[scheme.toLowerCase()];
+            return(
+              <div key={scheme} className="card" style={{marginBottom:14,borderLeft:`3px solid ${col}`}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
+                  <div className="section-label" style={{marginBottom:0}}>{scheme} — {product}</div>
+                  <div style={{display:'flex',gap:10,fontFamily:'var(--mono)',fontSize:12}}>
+                    <span style={{color:col}}>Produced: {fmt(r.prodBags)} bags</span>
+                    <span style={{color:'var(--muted)'}}>·</span>
+                    <span style={{color:'var(--green)'}}>Dispatched: {fmt(r.dispBags)} bags</span>
+                    <span style={{color:'var(--muted)'}}>·</span>
+                    <span style={{color:r.balanceBags>0?'var(--red)':'var(--green)'}}>Balance: {fmt(r.balanceBags)}</span>
+                  </div>
+                </div>
+                <TableWrap>
+                  <table>
+                    <thead><tr><th>District</th><th>Bags dispatched</th><th>In KG</th><th>In MT</th></tr></thead>
+                    <tbody>
+                      {DISTRICTS.filter(d=>r.byDist[d]>0).map(d=>(
+                        <tr key={d}>
+                          <td className="mono">{d}</td>
+                          <td><strong style={{color:col,fontFamily:'var(--mono)'}}>{fmt(r.byDist[d])}</strong></td>
+                          <td className="mono dim">{fmt(r.byDist[d]*packKg)}</td>
+                          <td className="mono dim">{fmtMT(r.byDist[d]*packKg)}</td>
+                        </tr>
+                      ))}
+                      {Object.values(r.byDist).every(v=>v===0)&&<tr><td colSpan={4}><Empty msg={`No ${scheme} dispatches this month.`}/></td></tr>}
+                    </tbody>
+                    <tfoot><tr style={{borderTop:'2px solid var(--border2)'}}>
+                      <td style={{fontFamily:'var(--mono)',fontSize:10,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'.05em'}}>Total</td>
+                      <td style={{fontFamily:'var(--mono)',fontWeight:700,color:col}}>{fmt(r.dispBags)}</td>
+                      <td className="mono dim">{fmt(r.dispKg)}</td>
+                      <td className="mono dim">{fmtMT(r.dispKg)}</td>
+                    </tr></tfoot>
+                  </table>
+                </TableWrap>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// APP ROOT
+// ═══════════════════════════════════════════════════════════
+function App(){
+  const [user,setUser]=useState(null);
+  const [tab,setTab]=useState('dashboard');
+  const [authLoading,setAuthLoading]=useState(true);
+
+  useEffect(()=>{
+    sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setAuthLoading(false);});
+    sb.auth.onAuthStateChange((_,session)=>setUser(session?.user??null));
+  },[]);
+
+  if(authLoading) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'var(--muted)',fontFamily:'var(--mono)',fontSize:13}}>loading…</div>;
+  if(!user) return <Login onLogin={setUser}/>;
+
+  const VIEWS={
+    'dashboard':<Dashboard/>,
+    'production':<Production/>,
+    'dispatch':<Dispatch/>,
+    'wheat':<Wheat/>,
+    'reconciliation':<Reconciliation/>,
+    'flour-stock':<FlourStock/>,
+    'store':<Store/>,
+    'ledger':<Ledger/>,
+  };
+
+  return(
+    <div className="app">
+      <div className="sidebar">
+        <div className="sidebar-logo">
+          <div className="mill-name">PRFM</div>
+          <div className="mill-sub">Mill Operations</div>
+        </div>
+        {NAV.map((item,i)=>{
+          if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
+          return(
+            <button key={item.id} className={`nav-btn${tab===item.id?' active':''}`} onClick={()=>setTab(item.id)}>
+              <span className="icon">{item.icon}</span>{item.label}
+            </button>
+          );
+        })}
+        <div className="sidebar-footer">
+          <button className="hr-link-btn" onClick={()=>window.open(HR_APP_URL,'_blank')}>
+            <span style={{fontSize:14}}>👥</span>
+            <div>
+              <div style={{fontSize:12,fontWeight:500}}>HR Portal</div>
+              <div style={{fontSize:10,color:'var(--dim)'}}>Open in new tab →</div>
+            </div>
+          </button>
+          <button className="btn btn-ghost btn-sm" style={{width:'100%',marginTop:8}} onClick={()=>sb.auth.signOut()}>Sign out</button>
+        </div>
+      </div>
+      <div className="main">
+        {VIEWS[tab]||<Dashboard/>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
