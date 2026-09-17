@@ -297,7 +297,7 @@ function Dashboard(){
   const cashIn   = ledger.filter(r=>['Sales Receipt','Supplyco Payment Received','Other Income'].includes(r.txn_type)).reduce((s,r)=>s+Number(r.amount),0);
   const cashOut  = ledger.filter(r=>!['Sales Receipt','Supplyco Payment Received','Other Income'].includes(r.txn_type)).reduce((s,r)=>s+Number(r.amount),0);
 
-  const stockAlerts = stock.filter(r=>r.min_threshold>0&&r.qty_bags<r.min_threshold);
+  const stockAlerts = stock.filter(r=>r.min_threshold>0&&r.max_threshold>0&&r.qty_bags>r.min_threshold&&r.qty_bags<r.max_threshold);
   const lowStoreItems = store; // already filtered
 
   return(
@@ -321,9 +321,9 @@ function Dashboard(){
         <div style={{marginBottom:24}}>
           <div className="section-label">Alerts</div>
           {stockAlerts.map(r=>(
-            <Alert key={r.id} type="red" icon="✕"
-              title={`${r.product_type} stock low — ${fmt(r.qty_bags)} bags remaining`}
-              sub={`Minimum threshold is ${fmt(r.min_threshold)} bags. Schedule a production run.`}/>
+            <Alert key={r.id} type="amber" icon="⚠"
+              title={`${r.product_type} — ${fmt(r.qty_bags)} bags, within watch range`}
+              sub={`Between min (${fmt(r.min_threshold)}) and max (${fmt(r.max_threshold)}) alert thresholds.`}/>
           ))}
           {lowStoreItems.map(r=>(
             <Alert key={r.id} type="amber" icon="⚠"
@@ -750,9 +750,10 @@ function FlourStock(){
   const saveEdit=async(row)=>{
     const nq=Number(editVal.qty_bags??row.qty_bags);
     const nt=Number(editVal.min_threshold??row.min_threshold);
+    const nmx=Number(editVal.max_threshold??row.max_threshold??0);
     const npb=Number(editVal.packets_per_bag??row.packets_per_bag??50); // New conversion factor
-    await sb.from('current_stock').update({qty_bags:nq, min_threshold:nt, packets_per_bag:npb, updated_at:new Date().toISOString()}).eq('id',row.id);
-    setStock(p=>p.map(s=>s.id===row.id?{...s, qty_bags:nq, min_threshold:nt, packets_per_bag:npb}:s));
+    await sb.from('current_stock').update({qty_bags:nq, min_threshold:nt, max_threshold:nmx, packets_per_bag:npb, updated_at:new Date().toISOString()}).eq('id',row.id);
+    setStock(p=>p.map(s=>s.id===row.id?{...s, qty_bags:nq, min_threshold:nt, max_threshold:nmx, packets_per_bag:npb}:s));
     setEditId(null); setEditVal({});
   };
 
@@ -769,7 +770,7 @@ function FlourStock(){
       </div>
       <TableWrap>
         <table>
-          <thead><tr><th>Product</th><th>Pack size</th><th>Current stock</th><th>Packets / Bag</th><th>Min. alert</th><th>Status</th><th>Edit</th></tr></thead>
+          <thead><tr><th>Product</th><th>Pack size</th><th>Current stock</th><th>Packets / Bag</th><th>Min. alert</th><th>Max. alert</th><th>Status</th><th>Edit</th></tr></thead>
           <tbody>
             {stock.map(row=>{
               const st=row.qty_bags===0?'Out of stock':row.min_threshold>0&&row.qty_bags<row.min_threshold?'Low':'OK';
@@ -788,6 +789,8 @@ function FlourStock(){
                   
                   <td>{isE?<input type="number" style={{width:80}} value={editVal.min_threshold??row.min_threshold} onChange={e=>setEditVal(v=>({...v,min_threshold:e.target.value}))}/>
                     :<span className="dim mono">{fmt(row.min_threshold)}</span>}</td>
+                  <td>{isE?<input type="number" style={{width:80}} value={editVal.max_threshold??row.max_threshold??0} onChange={e=>setEditVal(v=>({...v,max_threshold:e.target.value}))}/>
+                    :<span className="dim mono">{fmt(row.max_threshold||0)}</span>}</td>
                   <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
                   <td>{isE
                     ?<div style={{display:'flex',gap:6}}><button className="btn btn-green btn-sm" onClick={()=>saveEdit(row)}>Save</button><button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(null);setEditVal({});}}>Cancel</button></div>
