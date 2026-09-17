@@ -183,6 +183,7 @@ const NAV = [
   { id:'private-dispatch',label:'Private Dispatch',icon:'🚚' },
   { id:'wheat',         label:'FCI Inwards',      icon:'🌾' },
   { id:'private-inwards',label:'Private Inwards', icon:'🌿' },
+  { id:'scheme-balances',label:'Scheme Balances', icon:'📋' },
   { id:'reconciliation',label:'Reconciliation',   icon:'📊' },
   { section:'Inventory' },
   { id:'flour-stock',   label:'Flour Stock',      icon:'◫' },
@@ -442,6 +443,23 @@ function Production(){
     // update flour stock
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg)).single();
     if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg));
+
+    // Deduct wheat used from the matching scheme's bucket — can go negative, that's expected
+    if(Number(form.wheat_used_kg)>0){
+      const productScheme=form.product_type==='NPS Atta'?'NPS':form.product_type==='PHH Atta'?'PHH':form.product_type==='AAY Atta'?'AAY':null;
+      if(productScheme){
+        const wheatMaterial=(await sb.from('product_master').select('id').eq('product_name','Wheat').maybeSingle()).data;
+        if(wheatMaterial){
+          const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('material_id',wheatMaterial.id).eq('scheme',productScheme).maybeSingle();
+          if(bucket){
+            await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-Number(form.wheat_used_kg),updated_at:new Date().toISOString()}).eq('id',bucket.id);
+          } else {
+            await sb.from('raw_material_scheme_stock').insert({material_id:wheatMaterial.id,scheme:productScheme,qty_kg:-Number(form.wheat_used_kg)});
+          }
+        }
+      }
+    }
+
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Production','create',`${form.product_type} — ${form.qty_produced} bags on ${form.date}`);
   };
@@ -1118,6 +1136,17 @@ function Wheat(){
     setSaving(true);
     const {data,error}=await sb.from('wheat_receipts').insert({...form,material_id:form.material_id||null,received_kg:Number(form.received_kg),allotment_kg:Number(form.allotment_kg)||0}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
+
+    // Update scheme-wise raw material balance
+    if(form.material_id){
+      const {data:existing}=await sb.from('raw_material_scheme_stock').select('*').eq('material_id',form.material_id).eq('scheme',form.scheme).maybeSingle();
+      if(existing){
+        await sb.from('raw_material_scheme_stock').update({qty_kg:Number(existing.qty_kg)+Number(form.received_kg),updated_at:new Date().toISOString()}).eq('id',existing.id);
+      } else {
+        await sb.from('raw_material_scheme_stock').insert({material_id:form.material_id,scheme:form.scheme,qty_kg:Number(form.received_kg)});
+      }
+    }
+
     setReceipts(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Wheat','create',`Batch ${form.batch_no} — ${form.received_kg} kg received`);
   };
@@ -1304,8 +1333,19 @@ function PrivateInwards(){
       finalKg=Number(form.qty_kg);
     }
     setSaving(true);
-    const {data,error}=await sb.from('private_inwards').insert({date:form.date,party_name:form.party_name,material_id:form.material_id,qty_kg:finalKg,vehicle_no:form.vehicle_no,lorry_receipt_no:form.lorry_receipt_no,notes:form.notes}).select().single();
+    const {data,error}=await sb.from('private_inwards').insert({date:form.date,party_name:form.party_name,material_id:form.material_id,qty_kg:finalKg,scheme_bucket:'Private',vehicle_no:form.vehicle_no,lorry_receipt_no:form.lorry_receipt_no,notes:form.notes}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
+
+    // Update scheme-wise raw material balance (Private bucket)
+    if(form.material_id){
+      const {data:existing}=await sb.from('raw_material_scheme_stock').select('*').eq('material_id',form.material_id).eq('scheme','Private').maybeSingle();
+      if(existing){
+        await sb.from('raw_material_scheme_stock').update({qty_kg:Number(existing.qty_kg)+finalKg,updated_at:new Date().toISOString()}).eq('id',existing.id);
+      } else {
+        await sb.from('raw_material_scheme_stock').insert({material_id:form.material_id,scheme:'Private',qty_kg:finalKg});
+      }
+    }
+
     const matName=selectedMaterial?.product_name||'material';
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Private Inwards','create',`${form.party_name} — ${finalKg} kg of ${matName}`);
@@ -1531,7 +1571,7 @@ function ProductSettings() {
     packet_weight_kg: '', packets_per_bag: 50, base_price_per_unit: '', 
     gst_percent: 0, hsn_code: '', min_stock_alert: 0,
     is_raw_material: false, available_for_supplyco: false,
-    has_standard_weight: false, bag_weight: '', unit: 'kg'
+    has_standard_weight: false, bag_weight: '', unit: 'kg', has_schemes: false
   };
   const [form, setForm] = useState(blank);
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1555,6 +1595,7 @@ function ProductSettings() {
       packet_weight_kg: form.is_raw_material ? null : Number(form.packet_weight_kg),
       packets_per_bag: form.is_raw_material ? null : Number(form.packets_per_bag),
       has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
+      has_schemes: form.is_raw_material ? !!form.has_schemes : false,
       bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight) : null,
       unit: form.is_raw_material ? form.unit : null,
       base_price_per_unit: Number(form.base_price_per_unit),
@@ -1650,6 +1691,12 @@ function ProductSettings() {
                   <label style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0'}}>
                     <input type="checkbox" checked={form.has_standard_weight} onChange={e=>f('has_standard_weight',e.target.checked)}/>
                     <span style={{fontSize:13}}>Yes, fixed weight per bag</span>
+                  </label>
+                </Field>
+                <Field label="Divided into schemes?">
+                  <label style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0'}}>
+                    <input type="checkbox" checked={form.has_schemes} onChange={e=>f('has_schemes',e.target.checked)}/>
+                    <span style={{fontSize:13}}>Yes (e.g. PHH / AAY / NPS / Private)</span>
                   </label>
                 </Field>
                 <Field label="Bag / Unit Weight">
@@ -1789,6 +1836,66 @@ function ActivityLog(){
 }
 
 // ═══════════════════════════════════════════════════════════
+// RAW MATERIAL SCHEME BALANCES
+// ═══════════════════════════════════════════════════════════
+function SchemeBalances(){
+  const [balances,setBalances]=useState([]);
+  const [materials,setMaterials]=useState([]);
+  const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    Promise.all([
+      sb.from('raw_material_scheme_stock').select('*'),
+      sb.from('product_master').select('*').eq('has_schemes',true)
+    ]).then(([{data:b},{data:m}])=>{setBalances(b||[]);setMaterials(m||[]);setLoading(false);});
+  },[]);
+
+  if(loading) return <Loading/>;
+
+  return(
+    <div className="page">
+      <div className="page-header">
+        <div className="page-label">Raw Materials</div>
+        <div className="page-title">Scheme-wise stock balances</div>
+      </div>
+      <div style={{marginBottom:16,padding:'10px 16px',background:'var(--amber)10',border:'1px solid var(--amber)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
+        These are paperwork balances per scheme. Negative values are normal — they mean atta for that scheme was produced using wheat physically drawn from another scheme's stock. Physical total is what actually exists in the godown.
+      </div>
+      {materials.map(mat=>{
+        const rows=balances.filter(b=>b.material_id===mat.id);
+        const total=rows.reduce((s,r)=>s+Number(r.qty_kg),0);
+        return(
+          <div key={mat.id} className="card" style={{marginBottom:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:12}}>
+              <div className="section-label" style={{marginBottom:0}}>{mat.product_name}</div>
+              <div style={{fontFamily:'var(--mono)',fontSize:13,color:'var(--blue)'}}>Physical total: {fmtMT(total)}</div>
+            </div>
+            <TableWrap>
+              <table>
+                <thead><tr><th>Scheme</th><th>Balance</th></tr></thead>
+                <tbody>
+                  {['NPS','PHH','AAY','Private'].map(s=>{
+                    const r=rows.find(x=>x.scheme===s);
+                    const val=r?Number(r.qty_kg):0;
+                    return(
+                      <tr key={s}>
+                        <td><span className="badge badge-blue">{s}</span></td>
+                        <td style={{color:val<0?'var(--red)':'var(--green)',fontFamily:'var(--mono)',fontWeight:600}}>{fmtMT(val)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </TableWrap>
+          </div>
+        );
+      })}
+      {materials.length===0&&<div className="card"><Empty msg="No raw materials with schemes configured yet."/></div>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // APP ROOT
 // ═══════════════════════════════════════════════════════════
 function App(){
@@ -1815,6 +1922,7 @@ function App(){
     'ledger':<Ledger/>,
     'private-dispatch':<PrivateDispatch/>,
     'private-inwards':<PrivateInwards/>,
+    'scheme-balances':<SchemeBalances/>,
     'product-master':<ProductSettings/>, // ADD THIS
     'activity-log':<ActivityLog/>,
   };
