@@ -1103,18 +1103,20 @@ function Wheat(){
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,batch_no:'',scheme:'NPS',received_kg:'',allotment_kg:'',vehicle_no:'',lorry_receipt_no:'',supplier_name:'Supplyco',notes:''};
+  const blank={date:today,batch_no:'',scheme:'NPS',material_id:'',received_kg:'',allotment_kg:'',vehicle_no:'',lorry_receipt_no:'',supplier_name:'Supplyco',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const [rawMaterials,setRawMaterials]=useState([]);
 
   useEffect(()=>{
     sb.from('wheat_receipts').select('*').gte('date',monthStart).order('date',{ascending:false}).then(({data})=>{setReceipts(data||[]);setLoading(false);});
+    sb.from('product_master').select('*').eq('is_raw_material',true).eq('available_for_supplyco',true).eq('is_active',true).then(({data})=>{setRawMaterials(data||[]);});
   },[]);
 
   const save=async()=>{
     if(!form.batch_no||!form.received_kg) return alert('Batch no. and received KG required.');
     setSaving(true);
-    const {data,error}=await sb.from('wheat_receipts').insert({...form,received_kg:Number(form.received_kg),allotment_kg:Number(form.allotment_kg)||0}).select().single();
+    const {data,error}=await sb.from('wheat_receipts').insert({...form,material_id:form.material_id||null,received_kg:Number(form.received_kg),allotment_kg:Number(form.allotment_kg)||0}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
     setReceipts(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Wheat','create',`Batch ${form.batch_no} — ${form.received_kg} kg received`);
@@ -1139,6 +1141,12 @@ function Wheat(){
             <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
             <Field label="Batch no. ★"><input className="form-input" placeholder="PU-220" value={form.batch_no} onChange={e=>f('batch_no',e.target.value.toUpperCase())}/></Field>
             <Field label="Scheme"><select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>{SCHEMES.map(s=><option key={s}>{s}</option>)}</select></Field>
+            <Field label="Raw Material">
+              <select className="form-input" value={form.material_id} onChange={e=>f('material_id',e.target.value)}>
+                <option value="">-- Select material --</option>
+                {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
+              </select>
+            </Field>
             <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} placeholder="48000" value={form.received_kg} onChange={e=>f('received_kg',e.target.value)}/></Field>
             <Field label="Allotment (kg)"><input type="number" className="form-input" value={form.allotment_kg} onChange={e=>f('allotment_kg',e.target.value)}/></Field>
             <Field label="Vehicle no."><input className="form-input" placeholder="KL-XX-XXXX" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
@@ -1273,21 +1281,24 @@ function PrivateInwards(){
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,party_name:'',material:'Wheat',qty_kg:'',vehicle_no:'',lorry_receipt_no:'',notes:''};
+  const blank={date:today,party_name:'',material_id:'',qty_kg:'',vehicle_no:'',lorry_receipt_no:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const [rawMaterials,setRawMaterials]=useState([]);
 
   useEffect(()=>{
     sb.from('private_inwards').select('*').gte('date',monthStart).order('date',{ascending:false}).then(({data})=>{setEntries(data||[]);setLoading(false);});
+    sb.from('product_master').select('*').eq('is_raw_material',true).eq('is_active',true).then(({data})=>{setRawMaterials(data||[]);});
   },[]);
 
   const save=async()=>{
-    if(!form.party_name||!form.qty_kg) return alert('Party name and quantity required.');
+    if(!form.party_name||!form.qty_kg||!form.material_id) return alert('Party name, material and quantity required.');
     setSaving(true);
     const {data,error}=await sb.from('private_inwards').insert({...form,qty_kg:Number(form.qty_kg)}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
+    const matName=rawMaterials.find(m=>m.id===form.material_id)?.product_name||'material';
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('Private Inwards','create',`${form.party_name} — ${form.qty_kg} kg of ${form.material}`);
+    logActivity('Private Inwards','create',`${form.party_name} — ${form.qty_kg} kg of ${matName}`);
   };
 
   const del=async(e)=>{
@@ -1315,7 +1326,12 @@ function PrivateInwards(){
           <div className="form-grid">
             <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
             <Field label="Party name ★"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
-            <Field label="Material"><input className="form-input" value={form.material} onChange={e=>f('material',e.target.value)}/></Field>
+            <Field label="Material">
+              <select className="form-input" value={form.material_id} onChange={e=>f('material_id',e.target.value)}>
+                <option value="">-- Select material --</option>
+                {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
+              </select>
+            </Field>
             <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.qty_kg} onChange={e=>f('qty_kg',e.target.value)}/></Field>
             <Field label="Vehicle no."><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
             <Field label="Lorry receipt no."><input className="form-input" value={form.lorry_receipt_no} onChange={e=>f('lorry_receipt_no',e.target.value)}/></Field>
@@ -1333,7 +1349,7 @@ function PrivateInwards(){
               <tr key={e.id}>
                 <td className="mono dim">{e.date}</td>
                 <td><strong>{e.party_name}</strong></td>
-                <td>{e.material}</td>
+                <td>{rawMaterials.find(m=>m.id===e.material_id)?.product_name||'—'}</td>
                 <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmtMT(e.qty_kg)}</strong></td>
                 <td className="dim">{e.vehicle_no||'—'}</td>
                 <td className="dim">{e.lorry_receipt_no||'—'}</td>
@@ -1489,7 +1505,8 @@ function ProductSettings() {
   const blank = { 
     product_code: '', product_name: '', category: 'Finished Goods', 
     packet_weight_kg: '', packets_per_bag: 50, base_price_per_unit: '', 
-    gst_percent: 0, hsn_code: '', min_stock_alert: 0 
+    gst_percent: 0, hsn_code: '', min_stock_alert: 0,
+    is_raw_material: false, available_for_supplyco: false
   };
   const [form, setForm] = useState(blank);
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1512,21 +1529,25 @@ function ProductSettings() {
       packets_per_bag: Number(form.packets_per_bag),
       base_price_per_unit: Number(form.base_price_per_unit),
       gst_percent: Number(form.gst_percent),
-      min_stock_alert: Number(form.min_stock_alert)
+      min_stock_alert: Number(form.min_stock_alert),
+      is_raw_material: !!form.is_raw_material,
+      available_for_supplyco: !!form.available_for_supplyco
     }).select().single();
     
     if (error) { alert(error.message); setSaving(false); return; }
 
     // 2. Automatically initialize this product in your current_stock table with 0 stock
-    // This ensures it instantly shows up on the "Flour Stock" page!
-    const totalBagWeight = Number(form.packet_weight_kg) * Number(form.packets_per_bag);
-    await sb.from('current_stock').insert({
-      product_type: form.product_name,
-      pack_size_kg: totalBagWeight,
-      min_threshold: Number(form.min_stock_alert),
-      packets_per_bag: Number(form.packets_per_bag),
-      qty_bags: 0
-    });
+    // Skip this for raw materials — current_stock is for finished goods only
+    if (!form.is_raw_material) {
+      const totalBagWeight = Number(form.packet_weight_kg) * Number(form.packets_per_bag);
+      await sb.from('current_stock').insert({
+        product_type: form.product_name,
+        pack_size_kg: totalBagWeight,
+        min_threshold: Number(form.min_stock_alert),
+        packets_per_bag: Number(form.packets_per_bag),
+        qty_bags: 0
+      });
+    }
 
     setProducts(p => [data, ...p]);
     setForm(blank);
@@ -1560,11 +1581,28 @@ function ProductSettings() {
             <Field label="Product Name ★"><input className="form-input" placeholder="e.g. Premium Maida" value={form.product_name} onChange={e => f('product_name', e.target.value)} /></Field>
             <Field label="Category">
               <select className="form-input" value={form.category} onChange={e => f('category', e.target.value)}>
-                <option>Finished Goods</option><option>By-Products</option><option>Trading Goods</option>
+                <option>Finished Goods</option><option>By-Products</option><option>Trading Goods</option><option>Raw Material</option>
               </select>
             </Field>
             <Field label="HSN Code"><input className="form-input" placeholder="11010000" value={form.hsn_code} onChange={e => f('hsn_code', e.target.value)} /></Field>
             
+            <div style={{gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '8px 0'}} />
+
+            <Field label="Is this a Raw Material?">
+              <label style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0'}}>
+                <input type="checkbox" checked={form.is_raw_material} onChange={e=>f('is_raw_material',e.target.checked)}/>
+                <span style={{fontSize:13}}>Yes, this is a raw material</span>
+              </label>
+            </Field>
+            {form.is_raw_material&&(
+              <Field label="Available for Supplyco inward?">
+                <label style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0'}}>
+                  <input type="checkbox" checked={form.available_for_supplyco} onChange={e=>f('available_for_supplyco',e.target.checked)}/>
+                  <span style={{fontSize:13}}>Yes, allow in Supplyco (FCI) inwards</span>
+                </label>
+              </Field>
+            )}
+
             <div style={{gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '8px 0'}} />
             
             <Field label="Single Packet Weight (kg) ★"><input type="number" className="form-input" placeholder="e.g. 1" value={form.packet_weight_kg} onChange={e => f('packet_weight_kg', e.target.value)} /></Field>
