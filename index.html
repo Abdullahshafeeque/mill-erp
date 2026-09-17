@@ -152,6 +152,14 @@ const HR_APP_URL   = 'https://facility-app-sigma.vercel.app';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+async function logActivity(section, action, details){
+  const {data:{user}} = await sb.auth.getUser();
+  await sb.from('activity_log').insert({
+    user_email: user?.email || 'unknown',
+    action, section, details
+  });
+}
+
 // ── CONSTANTS ───────────────────────────────────────────────
 const PRODUCTS  = ['NPS Atta','PHH Atta','AAY Atta','Sooji','Maida','Fine Bran','Dust','Feed','Ragi Powder','PU Atta','Broken Wheat','Puttu Podi'];
 const PACK_SIZES= {'NPS Atta':50,'PHH Atta':47.5,'AAY Atta':47.5,'Sooji':50,'Maida':50,'Fine Bran':45,'Dust':50,'Feed':50,'Ragi Powder':30,'PU Atta':50,'Broken Wheat':30,'Puttu Podi':1};
@@ -182,6 +190,7 @@ const NAV = [
   { id:'ledger',        label:'Daily Cash Book',  icon:'₹' },
   { section:'Settings' },                                    // ADD THIS
   { id:'product-master',label:'Product Master',   icon:'⚙️' }, // ADD THIS
+  { id:'activity-log',  label:'Activity Log',      icon:'📜' },
 ];
 
 // ═══════════════════════════════════════════════════════════
@@ -433,6 +442,7 @@ function Production(){
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg)).single();
     if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg));
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Production','create',`${form.product_type} — ${form.qty_produced} bags on ${form.date}`);
   };
 
   const del=async(e)=>{
@@ -441,6 +451,7 @@ function Production(){
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',e.product_type).eq('pack_size_kg',e.pack_size_kg).single();
     if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,s.qty_bags-e.qty_produced)}).eq('product_type',e.product_type).eq('pack_size_kg',e.pack_size_kg);
     setEntries(p=>p.filter(x=>x.id!==e.id));
+    logActivity('Production','delete',`${e.product_type} — ${e.qty_produced} bags on ${e.date}`);
   };
 
   if(loading) return <Loading/>;
@@ -579,6 +590,7 @@ function Dispatch(){
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',prod).eq('pack_size_kg',packKg).single();
     if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,s.qty_bags-Number(dForm.qty_bags))}).eq('product_type',prod).eq('pack_size_kg',packKg);
     setDispatches(p=>[data,...p]); setDForm(blankD); setShowDF(false); setSaving(false);
+    logActivity('Dispatch','create',`Invoice ${dForm.invoice_no} — ${dForm.qty_bags} bags to ${dForm.depot_name}`);
   };
 
   const saveWO=async()=>{
@@ -587,6 +599,7 @@ function Dispatch(){
     const {data,error}=await sb.from('work_orders').insert(wForm).select().single();
     if(error){alert(error.message);setSaving(false);return;}
     setWorkOrders(p=>[data,...p]); setWForm(blankW); setShowWO(false); setSaving(false);
+    logActivity('Dispatch','create',`Work order ${wForm.work_order_no} registered`);
   };
 
   const delD=async(d)=>{
@@ -597,6 +610,7 @@ function Dispatch(){
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',prod).eq('pack_size_kg',packKg).single();
     if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+d.qty_bags}).eq('product_type',prod).eq('pack_size_kg',packKg);
     setDispatches(p=>p.filter(x=>x.id!==d.id));
+    logActivity('Dispatch','delete',`Invoice ${d.invoice_no} — ${d.qty_bags} bags deleted`);
   };
 
   if(loading) return <Loading/>;
@@ -755,6 +769,7 @@ function FlourStock(){
     await sb.from('current_stock').update({qty_bags:nq, min_threshold:nt, max_threshold:nmx, packets_per_bag:npb, updated_at:new Date().toISOString()}).eq('id',row.id);
     setStock(p=>p.map(s=>s.id===row.id?{...s, qty_bags:nq, min_threshold:nt, max_threshold:nmx, packets_per_bag:npb}:s));
     setEditId(null); setEditVal({});
+    logActivity('Flour Stock','update',`${row.product_type} stock set to ${nq} bags`);
   };
 
   if(loading) return <Loading/>;
@@ -831,6 +846,7 @@ function Store(){
     const {data,error}=await sb.from('store_stock').insert(form).select().single();
     if(error){alert(error.message);setSaving(false);return;}
     setItems(p=>[...p,data]); setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Store','create',`New item added — ${form.item_name}`);
   };
 
   const doTxn=async(item)=>{
@@ -842,6 +858,7 @@ function Store(){
     await sb.from('store_transactions').insert({item_id:item.id,date:txnForm.date,txn_type:txnForm.type,qty:Number(txnForm.qty),notes:txnForm.notes});
     setItems(p=>p.map(x=>x.id===item.id?{...x,qty:newQty}:x));
     setShowTxn(null); setTxnForm({type:'Received',qty:'',notes:'',date:today}); setSaving(false);
+    logActivity('Store',txnForm.type==='Received'?'create':'update',`${item.item_name} — ${txnForm.type} ${txnForm.qty}`);
   };
 
   if(loading) return <Loading/>;
@@ -967,12 +984,14 @@ function Ledger(){
     const {data,error}=await sb.from('daily_ledger').insert(row).select().single();
     if(error){alert(error.message);setSaving(false);return;}
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Ledger','create',`${form.txn_type} — ₹${form.amount}`);
   };
 
   const del=async(id)=>{
     if(!confirm('Delete this entry?')) return;
     await sb.from('daily_ledger').delete().eq('id',id);
     setEntries(p=>p.filter(x=>x.id!==id));
+    logActivity('Ledger','delete',`Entry ${id} deleted`);
   };
 
   if(loading) return <Loading/>;
@@ -1097,6 +1116,7 @@ function Wheat(){
     const {data,error}=await sb.from('wheat_receipts').insert({...form,received_kg:Number(form.received_kg),allotment_kg:Number(form.allotment_kg)||0}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
     setReceipts(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Wheat','create',`Batch ${form.batch_no} — ${form.received_kg} kg received`);
   };
 
   if(loading) return <Loading/>;
@@ -1341,11 +1361,13 @@ function ProductSettings() {
     setForm(blank);
     setShowForm(false);
     setSaving(false);
+    logActivity('Product Master','create',`New product — ${form.product_name}`);
   };
 
   const toggleActive = async (id, currentStatus) => {
     await sb.from('product_master').update({ is_active: !currentStatus }).eq('id', id);
     setProducts(p => p.map(x => x.id === id ? { ...x, is_active: !currentStatus } : x));
+    logActivity('Product Master','update',`Product ${id} set to ${!currentStatus?'Active':'Archived'}`);
   };
 
   if (loading) return <Loading />;
@@ -1452,6 +1474,60 @@ function ProductSettings() {
     </div>
   );
 }
+// ═══════════════════════════════════════════════════════════
+// ACTIVITY LOG
+// ═══════════════════════════════════════════════════════════
+function ActivityLog(){
+  const [logs,setLogs]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [filterSection,setFilterSection]=useState('All');
+
+  useEffect(()=>{
+    sb.from('activity_log').select('*').order('created_at',{ascending:false}).limit(500).then(({data})=>{
+      setLogs(data||[]); setLoading(false);
+    });
+  },[]);
+
+  if(loading) return <Loading/>;
+
+  const sections=['All',...Array.from(new Set(logs.map(l=>l.section)))];
+  const filtered=filterSection==='All'?logs:logs.filter(l=>l.section===filterSection);
+
+  const actionCol=(a)=>a==='create'?'var(--green)':a==='delete'?'var(--red)':'var(--amber)';
+
+  return(
+    <div className="page">
+      <div className="page-header">
+        <div className="page-label">System</div>
+        <div className="page-title">Activity log</div>
+      </div>
+
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+        {sections.map(s=>(
+          <button key={s} className={`btn btn-sm ${filterSection===s?'btn-amber':'btn-ghost'}`} onClick={()=>setFilterSection(s)}>{s}</button>
+        ))}
+      </div>
+
+      <TableWrap>
+        <table>
+          <thead><tr><th>Time</th><th>User</th><th>Section</th><th>Action</th><th>Details</th></tr></thead>
+          <tbody>
+            {filtered.length===0&&<tr><td colSpan={5}><Empty msg="No activity recorded yet."/></td></tr>}
+            {filtered.map(l=>(
+              <tr key={l.id}>
+                <td className="mono dim">{new Date(l.created_at).toLocaleString('en-IN')}</td>
+                <td className="dim">{l.user_email}</td>
+                <td><span className="badge badge-blue">{l.section}</span></td>
+                <td><span className="badge" style={{background:actionCol(l.action)+'20',color:actionCol(l.action)}}>{l.action}</span></td>
+                <td className="dim">{l.details}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
 
 // ═══════════════════════════════════════════════════════════
 // APP ROOT
@@ -1479,6 +1555,7 @@ function App(){
     'store':<Store/>,
     'ledger':<Ledger/>,
     'product-master':<ProductSettings/>, // ADD THIS
+    'activity-log':<ActivityLog/>,
   };
 
   return(
