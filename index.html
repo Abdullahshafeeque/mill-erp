@@ -154,10 +154,11 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function logActivity(section, action, details){
   const {data:{user}} = await sb.auth.getUser();
-  await sb.from('activity_log').insert({
+  const {error} = await sb.from('activity_log').insert({
     user_email: user?.email || 'unknown',
     action, section, details
   });
+  if(error) console.error('logActivity failed:', error.message, {section, action, details});
 }
 
 // ── CONSTANTS ───────────────────────────────────────────────
