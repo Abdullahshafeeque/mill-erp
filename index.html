@@ -1281,7 +1281,7 @@ function PrivateInwards(){
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,party_name:'',material_id:'',qty_kg:'',vehicle_no:'',lorry_receipt_no:'',notes:''};
+  const blank={date:today,party_name:'',material_id:'',entry_mode:'weight',qty_bags_input:'',qty_kg:'',vehicle_no:'',lorry_receipt_no:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const [rawMaterials,setRawMaterials]=useState([]);
@@ -1291,14 +1291,24 @@ function PrivateInwards(){
     sb.from('product_master').select('*').eq('is_raw_material',true).eq('is_active',true).then(({data})=>{setRawMaterials(data||[]);});
   },[]);
 
+  const selectedMaterial=rawMaterials.find(m=>m.id===form.material_id);
+
   const save=async()=>{
-    if(!form.party_name||!form.qty_kg||!form.material_id) return alert('Party name, material and quantity required.');
+    if(!form.party_name||!form.material_id) return alert('Party name and material required.');
+    let finalKg;
+    if(form.entry_mode==='bags'&&selectedMaterial?.has_standard_weight){
+      if(!form.qty_bags_input) return alert('Enter bag count.');
+      finalKg=Number(form.qty_bags_input)*Number(selectedMaterial.bag_weight);
+    } else {
+      if(!form.qty_kg) return alert('Enter weight received.');
+      finalKg=Number(form.qty_kg);
+    }
     setSaving(true);
-    const {data,error}=await sb.from('private_inwards').insert({...form,qty_kg:Number(form.qty_kg)}).select().single();
+    const {data,error}=await sb.from('private_inwards').insert({date:form.date,party_name:form.party_name,material_id:form.material_id,qty_kg:finalKg,vehicle_no:form.vehicle_no,lorry_receipt_no:form.lorry_receipt_no,notes:form.notes}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
-    const matName=rawMaterials.find(m=>m.id===form.material_id)?.product_name||'material';
+    const matName=selectedMaterial?.product_name||'material';
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('Private Inwards','create',`${form.party_name} — ${form.qty_kg} kg of ${matName}`);
+    logActivity('Private Inwards','create',`${form.party_name} — ${finalKg} kg of ${matName}`);
   };
 
   const del=async(e)=>{
@@ -1332,7 +1342,21 @@ function PrivateInwards(){
                 {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
               </select>
             </Field>
-            <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.qty_kg} onChange={e=>f('qty_kg',e.target.value)}/></Field>
+            {selectedMaterial?.has_standard_weight&&(
+              <Field label="Entry mode">
+                <select className="form-input" value={form.entry_mode} onChange={e=>f('entry_mode',e.target.value)}>
+                  <option value="weight">Enter weight directly</option>
+                  <option value="bags">Enter bag count</option>
+                </select>
+              </Field>
+            )}
+            {(form.entry_mode==='bags'&&selectedMaterial?.has_standard_weight)?(
+              <Field label={`Bags received ★ (${selectedMaterial.bag_weight}${selectedMaterial.unit}/bag)`}>
+                <input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.qty_bags_input} onChange={e=>f('qty_bags_input',e.target.value)}/>
+              </Field>
+            ):(
+              <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.qty_kg} onChange={e=>f('qty_kg',e.target.value)}/></Field>
+            )}
             <Field label="Vehicle no."><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
             <Field label="Lorry receipt no."><input className="form-input" value={form.lorry_receipt_no} onChange={e=>f('lorry_receipt_no',e.target.value)}/></Field>
             <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
@@ -1507,7 +1531,7 @@ function ProductSettings() {
     packet_weight_kg: '', packets_per_bag: 50, base_price_per_unit: '', 
     gst_percent: 0, hsn_code: '', min_stock_alert: 0,
     is_raw_material: false, available_for_supplyco: false,
-    bag_weight: '', unit: 'kg'
+    has_standard_weight: false, bag_weight: '', unit: 'kg'
   };
   const [form, setForm] = useState(blank);
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1521,7 +1545,7 @@ function ProductSettings() {
 
   const saveProduct = async () => {
     if (!form.product_name) return alert('Product Name is required.');
-    if (form.is_raw_material && !form.bag_weight) return alert('Bag / Unit Weight is required for raw materials.');
+    if (form.is_raw_material && form.has_standard_weight && !form.bag_weight) return alert('Enter the standard bag weight, or uncheck "Has standard bag weight".');
     if (!form.is_raw_material && !form.packet_weight_kg) return alert('Packet Weight is required.');
     setSaving(true);
     
@@ -1530,7 +1554,8 @@ function ProductSettings() {
       ...form,
       packet_weight_kg: form.is_raw_material ? null : Number(form.packet_weight_kg),
       packets_per_bag: form.is_raw_material ? null : Number(form.packets_per_bag),
-      bag_weight: form.is_raw_material ? Number(form.bag_weight) : null,
+      has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
+      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight) : null,
       unit: form.is_raw_material ? form.unit : null,
       base_price_per_unit: Number(form.base_price_per_unit),
       gst_percent: Number(form.gst_percent),
@@ -1612,7 +1637,6 @@ function ProductSettings() {
 
             {form.is_raw_material ? (
               <>
-                <Field label="Bag / Unit Weight ★"><input type="number" className="form-input" placeholder="e.g. 50" value={form.bag_weight} onChange={e => f('bag_weight', e.target.value)} /></Field>
                 <Field label="Unit">
                   <select className="form-input" value={form.unit} onChange={e => f('unit', e.target.value)}>
                     <option value="kg">kg</option>
@@ -1621,6 +1645,18 @@ function ProductSettings() {
                     <option value="litre">Litre</option>
                     <option value="ton">Ton</option>
                   </select>
+                </Field>
+                <Field label="Has standard bag weight?">
+                  <label style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0'}}>
+                    <input type="checkbox" checked={form.has_standard_weight} onChange={e=>f('has_standard_weight',e.target.checked)}/>
+                    <span style={{fontSize:13}}>Yes, fixed weight per bag</span>
+                  </label>
+                </Field>
+                <Field label="Bag / Unit Weight">
+                  <input type="number" className="form-input" placeholder="e.g. 50" value={form.bag_weight}
+                    disabled={!form.has_standard_weight}
+                    style={!form.has_standard_weight?{opacity:0.5,cursor:'not-allowed'}:{}}
+                    onChange={e => f('bag_weight', e.target.value)} />
                 </Field>
                 <Field label="Min. Alert"><input type="number" className="form-input" value={form.min_stock_alert} onChange={e => f('min_stock_alert', e.target.value)} /></Field>
               </>
@@ -1670,7 +1706,9 @@ function ProductSettings() {
                   </td>
                   <td>
                     {p.is_raw_material ? (
-                      <div><strong className="mono">{fmt(p.bag_weight)} {p.unit}</strong> per unit</div>
+                      p.has_standard_weight
+                        ? <div><strong className="mono">{fmt(p.bag_weight)} {p.unit}</strong> per bag</div>
+                        : <div className="dim">Variable weight ({p.unit})</div>
                     ) : (
                       <>
                         <div><strong className="mono">{p.packet_weight_kg}kg</strong> pkt</div>
