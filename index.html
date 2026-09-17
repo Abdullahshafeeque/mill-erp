@@ -180,17 +180,17 @@ const NAV = [
   { id:'dashboard',     label:'Dashboard',        icon:'⬡' },
   { id:'production',    label:'Production',       icon:'⚙' },
   { id:'dispatch',      label:'Supplyco Dispatch',icon:'🚛' },
-  { id:'wheat',         label:'Wheat Inwards',    icon:'🌾' },
+  { id:'private-dispatch',label:'Private Dispatch',icon:'🚚' },
+  { id:'wheat',         label:'FCI Inwards',      icon:'🌾' },
+  { id:'private-inwards',label:'Private Inwards', icon:'🌿' },
   { id:'reconciliation',label:'Reconciliation',   icon:'📊' },
   { section:'Inventory' },
   { id:'flour-stock',   label:'Flour Stock',      icon:'◫' },
   { id:'store',         label:'Store & Materials', icon:'📦' },
   { section:'Finance' },
   { id:'ledger',        label:'Daily Cash Book',  icon:'₹' },
-  { section:'Finance' },
-  { id:'ledger',        label:'Daily Cash Book',  icon:'₹' },
-  { section:'Settings' },                                    // ADD THIS
-  { id:'product-master',label:'Product Master',   icon:'⚙️' }, // ADD THIS
+  { section:'Settings' },
+  { id:'product-master',label:'Product Master',   icon:'⚙️' },
   { id:'activity-log',  label:'Activity Log',      icon:'📜' },
 ];
 
@@ -1179,6 +1179,176 @@ function Wheat(){
 }
 
 // ═══════════════════════════════════════════════════════════
+// PRIVATE DISPATCH
+// ═══════════════════════════════════════════════════════════
+function PrivateDispatch(){
+  const [entries,setEntries]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const blank={date:today,party_name:'',product_type:'NPS Atta',qty_bags:'',vehicle_no:'',invoice_no:'',notes:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  useEffect(()=>{
+    sb.from('private_dispatches').select('*').gte('date',monthStart).order('date',{ascending:false}).then(({data})=>{setEntries(data||[]);setLoading(false);});
+  },[]);
+
+  const save=async()=>{
+    if(!form.party_name||!form.qty_bags) return alert('Party name and quantity required.');
+    setSaving(true);
+    const {data,error}=await sb.from('private_dispatches').insert({...form,qty_bags:Number(form.qty_bags)}).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Private Dispatch','create',`${form.party_name} — ${form.qty_bags} bags of ${form.product_type}`);
+  };
+
+  const del=async(e)=>{
+    if(!confirm('Delete entry?')) return;
+    await sb.from('private_dispatches').delete().eq('id',e.id);
+    setEntries(p=>p.filter(x=>x.id!==e.id));
+    logActivity('Private Dispatch','delete',`${e.party_name} — ${e.qty_bags} bags`);
+  };
+
+  if(loading) return <Loading/>;
+  const total=entries.reduce((s,e)=>s+Number(e.qty_bags),0);
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Sales</div>
+          <div className="page-title">Private dispatch — this month: {fmt(total)} bags</div>
+        </div>
+        <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ Log dispatch</button>
+      </div>
+
+      {showForm&&(
+        <FormCard title="Log private dispatch" col="var(--green)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
+            <Field label="Party name ★"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
+            <Field label="Product">
+              <select className="form-input" value={form.product_type} onChange={e=>f('product_type',e.target.value)}>
+                {PRODUCTS.map(p=><option key={p}>{p}</option>)}
+              </select>
+            </Field>
+            <Field label="Bags dispatched ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.qty_bags} onChange={e=>f('qty_bags',e.target.value)}/></Field>
+            <Field label="Vehicle no."><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
+            <Field label="Invoice no."><input className="form-input" value={form.invoice_no} onChange={e=>f('invoice_no',e.target.value)}/></Field>
+            <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
+          </div>
+        </FormCard>
+      )}
+
+      <TableWrap>
+        <table>
+          <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Bags</th><th>Vehicle</th><th>Invoice</th><th>Notes</th><th></th></tr></thead>
+          <tbody>
+            {entries.length===0&&<tr><td colSpan={8}><Empty msg="No private dispatches this month."/></td></tr>}
+            {entries.map(e=>(
+              <tr key={e.id}>
+                <td className="mono dim">{e.date}</td>
+                <td><strong>{e.party_name}</strong></td>
+                <td>{e.product_type}</td>
+                <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmt(e.qty_bags)}</strong></td>
+                <td className="dim">{e.vehicle_no||'—'}</td>
+                <td className="dim">{e.invoice_no||'—'}</td>
+                <td className="dim">{e.notes||'—'}</td>
+                <td><button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// PRIVATE INWARDS
+// ═══════════════════════════════════════════════════════════
+function PrivateInwards(){
+  const [entries,setEntries]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const blank={date:today,party_name:'',material:'Wheat',qty_kg:'',vehicle_no:'',lorry_receipt_no:'',notes:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  useEffect(()=>{
+    sb.from('private_inwards').select('*').gte('date',monthStart).order('date',{ascending:false}).then(({data})=>{setEntries(data||[]);setLoading(false);});
+  },[]);
+
+  const save=async()=>{
+    if(!form.party_name||!form.qty_kg) return alert('Party name and quantity required.');
+    setSaving(true);
+    const {data,error}=await sb.from('private_inwards').insert({...form,qty_kg:Number(form.qty_kg)}).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Private Inwards','create',`${form.party_name} — ${form.qty_kg} kg of ${form.material}`);
+  };
+
+  const del=async(e)=>{
+    if(!confirm('Delete entry?')) return;
+    await sb.from('private_inwards').delete().eq('id',e.id);
+    setEntries(p=>p.filter(x=>x.id!==e.id));
+    logActivity('Private Inwards','delete',`${e.party_name} — ${e.qty_kg} kg`);
+  };
+
+  if(loading) return <Loading/>;
+  const total=entries.reduce((s,e)=>s+Number(e.qty_kg),0);
+
+  return(
+    <div className="page">
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+        <div className="page-header" style={{marginBottom:0}}>
+          <div className="page-label">Raw Materials</div>
+          <div className="page-title">Private inwards — this month: {fmtMT(total)}</div>
+        </div>
+        <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Log receipt</button>
+      </div>
+
+      {showForm&&(
+        <FormCard title="Log private inward receipt" col="var(--amber)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
+            <Field label="Party name ★"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
+            <Field label="Material"><input className="form-input" value={form.material} onChange={e=>f('material',e.target.value)}/></Field>
+            <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.qty_kg} onChange={e=>f('qty_kg',e.target.value)}/></Field>
+            <Field label="Vehicle no."><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
+            <Field label="Lorry receipt no."><input className="form-input" value={form.lorry_receipt_no} onChange={e=>f('lorry_receipt_no',e.target.value)}/></Field>
+            <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
+          </div>
+        </FormCard>
+      )}
+
+      <TableWrap>
+        <table>
+          <thead><tr><th>Date</th><th>Party</th><th>Material</th><th>Received</th><th>Vehicle</th><th>Lorry receipt</th><th>Notes</th><th></th></tr></thead>
+          <tbody>
+            {entries.length===0&&<tr><td colSpan={8}><Empty msg="No private inwards this month."/></td></tr>}
+            {entries.map(e=>(
+              <tr key={e.id}>
+                <td className="mono dim">{e.date}</td>
+                <td><strong>{e.party_name}</strong></td>
+                <td>{e.material}</td>
+                <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmtMT(e.qty_kg)}</strong></td>
+                <td className="dim">{e.vehicle_no||'—'}</td>
+                <td className="dim">{e.lorry_receipt_no||'—'}</td>
+                <td className="dim">{e.notes||'—'}</td>
+                <td><button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // RECONCILIATION
 // ═══════════════════════════════════════════════════════════
 function Reconciliation(){
@@ -1555,6 +1725,8 @@ function App(){
     'flour-stock':<FlourStock/>,
     'store':<Store/>,
     'ledger':<Ledger/>,
+    'private-dispatch':<PrivateDispatch/>,
+    'private-inwards':<PrivateInwards/>,
     'product-master':<ProductSettings/>, // ADD THIS
     'activity-log':<ActivityLog/>,
   };
