@@ -1609,23 +1609,12 @@ function ProductSettings() {
             <Field label="Packets per Master Bag"><input type="number" className="form-input" value={form.packets_per_bag} onChange={e => f('packets_per_bag', e.target.value)} /></Field>
             <Field label="Min. Alert (Bags)"><input type="number" className="form-input" value={form.min_stock_alert} onChange={e => f('min_stock_alert', e.target.value)} /></Field>
             
-            <div style={{gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '8px 0'}} />
-
-            <Field label="Base Price / Packet (₹)"><input type="number" className="form-input" value={form.base_price_per_unit} onChange={e => f('base_price_per_unit', e.target.value)} /></Field>
-            <Field label="GST (%)">
-              <select className="form-input" value={form.gst_percent} onChange={e => f('gst_percent', e.target.value)}>
-                <option value="0">0% (Exempt)</option><option value="5">5%</option><option value="12">12%</option><option value="18">18%</option>
-              </select>
-            </Field>
           </div>
           
           {/* Helpful summary calculator for the user */}
           {form.packet_weight_kg && form.packets_per_bag && (
             <div style={{ marginTop: 16, padding: '12px 16px', background: 'var(--surface2)', borderRadius: 6, fontSize: 12, border: '1px solid var(--border)' }}>
-              <strong>Configuration Summary:</strong> Master bag will weigh <strong>{Number(form.packet_weight_kg) * Number(form.packets_per_bag)} kg</strong>. 
-              {form.base_price_per_unit && (
-                <span> Final price to customer (incl. GST): <strong>₹{(Number(form.base_price_per_unit) * (1 + Number(form.gst_percent)/100)).toFixed(2)}</strong> per packet.</span>
-              )}
+              <strong>Configuration Summary:</strong> Master bag will weigh <strong>{Number(form.packet_weight_kg) * Number(form.packets_per_bag)} kg</strong>.
             </div>
           )}
         </FormCard>
@@ -1638,7 +1627,6 @@ function ProductSettings() {
               <th>Code / HSN</th>
               <th>Product Details</th>
               <th>Packaging</th>
-              <th>Pricing (₹)</th>
               <th>Min Alert</th>
               <th>Status</th>
             </tr>
@@ -1661,10 +1649,6 @@ function ProductSettings() {
                   <td>
                     <div><strong className="mono">{p.packet_weight_kg}kg</strong> pkt</div>
                     <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p.packets_per_bag} pkts / bag ({totalBagKg}kg total)</div>
-                  </td>
-                  <td>
-                    <div className="mono">₹{fmt(p.base_price_per_unit, 2)} base</div>
-                    <div style={{ fontSize: 11, color: 'var(--green)' }}>₹{fmt(finalPrice, 2)} incl. {p.gst_percent}% GST</div>
                   </td>
                   <td className="mono dim">{p.min_stock_alert} bags</td>
                   <td>
