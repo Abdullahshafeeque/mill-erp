@@ -1701,6 +1701,60 @@ function ProductSettings() {
     logActivity('Product Master','update',`Product ${id} set to ${!currentStatus?'Active':'Archived'}`);
   };
 
+  const [editingProduct,setEditingProduct]=useState(null);
+
+  const startEditProduct=(p)=>{
+    setEditingProduct(p.id);
+    setForm({
+      product_code:p.product_code||'', product_name:p.product_name||'', category:p.category||'Finished Goods',
+      packet_weight_kg:p.packet_weight_kg||'', packets_per_bag:p.packets_per_bag||50, base_price_per_unit:p.base_price_per_unit||'',
+      gst_percent:p.gst_percent||0, hsn_code:p.hsn_code||'', min_stock_alert:p.min_stock_alert||0,
+      is_raw_material:!!p.is_raw_material, available_for_supplyco:!!p.available_for_supplyco,
+      has_standard_weight:!!p.has_standard_weight, bag_weight:p.bag_weight||'', unit:p.unit||'kg',
+      has_schemes:!!p.has_schemes, scheme_list:p.scheme_list||''
+    });
+    setShowForm(true);
+  };
+
+  const updateProduct=async()=>{
+    if(!form.product_name) return alert('Product Name is required.');
+    if(form.is_raw_material && form.has_standard_weight && !form.bag_weight) return alert('Enter the standard bag weight, or uncheck "Has standard bag weight".');
+    if(!form.is_raw_material && !form.packet_weight_kg) return alert('Packet Weight is required.');
+    setSaving(true);
+    const payload={
+      ...form,
+      packet_weight_kg: form.is_raw_material ? null : Number(form.packet_weight_kg),
+      packets_per_bag: form.is_raw_material ? null : Number(form.packets_per_bag),
+      has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
+      has_schemes: form.is_raw_material ? !!form.has_schemes : false,
+      scheme_list: (form.is_raw_material && form.has_schemes) ? form.scheme_list : null,
+      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight) : null,
+      unit: form.is_raw_material ? form.unit : null,
+      base_price_per_unit: Number(form.base_price_per_unit),
+      gst_percent: Number(form.gst_percent),
+      min_stock_alert: Number(form.min_stock_alert),
+      available_for_supplyco: !!form.available_for_supplyco
+    };
+    const {error}=await sb.from('product_master').update(payload).eq('id',editingProduct);
+    if(error){alert(error.message);setSaving(false);return;}
+
+    // Sync yield_configs: create any missing scheme rows, leave existing ones untouched
+    if(payload.is_raw_material && payload.has_schemes && payload.scheme_list){
+      const schemes=payload.scheme_list.split(',').map(s=>s.trim()).filter(Boolean);
+      const {data:existingCfgs}=await sb.from('yield_configs').select('*').eq('material_id',editingProduct);
+      for(const s of schemes){
+        if(!(existingCfgs||[]).some(c=>c.scheme===s)){
+          const {data:cfg}=await sb.from('yield_configs').insert({material_id:editingProduct,scheme:s}).select().single();
+          if(cfg) await sb.from('yield_config_outputs').insert({yield_config_id:cfg.id,output_name:'Primary Output',output_pct:100,is_primary_product:true});
+        }
+      }
+    }
+
+    setProducts(p=>p.map(x=>x.id===editingProduct?{...x,...payload}:x));
+    setForm(blank); setShowForm(false); setEditingProduct(null); setSaving(false);
+    logActivity('Product Master','update',`Edited product — ${form.product_name}`);
+  };
+
   const deleteProduct = async (p) => {
     if(!confirm(`Delete "${p.product_name}"? This will also remove its stock and scheme balance records. This cannot be undone.`)) return;
     await sb.from('raw_material_scheme_stock').delete().eq('material_id', p.id);
@@ -1719,11 +1773,11 @@ function ProductSettings() {
           <div className="page-label">System Settings</div>
           <div className="page-title">Product Master List</div>
         </div>
-        <button className="btn btn-amber" onClick={() => setShowForm(v => !v)}>+ Add New Product</button>
+        <button className="btn btn-amber" onClick={() => { setEditingProduct(null); setForm(blank); setShowForm(v => !v); }}>+ Add New Product</button>
       </div>
 
       {showForm && (
-        <FormCard title="Register New Product" col="var(--amber)" onSave={saveProduct} onCancel={() => setShowForm(false)} saving={saving}>
+        <FormCard title={editingProduct?"Edit Product":"Register New Product"} col="var(--amber)" onSave={editingProduct?updateProduct:saveProduct} onCancel={() => { setShowForm(false); setEditingProduct(null); setForm(blank); }} saving={saving}>
           <div className="form-grid">
             <Field label="Product Code / SKU"><input className="form-input" placeholder="e.g. AAY-47" value={form.product_code} onChange={e => f('product_code', e.target.value)} /></Field>
             <Field label="Product Name ★"><input className="form-input" placeholder="e.g. Premium Maida" value={form.product_name} onChange={e => f('product_name', e.target.value)} /></Field>
@@ -1855,7 +1909,10 @@ function ProductSettings() {
                     </button>
                   </td>
                   <td>
-                    <button className="btn btn-red btn-sm" onClick={() => deleteProduct(p)}>✕ Delete</button>
+                    <div style={{display:'flex',gap:6}}>
+                      <button className="btn btn-blue btn-sm" onClick={() => startEditProduct(p)}>Edit</button>
+                      <button className="btn btn-red btn-sm" onClick={() => deleteProduct(p)}>✕ Delete</button>
+                    </div>
                   </td>
                 </tr>
               );
