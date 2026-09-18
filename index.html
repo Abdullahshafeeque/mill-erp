@@ -446,7 +446,7 @@ function Production(){
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg)).single();
     if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg));
 
-    // Auto-calculate wheat deduction + by-product output using the generic yield config for this scheme
+    // Auto-calculate wheat deduction + credit each linked output product's stock
     const productScheme=form.product_type==='NPS Atta'?'NPS':form.product_type==='PHH Atta'?'PHH':form.product_type==='AAY Atta'?'AAY':null;
     if(productScheme){
       const attaKgProduced=Number(form.qty_produced)*Number(form.pack_size_kg);
@@ -467,15 +467,32 @@ function Production(){
               await sb.from('raw_material_scheme_stock').insert({material_id:wheatMaterial.id,scheme:productScheme,qty_kg:-wheatRequiredKg});
             }
 
-            // Credit each non-primary output — Bran goes to Supplyco Bran bucket by name match; others just logged
+            // Credit each non-primary output's actual stock, generically by product
             const byproductSummary=[];
             for(const o of (cfgOutputs||[])){
-              if(o.is_primary_product) continue;
+              if(o.is_primary_product || !o.output_product_id) continue;
               const outKg=wheatRequiredKg*(Number(o.output_pct)/100);
-              byproductSummary.push(`${o.output_name} ${outKg.toFixed(1)}kg`);
-              if(o.output_name.toLowerCase()==='bran'){
-                const {data:branBucket}=await sb.from('bran_stock').select('*').eq('bucket','Supplyco Bran').maybeSingle();
-                if(branBucket) await sb.from('bran_stock').update({qty_kg:Number(branBucket.qty_kg)+outKg,updated_at:new Date().toISOString()}).eq('id',branBucket.id);
+              const outProduct=(await sb.from('product_master').select('*').eq('id',o.output_product_id).maybeSingle()).data;
+              if(!outProduct) continue;
+              byproductSummary.push(`${outProduct.product_name} ${outKg.toFixed(1)}kg`);
+
+              if(outProduct.is_raw_material){
+                // Credit as a raw-material-style stock — using a generic bucket keyed by product name for now (bran_stock table)
+                const bucketName=outProduct.product_name.toLowerCase().includes('bran')?
+                  (productScheme==='Private'?'Private Bran':'Supplyco Bran') : outProduct.product_name;
+                const {data:existingBucket}=await sb.from('bran_stock').select('*').eq('bucket',bucketName).maybeSingle();
+                if(existingBucket){
+                  await sb.from('bran_stock').update({qty_kg:Number(existingBucket.qty_kg)+outKg,updated_at:new Date().toISOString()}).eq('id',existingBucket.id);
+                } else {
+                  await sb.from('bran_stock').insert({bucket:bucketName,qty_kg:outKg});
+                }
+              } else {
+                // Credit as finished-goods stock in current_stock, converting kg to bags using the product's own pack size
+                const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_type',outProduct.product_name).maybeSingle();
+                if(stockRow&&stockRow.pack_size_kg>0){
+                  const bagsToAdd=outKg/Number(stockRow.pack_size_kg);
+                  await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsToAdd,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+                }
               }
             }
 
@@ -2041,45 +2058,54 @@ function SchemeBalances(){
 }
 
 // ═══════════════════════════════════════════════════════════
-// YIELD RATIOS SETTINGS (generic, per raw material)
+// YIELD RATIOS SETTINGS (generic, per raw material, product-linked outputs)
 // ═══════════════════════════════════════════════════════════
 function YieldRatios(){
   const [materials,setMaterials]=useState([]);
   const [configs,setConfigs]=useState([]);
   const [outputs,setOutputs]=useState([]);
+  const [allProducts,setAllProducts]=useState([]);
   const [loading,setLoading]=useState(true);
   const [editCfgId,setEditCfgId]=useState(null);
-  const [editRows,setEditRows]=useState([]); // working copy of outputs while editing
+  const [editRows,setEditRows]=useState([]);
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:m},{data:c},{data:o}]=await Promise.all([
+    const [{data:m},{data:c},{data:o},{data:p}]=await Promise.all([
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true),
       sb.from('yield_configs').select('*'),
       sb.from('yield_config_outputs').select('*'),
+      sb.from('product_master').select('*').eq('is_active',true),
     ]);
-    setMaterials(m||[]); setConfigs(c||[]); setOutputs(o||[]); setLoading(false);
+    setMaterials(m||[]); setConfigs(c||[]); setOutputs(o||[]); setAllProducts(p||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
+
+  const productName=(id)=>allProducts.find(p=>p.id===id)?.product_name||'—';
 
   const startEdit=(cfg)=>{
     setEditCfgId(cfg.id);
     const rows=outputs.filter(o=>o.yield_config_id===cfg.id);
-    setEditRows(rows.length?rows.map(r=>({...r})):[{output_name:'',output_pct:'',is_primary_product:true}]);
+    setEditRows(rows.length?rows.map(r=>({...r})):[{output_product_id:'',output_pct:'',is_primary_product:true}]);
   };
 
-  const addRow=()=>setEditRows(p=>[...p,{output_name:'',output_pct:'',is_primary_product:false}]);
+  const addRow=()=>setEditRows(p=>[...p,{output_product_id:'',output_pct:'',is_primary_product:false}]);
   const removeRow=(i)=>setEditRows(p=>p.filter((_,idx)=>idx!==i));
   const updateRow=(i,k,v)=>setEditRows(p=>p.map((r,idx)=>idx===i?{...r,[k]:v}:r));
 
   const saveConfig=async(cfg)=>{
     const total=editRows.reduce((s,r)=>s+Number(r.output_pct||0),0);
     if(Math.abs(total-100)>0.01) return alert('Output percentages must add up to 100. Currently: '+total+'%');
-    if(editRows.some(r=>!r.output_name.trim())) return alert('Every output needs a name.');
+    if(editRows.some(r=>!r.output_product_id)) return alert('Every output needs a product selected.');
 
-    // Delete existing outputs for this config, then re-insert (simplest correct approach for variable row count)
     await sb.from('yield_config_outputs').delete().eq('yield_config_id',cfg.id);
-    const toInsert=editRows.map(r=>({yield_config_id:cfg.id,output_name:r.output_name.trim(),output_pct:Number(r.output_pct),is_primary_product:!!r.is_primary_product}));
+    const toInsert=editRows.map(r=>({
+      yield_config_id:cfg.id,
+      output_product_id:r.output_product_id,
+      output_name:productName(r.output_product_id),
+      output_pct:Number(r.output_pct),
+      is_primary_product:!!r.is_primary_product
+    }));
     await sb.from('yield_config_outputs').insert(toInsert);
 
     setEditCfgId(null); setEditRows([]);
@@ -2096,10 +2122,11 @@ function YieldRatios(){
         <div className="page-title">Yield ratios by material & scheme</div>
       </div>
       <div style={{marginBottom:16,padding:'10px 16px',background:'var(--blue)10',border:'1px solid var(--blue)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
-        For every 1kg of a scheme-divided raw material, define what outputs it splits into (e.g. Atta, Bran, Refraction) and what % each output represents. Percentages per scheme must total 100. Mark the main finished-goods output as "Primary".
+        For every 1kg of a scheme-divided raw material, pick which existing products it splits into (e.g. Atta, Bran) and what % each represents. Percentages per scheme must total 100. Mark the main finished-goods output as "Primary".
       </div>
 
       {materials.length===0&&<div className="card"><Empty msg="No scheme-divided raw materials configured yet. Enable 'Divided into schemes?' on a raw material in Product Master first."/></div>}
+      {allProducts.length===0&&materials.length>0&&<div className="card"><Empty msg="No products exist yet to select as outputs. Add Atta, Bran, etc. in Product Master first."/></div>}
 
       {materials.map(mat=>{
         const matConfigs=configs.filter(c=>c.material_id===mat.id);
@@ -2121,7 +2148,10 @@ function YieldRatios(){
                             <div style={{display:'flex',flexDirection:'column',gap:8}}>
                               {editRows.map((r,i)=>(
                                 <div key={i} style={{display:'flex',gap:8,alignItems:'center'}}>
-                                  <input className="form-input" style={{width:140}} placeholder="Output name" value={r.output_name} onChange={e=>updateRow(i,'output_name',e.target.value)}/>
+                                  <select className="form-input" style={{width:180}} value={r.output_product_id} onChange={e=>updateRow(i,'output_product_id',e.target.value)}>
+                                    <option value="">-- Select product --</option>
+                                    {allProducts.map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
+                                  </select>
                                   <input type="number" className="form-input" style={{width:80}} placeholder="%" value={r.output_pct} onChange={e=>updateRow(i,'output_pct',e.target.value)}/>
                                   <label style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'var(--muted)'}}>
                                     <input type="checkbox" checked={!!r.is_primary_product} onChange={e=>updateRow(i,'is_primary_product',e.target.checked)}/> Primary
@@ -2139,7 +2169,7 @@ function YieldRatios(){
                               {cfgOutputs.length===0&&<span className="dim">Not configured</span>}
                               {cfgOutputs.map(o=>(
                                 <span key={o.id} className="badge" style={{background:o.is_primary_product?'var(--green)20':'var(--border)',color:o.is_primary_product?'var(--green)':'var(--muted)'}}>
-                                  {o.output_name} {o.output_pct}%
+                                  {productName(o.output_product_id)} {o.output_pct}%
                                 </span>
                               ))}
                             </div>
