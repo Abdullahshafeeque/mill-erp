@@ -1648,7 +1648,8 @@ function ProductSettings() {
     packet_weight_kg: '', packets_per_bag: 50, base_price_per_unit: '', 
     gst_percent: 0, hsn_code: '', min_stock_alert: 0,
     is_raw_material: false, available_for_supplyco: false,
-    has_standard_weight: false, bag_weight: '', unit: 'kg', has_schemes: false, scheme_list: 'NPS,PHH,AAY,Private'
+    has_standard_weight: false, bag_weight: '', unit: 'kg', has_schemes: false, scheme_list: 'NPS,PHH,AAY,Private',
+    packing_type: 'packeted'
   };
   const [form, setForm] = useState(blank);
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1663,7 +1664,8 @@ function ProductSettings() {
   const saveProduct = async () => {
     if (!form.product_name) return alert('Product Name is required.');
     if (form.is_raw_material && form.has_standard_weight && !form.bag_weight) return alert('Enter the standard bag weight, or uncheck "Has standard bag weight".');
-    if (!form.is_raw_material && !form.packet_weight_kg) return alert('Packet Weight is required.');
+    if (!form.is_raw_material && form.packing_type === 'packeted' && !form.packet_weight_kg) return alert('Packet Weight is required.');
+    if (!form.is_raw_material && form.packing_type === 'loose' && !form.bag_weight) return alert('Bag / Unit Weight is required for loose/bulk products.');
     setSaving(true);
     
     // 1. Save to Product Master
@@ -1674,8 +1676,12 @@ function ProductSettings() {
       has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
       has_schemes: form.is_raw_material ? !!form.has_schemes : false,
       scheme_list: (form.is_raw_material && form.has_schemes) ? form.scheme_list : null,
-      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight) : null,
-      unit: form.is_raw_material ? form.unit : null,
+      packing_type: form.is_raw_material ? null : form.packing_type,
+      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight)
+                : (!form.is_raw_material && form.packing_type==='loose') ? Number(form.bag_weight) : null,
+      unit: form.is_raw_material ? form.unit : (form.packing_type==='loose' ? form.unit : null),
+      packet_weight_kg: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packet_weight_kg) : null,
+      packets_per_bag: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packets_per_bag) : null,
       base_price_per_unit: Number(form.base_price_per_unit),
       gst_percent: Number(form.gst_percent),
       min_stock_alert: Number(form.min_stock_alert),
@@ -1688,12 +1694,14 @@ function ProductSettings() {
     // 2. Automatically initialize this product in your current_stock table with 0 stock
     // Skip this for raw materials — current_stock is for finished goods only
     if (!form.is_raw_material) {
-      const totalBagWeight = Number(form.packet_weight_kg) * Number(form.packets_per_bag);
+      const totalBagWeight = form.packing_type==='loose'
+        ? Number(form.bag_weight)
+        : Number(form.packet_weight_kg) * Number(form.packets_per_bag);
       await sb.from('current_stock').insert({
         product_type: form.product_name,
         pack_size_kg: totalBagWeight,
         min_threshold: Number(form.min_stock_alert),
-        packets_per_bag: Number(form.packets_per_bag),
+        packets_per_bag: form.packing_type==='loose' ? 1 : Number(form.packets_per_bag),
         qty_bags: 0
       });
     }
@@ -1730,7 +1738,8 @@ function ProductSettings() {
       gst_percent:p.gst_percent||0, hsn_code:p.hsn_code||'', min_stock_alert:p.min_stock_alert||0,
       is_raw_material:!!p.is_raw_material, available_for_supplyco:!!p.available_for_supplyco,
       has_standard_weight:!!p.has_standard_weight, bag_weight:p.bag_weight||'', unit:p.unit||'kg',
-      has_schemes:!!p.has_schemes, scheme_list:p.scheme_list||''
+      has_schemes:!!p.has_schemes, scheme_list:p.scheme_list||'',
+      packing_type:p.packing_type||'packeted'
     });
     setShowForm(true);
   };
@@ -1742,13 +1751,15 @@ function ProductSettings() {
     setSaving(true);
     const payload={
       ...form,
-      packet_weight_kg: form.is_raw_material ? null : Number(form.packet_weight_kg),
-      packets_per_bag: form.is_raw_material ? null : Number(form.packets_per_bag),
       has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
       has_schemes: form.is_raw_material ? !!form.has_schemes : false,
       scheme_list: (form.is_raw_material && form.has_schemes) ? form.scheme_list : null,
-      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight) : null,
-      unit: form.is_raw_material ? form.unit : null,
+      packing_type: form.is_raw_material ? null : form.packing_type,
+      packet_weight_kg: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packet_weight_kg) : null,
+      packets_per_bag: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packets_per_bag) : null,
+      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight)
+                : (!form.is_raw_material && form.packing_type==='loose') ? Number(form.bag_weight) : null,
+      unit: form.is_raw_material ? form.unit : (form.packing_type==='loose' ? form.unit : null),
       base_price_per_unit: Number(form.base_price_per_unit),
       gst_percent: Number(form.gst_percent),
       min_stock_alert: Number(form.min_stock_alert),
@@ -1826,6 +1837,15 @@ function ProductSettings() {
 
             <div style={{gridColumn: '1 / -1', height: 1, background: 'var(--border)', margin: '8px 0'}} />
 
+            {!form.is_raw_material && (
+              <Field label="How is it packed?">
+                <select className="form-input" value={form.packing_type} onChange={e => f('packing_type', e.target.value)}>
+                  <option value="packeted">Packeted (small packets inside a bag)</option>
+                  <option value="loose">Loose / Bulk (just bags, no inner packets)</option>
+                </select>
+              </Field>
+            )}
+
             {form.is_raw_material ? (
               <>
                 <Field label="Unit">
@@ -1861,6 +1881,20 @@ function ProductSettings() {
                     onChange={e => f('bag_weight', e.target.value)} />
                 </Field>
                 <Field label="Min. Alert"><input type="number" className="form-input" value={form.min_stock_alert} onChange={e => f('min_stock_alert', e.target.value)} /></Field>
+              </>
+            ) : form.packing_type === 'loose' ? (
+              <>
+                <Field label="Bag / Unit Weight ★"><input type="number" className="form-input" placeholder="e.g. 45" value={form.bag_weight} onChange={e => f('bag_weight', e.target.value)} /></Field>
+                <Field label="Unit">
+                  <select className="form-input" value={form.unit} onChange={e => f('unit', e.target.value)}>
+                    <option value="kg">kg</option>
+                    <option value="quintal">Quintal</option>
+                    <option value="bag">Bag</option>
+                    <option value="litre">Litre</option>
+                    <option value="ton">Ton</option>
+                  </select>
+                </Field>
+                <Field label="Min. Alert (Bags)"><input type="number" className="form-input" value={form.min_stock_alert} onChange={e => f('min_stock_alert', e.target.value)} /></Field>
               </>
             ) : (
               <>
@@ -1912,6 +1946,8 @@ function ProductSettings() {
                       p.has_standard_weight
                         ? <div><strong className="mono">{fmt(p.bag_weight)} {p.unit}</strong> per bag</div>
                         : <div className="dim">Variable weight ({p.unit})</div>
+                    ) : p.packing_type === 'loose' ? (
+                      <div><strong className="mono">{fmt(p.bag_weight)} {p.unit}</strong> per bag (loose)</div>
                     ) : (
                       <>
                         <div><strong className="mono">{p.packet_weight_kg}kg</strong> pkt</div>
