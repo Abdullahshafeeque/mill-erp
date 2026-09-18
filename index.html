@@ -184,6 +184,8 @@ const NAV = [
   { id:'wheat',         label:'FCI Inwards',      icon:'🌾' },
   { id:'private-inwards',label:'Private Inwards', icon:'🌿' },
   { id:'scheme-balances',label:'Scheme Balances', icon:'📋' },
+  { id:'yield-ratios',   label:'Yield Ratios',    icon:'🧮' },
+  { id:'bran-stock',     label:'Bran Stock',       icon:'🌾' },
   { id:'reconciliation',label:'Reconciliation',   icon:'📊' },
   { section:'Inventory' },
   { id:'flour-stock',   label:'Flour Stock',      icon:'◫' },
@@ -444,19 +446,32 @@ function Production(){
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg)).single();
     if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg));
 
-    // Deduct wheat used from the matching scheme's bucket — can go negative, that's expected
-    if(Number(form.wheat_used_kg)>0){
-      const productScheme=form.product_type==='NPS Atta'?'NPS':form.product_type==='PHH Atta'?'PHH':form.product_type==='AAY Atta'?'AAY':null;
-      if(productScheme){
+    // Auto-calculate wheat deduction + bran/refraction output based on this scheme's yield ratio
+    const productScheme=form.product_type==='NPS Atta'?'NPS':form.product_type==='PHH Atta'?'PHH':form.product_type==='AAY Atta'?'AAY':null;
+    if(productScheme){
+      const attaKgProduced=Number(form.qty_produced)*Number(form.pack_size_kg);
+      const {data:ratio}=await sb.from('yield_ratios').select('*').eq('scheme',productScheme).maybeSingle();
+      if(ratio&&Number(ratio.atta_pct)>0){
+        const wheatRequiredKg=attaKgProduced/(Number(ratio.atta_pct)/100);
+        const branKg=wheatRequiredKg*(Number(ratio.bran_pct)/100);
+        const refractionKg=wheatRequiredKg*(Number(ratio.refraction_pct)/100);
+
+        // Deduct wheat from the scheme's bucket (can go negative — expected)
         const wheatMaterial=(await sb.from('product_master').select('id').eq('product_name','Wheat').maybeSingle()).data;
         if(wheatMaterial){
           const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('material_id',wheatMaterial.id).eq('scheme',productScheme).maybeSingle();
           if(bucket){
-            await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-Number(form.wheat_used_kg),updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-wheatRequiredKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
           } else {
-            await sb.from('raw_material_scheme_stock').insert({material_id:wheatMaterial.id,scheme:productScheme,qty_kg:-Number(form.wheat_used_kg)});
+            await sb.from('raw_material_scheme_stock').insert({material_id:wheatMaterial.id,scheme:productScheme,qty_kg:-wheatRequiredKg});
           }
         }
+
+        // Credit Supplyco Bran bucket
+        const {data:branBucket}=await sb.from('bran_stock').select('*').eq('bucket','Supplyco Bran').maybeSingle();
+        if(branBucket) await sb.from('bran_stock').update({qty_kg:Number(branBucket.qty_kg)+branKg,updated_at:new Date().toISOString()}).eq('id',branBucket.id);
+
+        logActivity('Production','update',`${productScheme}: ${wheatRequiredKg.toFixed(1)}kg wheat used, ${branKg.toFixed(1)}kg bran + ${refractionKg.toFixed(1)}kg refraction produced`);
       }
     }
 
@@ -1434,6 +1449,34 @@ function PrivateInwards(){
 }
 
 // ═══════════════════════════════════════════════════════════
+// BRAN STOCK
+// ═══════════════════════════════════════════════════════════
+function BranStock(){
+  const [stock,setStock]=useState([]);
+  const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    sb.from('bran_stock').select('*').then(({data})=>{setStock(data||[]);setLoading(false);});
+  },[]);
+
+  if(loading) return <Loading/>;
+
+  return(
+    <div className="page">
+      <div className="page-header">
+        <div className="page-label">By-Products</div>
+        <div className="page-title">Bran stock</div>
+      </div>
+      <div className="stat-grid">
+        {stock.map(s=>(
+          <StatCard key={s.id} label={s.bucket} value={fmt(s.qty_kg,1)+' kg'} col={s.bucket==='Supplyco Bran'?'var(--amber)':'var(--blue)'}/>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // RECONCILIATION
 // ═══════════════════════════════════════════════════════════
 function Reconciliation(){
@@ -1920,6 +1963,67 @@ function SchemeBalances(){
 }
 
 // ═══════════════════════════════════════════════════════════
+// YIELD RATIOS SETTINGS
+// ═══════════════════════════════════════════════════════════
+function YieldRatios(){
+  const [ratios,setRatios]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [editId,setEditId]=useState(null);
+  const [editVal,setEditVal]=useState({});
+
+  useEffect(()=>{
+    sb.from('yield_ratios').select('*').order('scheme').then(({data})=>{setRatios(data||[]);setLoading(false);});
+  },[]);
+
+  const saveEdit=async(row)=>{
+    const attaPct=Number(editVal.atta_pct??row.atta_pct);
+    const branPct=Number(editVal.bran_pct??row.bran_pct);
+    const refPct=Number(editVal.refraction_pct??row.refraction_pct);
+    if(Math.abs((attaPct+branPct+refPct)-100)>0.01) return alert('Atta % + Bran % + Refraction % must add up to 100.');
+    await sb.from('yield_ratios').update({atta_pct:attaPct,bran_pct:branPct,refraction_pct:refPct,updated_at:new Date().toISOString()}).eq('id',row.id);
+    setRatios(p=>p.map(r=>r.id===row.id?{...r,atta_pct:attaPct,bran_pct:branPct,refraction_pct:refPct}:r));
+    setEditId(null); setEditVal({});
+    logActivity('Yield Ratios','update',`${row.scheme} — Atta ${attaPct}% / Bran ${branPct}% / Refraction ${refPct}%`);
+  };
+
+  if(loading) return <Loading/>;
+
+  return(
+    <div className="page">
+      <div className="page-header">
+        <div className="page-label">System Settings</div>
+        <div className="page-title">Yield ratios by scheme</div>
+      </div>
+      <div style={{marginBottom:16,padding:'10px 16px',background:'var(--blue)10',border:'1px solid var(--blue)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
+        For every 1kg of wheat received under a scheme, this defines how much becomes Atta, Bran, and Refraction. The three percentages must total 100.
+      </div>
+      <TableWrap>
+        <table>
+          <thead><tr><th>Scheme</th><th>Atta %</th><th>Bran %</th><th>Refraction %</th><th>Edit</th></tr></thead>
+          <tbody>
+            {ratios.map(row=>{
+              const isE=editId===row.id;
+              return(
+                <tr key={row.id}>
+                  <td><span className="badge badge-blue">{row.scheme}</span></td>
+                  <td>{isE?<input type="number" style={{width:80}} value={editVal.atta_pct??row.atta_pct} onChange={e=>setEditVal(v=>({...v,atta_pct:e.target.value}))}/>:<strong className="mono">{row.atta_pct}%</strong>}</td>
+                  <td>{isE?<input type="number" style={{width:80}} value={editVal.bran_pct??row.bran_pct} onChange={e=>setEditVal(v=>({...v,bran_pct:e.target.value}))}/>:<span className="mono dim">{row.bran_pct}%</span>}</td>
+                  <td>{isE?<input type="number" style={{width:80}} value={editVal.refraction_pct??row.refraction_pct} onChange={e=>setEditVal(v=>({...v,refraction_pct:e.target.value}))}/>:<span className="mono dim">{row.refraction_pct}%</span>}</td>
+                  <td>{isE
+                    ?<div style={{display:'flex',gap:6}}><button className="btn btn-green btn-sm" onClick={()=>saveEdit(row)}>Save</button><button className="btn btn-ghost btn-sm" onClick={()=>{setEditId(null);setEditVal({});}}>Cancel</button></div>
+                    :<button className="btn btn-ghost btn-sm" onClick={()=>setEditId(row.id)}>Edit</button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </TableWrap>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // APP ROOT
 // ═══════════════════════════════════════════════════════════
 function App(){
@@ -1947,6 +2051,8 @@ function App(){
     'private-dispatch':<PrivateDispatch/>,
     'private-inwards':<PrivateInwards/>,
     'scheme-balances':<SchemeBalances/>,
+    'yield-ratios':<YieldRatios/>,
+    'bran-stock':<BranStock/>,
     'product-master':<ProductSettings/>, // ADD THIS
     'activity-log':<ActivityLog/>,
   };
