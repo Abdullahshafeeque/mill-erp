@@ -1639,6 +1639,15 @@ function ProductSettings() {
     logActivity('Product Master','update',`Product ${id} set to ${!currentStatus?'Active':'Archived'}`);
   };
 
+  const deleteProduct = async (p) => {
+    if(!confirm(`Delete "${p.product_name}"? This will also remove its stock and scheme balance records. This cannot be undone.`)) return;
+    await sb.from('raw_material_scheme_stock').delete().eq('material_id', p.id);
+    await sb.from('current_stock').delete().eq('product_type', p.product_name);
+    await sb.from('product_master').delete().eq('id', p.id);
+    setProducts(prev => prev.filter(x => x.id !== p.id));
+    logActivity('Product Master','delete',`Deleted product — ${p.product_name}`);
+  };
+
   if (loading) return <Loading />;
 
   return (
@@ -1746,10 +1755,11 @@ function ProductSettings() {
               <th>Packaging</th>
               <th>Min Alert</th>
               <th>Status</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {products.length === 0 && <tr><td colSpan={6}><Empty msg="No products configured yet." /></td></tr>}
+            {products.length === 0 && <tr><td colSpan={7}><Empty msg="No products configured yet." /></td></tr>}
             {products.map(p => {
               const totalBagKg = p.is_raw_material ? null : p.packet_weight_kg * p.packets_per_bag;
               return (
@@ -1781,6 +1791,9 @@ function ProductSettings() {
                       onClick={() => toggleActive(p.id, p.is_active)}>
                       {p.is_active ? 'Active' : 'Archived'}
                     </button>
+                  </td>
+                  <td>
+                    <button className="btn btn-red btn-sm" onClick={() => deleteProduct(p)}>✕ Delete</button>
                   </td>
                 </tr>
               );
