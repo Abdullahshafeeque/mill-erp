@@ -1665,7 +1665,7 @@ function ProductSettings() {
     if (!form.product_name) return alert('Product Name is required.');
     if (form.is_raw_material && form.has_standard_weight && !form.bag_weight) return alert('Enter the standard bag weight, or uncheck "Has standard bag weight".');
     if (!form.is_raw_material && form.packing_type === 'packeted' && !form.packet_weight_kg) return alert('Packet Weight is required.');
-    if (!form.is_raw_material && form.packing_type === 'loose' && !form.bag_weight) return alert('Bag / Unit Weight is required for loose/bulk products.');
+    if (!form.is_raw_material && form.packing_type === 'loose' && form.has_standard_weight && !form.bag_weight) return alert('Enter the standard bag weight, or uncheck "Has standard bag weight".');
     setSaving(true);
     
     // 1. Save to Product Master
@@ -1673,12 +1673,11 @@ function ProductSettings() {
       ...form,
       packet_weight_kg: form.is_raw_material ? null : Number(form.packet_weight_kg),
       packets_per_bag: form.is_raw_material ? null : Number(form.packets_per_bag),
-      has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
+      has_standard_weight: (form.is_raw_material || form.packing_type==='loose') ? !!form.has_standard_weight : false,
       has_schemes: form.is_raw_material ? !!form.has_schemes : false,
       scheme_list: (form.is_raw_material && form.has_schemes) ? form.scheme_list : null,
       packing_type: form.is_raw_material ? null : form.packing_type,
-      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight)
-                : (!form.is_raw_material && form.packing_type==='loose') ? Number(form.bag_weight) : null,
+      bag_weight: ((form.is_raw_material || (!form.is_raw_material && form.packing_type==='loose')) && form.has_standard_weight) ? Number(form.bag_weight) : null,
       unit: form.is_raw_material ? form.unit : (form.packing_type==='loose' ? form.unit : null),
       packet_weight_kg: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packet_weight_kg) : null,
       packets_per_bag: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packets_per_bag) : null,
@@ -1695,7 +1694,7 @@ function ProductSettings() {
     // Skip this for raw materials — current_stock is for finished goods only
     if (!form.is_raw_material) {
       const totalBagWeight = form.packing_type==='loose'
-        ? Number(form.bag_weight)
+        ? (form.has_standard_weight ? Number(form.bag_weight) : null)
         : Number(form.packet_weight_kg) * Number(form.packets_per_bag);
       await sb.from('current_stock').insert({
         product_type: form.product_name,
@@ -1751,14 +1750,13 @@ function ProductSettings() {
     setSaving(true);
     const payload={
       ...form,
-      has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
+      has_standard_weight: (form.is_raw_material || form.packing_type==='loose') ? !!form.has_standard_weight : false,
       has_schemes: form.is_raw_material ? !!form.has_schemes : false,
       scheme_list: (form.is_raw_material && form.has_schemes) ? form.scheme_list : null,
       packing_type: form.is_raw_material ? null : form.packing_type,
       packet_weight_kg: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packet_weight_kg) : null,
       packets_per_bag: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packets_per_bag) : null,
-      bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight)
-                : (!form.is_raw_material && form.packing_type==='loose') ? Number(form.bag_weight) : null,
+      bag_weight: ((form.is_raw_material || (!form.is_raw_material && form.packing_type==='loose')) && form.has_standard_weight) ? Number(form.bag_weight) : null,
       unit: form.is_raw_material ? form.unit : (form.packing_type==='loose' ? form.unit : null),
       base_price_per_unit: Number(form.base_price_per_unit),
       gst_percent: Number(form.gst_percent),
@@ -1884,7 +1882,6 @@ function ProductSettings() {
               </>
             ) : form.packing_type === 'loose' ? (
               <>
-                <Field label="Bag / Unit Weight ★"><input type="number" className="form-input" placeholder="e.g. 45" value={form.bag_weight} onChange={e => f('bag_weight', e.target.value)} /></Field>
                 <Field label="Unit">
                   <select className="form-input" value={form.unit} onChange={e => f('unit', e.target.value)}>
                     <option value="kg">kg</option>
@@ -1893,6 +1890,18 @@ function ProductSettings() {
                     <option value="litre">Litre</option>
                     <option value="ton">Ton</option>
                   </select>
+                </Field>
+                <Field label="Has standard bag weight?">
+                  <label style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0'}}>
+                    <input type="checkbox" checked={form.has_standard_weight} onChange={e=>f('has_standard_weight',e.target.checked)}/>
+                    <span style={{fontSize:13}}>Yes, fixed weight per bag</span>
+                  </label>
+                </Field>
+                <Field label="Bag / Unit Weight">
+                  <input type="number" className="form-input" placeholder="e.g. 45"
+                    disabled={!form.has_standard_weight}
+                    style={!form.has_standard_weight?{opacity:0.5,cursor:'not-allowed'}:{}}
+                    value={form.bag_weight} onChange={e => f('bag_weight', e.target.value)} />
                 </Field>
                 <Field label="Min. Alert (Bags)"><input type="number" className="form-input" value={form.min_stock_alert} onChange={e => f('min_stock_alert', e.target.value)} /></Field>
               </>
@@ -1947,7 +1956,9 @@ function ProductSettings() {
                         ? <div><strong className="mono">{fmt(p.bag_weight)} {p.unit}</strong> per bag</div>
                         : <div className="dim">Variable weight ({p.unit})</div>
                     ) : p.packing_type === 'loose' ? (
-                      <div><strong className="mono">{fmt(p.bag_weight)} {p.unit}</strong> per bag (loose)</div>
+                      p.has_standard_weight
+                        ? <div><strong className="mono">{fmt(p.bag_weight)} {p.unit}</strong> per bag (loose)</div>
+                        : <div className="dim">Variable weight ({p.unit})</div>
                     ) : (
                       <>
                         <div><strong className="mono">{p.packet_weight_kg}kg</strong> pkt</div>
