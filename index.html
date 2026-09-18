@@ -1169,11 +1169,16 @@ function Wheat(){
           <div className="form-grid">
             <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
             <Field label="Batch no. ★"><input className="form-input" placeholder="PU-220" value={form.batch_no} onChange={e=>f('batch_no',e.target.value.toUpperCase())}/></Field>
-            <Field label="Scheme"><select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>{SCHEMES.map(s=><option key={s}>{s}</option>)}</select></Field>
             <Field label="Raw Material">
-              <select className="form-input" value={form.material_id} onChange={e=>f('material_id',e.target.value)}>
+              <select className="form-input" value={form.material_id} onChange={e=>{f('material_id',e.target.value);f('scheme','');}}>
                 <option value="">-- Select material --</option>
                 {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
+              </select>
+            </Field>
+            <Field label="Scheme">
+              <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>
+                <option value="">-- Select scheme --</option>
+                {(rawMaterials.find(m=>m.id===form.material_id)?.scheme_list?.split(',').map(s=>s.trim())||SCHEMES).map(s=><option key={s}>{s}</option>)}
               </select>
             </Field>
             <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} placeholder="48000" value={form.received_kg} onChange={e=>f('received_kg',e.target.value)}/></Field>
@@ -1571,7 +1576,7 @@ function ProductSettings() {
     packet_weight_kg: '', packets_per_bag: 50, base_price_per_unit: '', 
     gst_percent: 0, hsn_code: '', min_stock_alert: 0,
     is_raw_material: false, available_for_supplyco: false,
-    has_standard_weight: false, bag_weight: '', unit: 'kg', has_schemes: false
+    has_standard_weight: false, bag_weight: '', unit: 'kg', has_schemes: false, scheme_list: 'NPS,PHH,AAY,Private'
   };
   const [form, setForm] = useState(blank);
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1596,6 +1601,7 @@ function ProductSettings() {
       packets_per_bag: form.is_raw_material ? null : Number(form.packets_per_bag),
       has_standard_weight: form.is_raw_material ? !!form.has_standard_weight : false,
       has_schemes: form.is_raw_material ? !!form.has_schemes : false,
+      scheme_list: (form.is_raw_material && form.has_schemes) ? form.scheme_list : null,
       bag_weight: (form.is_raw_material && form.has_standard_weight) ? Number(form.bag_weight) : null,
       unit: form.is_raw_material ? form.unit : null,
       base_price_per_unit: Number(form.base_price_per_unit),
@@ -1696,9 +1702,14 @@ function ProductSettings() {
                 <Field label="Divided into schemes?">
                   <label style={{display:'flex',alignItems:'center',gap:8,padding:'7px 0'}}>
                     <input type="checkbox" checked={form.has_schemes} onChange={e=>f('has_schemes',e.target.checked)}/>
-                    <span style={{fontSize:13}}>Yes (e.g. PHH / AAY / NPS / Private)</span>
+                    <span style={{fontSize:13}}>Yes, sub-divide by scheme</span>
                   </label>
                 </Field>
+                {form.has_schemes&&(
+                  <Field label="Scheme names (comma-separated)">
+                    <input className="form-input" placeholder="NPS,PHH,AAY,Private" value={form.scheme_list} onChange={e=>f('scheme_list',e.target.value)}/>
+                  </Field>
+                )}
                 <Field label="Bag / Unit Weight">
                   <input type="number" className="form-input" placeholder="e.g. 50" value={form.bag_weight}
                     disabled={!form.has_standard_weight}
@@ -1874,7 +1885,7 @@ function SchemeBalances(){
               <table>
                 <thead><tr><th>Scheme</th><th>Balance</th></tr></thead>
                 <tbody>
-                  {['NPS','PHH','AAY','Private'].map(s=>{
+                  {(mat.scheme_list?mat.scheme_list.split(',').map(s=>s.trim()):['NPS','PHH','AAY','Private']).map(s=>{
                     const r=rows.find(x=>x.scheme===s);
                     const val=r?Number(r.qty_kg):0;
                     return(
