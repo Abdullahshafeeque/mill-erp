@@ -1203,7 +1203,9 @@ function Wheat(){
             <Field label="Scheme">
               <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>
                 <option value="">-- Select scheme --</option>
-                {(rawMaterials.find(m=>m.id===form.material_id)?.scheme_list?.split(',').map(s=>s.trim())||SCHEMES).map(s=><option key={s}>{s}</option>)}
+                {(rawMaterials.find(m=>m.id===form.material_id)?.scheme_list?.split(',').map(s=>s.trim())||SCHEMES)
+                  .filter(s=>s.toLowerCase()!=='private')
+                  .map(s=><option key={s}>{s}</option>)}
               </select>
             </Field>
             <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} placeholder="48000" value={form.received_kg} onChange={e=>f('received_kg',e.target.value)}/></Field>
