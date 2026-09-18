@@ -184,7 +184,7 @@ const NAV = [
   { id:'wheat',         label:'FCI Inwards',      icon:'🌾' },
   { id:'private-inwards',label:'Private Inwards', icon:'🌿' },
   { id:'scheme-balances',label:'Scheme Balances', icon:'📋' },
-  { id:'yield-ratios',   label:'Yield Ratios',    icon:'🧮' },
+  { id:'product-recipes',label:'Product Recipes', icon:'🧮' },
   { id:'bran-stock',     label:'Bran Stock',       icon:'🌾' },
   { id:'reconciliation',label:'Reconciliation',   icon:'📊' },
   { section:'Inventory' },
@@ -446,59 +446,53 @@ function Production(){
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg)).single();
     if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg));
 
-    // Auto-calculate wheat deduction + credit each linked output product's stock
+        // Apply this product's recipe: consume raw materials, produce by-products
     const productScheme=form.product_type==='NPS Atta'?'NPS':form.product_type==='PHH Atta'?'PHH':form.product_type==='AAY Atta'?'AAY':null;
-    if(productScheme){
-      const attaKgProduced=Number(form.qty_produced)*Number(form.pack_size_kg);
-      const wheatMaterial=(await sb.from('product_master').select('id').eq('product_name','Wheat').maybeSingle()).data;
-      if(wheatMaterial){
-        const {data:cfg}=await sb.from('yield_configs').select('*').eq('material_id',wheatMaterial.id).eq('scheme',productScheme).maybeSingle();
-        if(cfg){
-          const {data:cfgOutputs}=await sb.from('yield_config_outputs').select('*').eq('yield_config_id',cfg.id);
-          const primary=(cfgOutputs||[]).find(o=>o.is_primary_product);
-          if(primary&&Number(primary.output_pct)>0){
-            const wheatRequiredKg=attaKgProduced/(Number(primary.output_pct)/100);
+    const finishedProduct=(await sb.from('product_master').select('id').eq('product_name',form.product_type).maybeSingle()).data;
+    if(finishedProduct){
+      const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',finishedProduct.id).eq('scheme',productScheme).maybeSingle()
+        .then(r=>r.data?r: sb.from('product_recipes').select('*').eq('product_id',finishedProduct.id).is('scheme',null).maybeSingle());
+      if(recipe){
+        const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
+        const attaKgProduced=Number(form.qty_produced)*Number(form.pack_size_kg);
+        const summary=[];
 
-            // Deduct wheat from the scheme's bucket (can go negative — expected)
-            const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('material_id',wheatMaterial.id).eq('scheme',productScheme).maybeSingle();
-            if(bucket){
-              await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-wheatRequiredKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
-            } else {
-              await sb.from('raw_material_scheme_stock').insert({material_id:wheatMaterial.id,scheme:productScheme,qty_kg:-wheatRequiredKg});
-            }
+        for(const line of (recipeLines||[])){
+          const qtyKg=attaKgProduced*Number(line.qty_per_unit);
+          const material=(await sb.from('product_master').select('*').eq('id',line.material_id).maybeSingle()).data;
+          if(!material) continue;
 
-            // Credit each non-primary output's actual stock, generically by product
-            const byproductSummary=[];
-            for(const o of (cfgOutputs||[])){
-              if(o.is_primary_product || !o.output_product_id) continue;
-              const outKg=wheatRequiredKg*(Number(o.output_pct)/100);
-              const outProduct=(await sb.from('product_master').select('*').eq('id',o.output_product_id).maybeSingle()).data;
-              if(!outProduct) continue;
-              byproductSummary.push(`${outProduct.product_name} ${outKg.toFixed(1)}kg`);
-
-              if(outProduct.is_raw_material){
-                // Credit as a raw-material-style stock — using a generic bucket keyed by product name for now (bran_stock table)
-                const bucketName=outProduct.product_name.toLowerCase().includes('bran')?
-                  (productScheme==='Private'?'Private Bran':'Supplyco Bran') : outProduct.product_name;
-                const {data:existingBucket}=await sb.from('bran_stock').select('*').eq('bucket',bucketName).maybeSingle();
-                if(existingBucket){
-                  await sb.from('bran_stock').update({qty_kg:Number(existingBucket.qty_kg)+outKg,updated_at:new Date().toISOString()}).eq('id',existingBucket.id);
-                } else {
-                  await sb.from('bran_stock').insert({bucket:bucketName,qty_kg:outKg});
-                }
+          if(line.line_type==='consumes'){
+            if(material.has_schemes&&productScheme){
+              const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('material_id',material.id).eq('scheme',productScheme).maybeSingle();
+              if(bucket){
+                await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-qtyKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
               } else {
-                // Credit as finished-goods stock in current_stock, converting kg to bags using the product's own pack size
-                const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_type',outProduct.product_name).maybeSingle();
-                if(stockRow&&stockRow.pack_size_kg>0){
-                  const bagsToAdd=outKg/Number(stockRow.pack_size_kg);
-                  await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsToAdd,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
-                }
+                await sb.from('raw_material_scheme_stock').insert({material_id:material.id,scheme:productScheme,qty_kg:-qtyKg});
               }
             }
-
-            logActivity('Production','update',`${productScheme}: ${wheatRequiredKg.toFixed(1)}kg wheat used — ${byproductSummary.join(', ')}`);
+            summary.push(`−${qtyKg.toFixed(1)}kg ${material.product_name}`);
+          } else {
+            // produces — credit its stock
+            if(material.is_raw_material){
+              const bucketName=material.product_name;
+              const {data:existingBucket}=await sb.from('bran_stock').select('*').eq('bucket',bucketName).maybeSingle();
+              if(existingBucket){
+                await sb.from('bran_stock').update({qty_kg:Number(existingBucket.qty_kg)+qtyKg,updated_at:new Date().toISOString()}).eq('id',existingBucket.id);
+              } else {
+                await sb.from('bran_stock').insert({bucket:bucketName,qty_kg:qtyKg});
+              }
+            } else {
+              const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_type',material.product_name).maybeSingle();
+              if(stockRow&&stockRow.pack_size_kg>0){
+                const bagsToAdd=qtyKg/Number(stockRow.pack_size_kg);
+                await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsToAdd,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+              }
+            }
+            summary.push(`+${qtyKg.toFixed(1)}kg ${material.product_name}`);
           }
         }
+        logActivity('Production','update',`${form.product_type}${productScheme?' ('+productScheme+')':''}: ${summary.join(', ')}`);
       }
     }
 
@@ -2105,58 +2099,68 @@ function SchemeBalances(){
 }
 
 // ═══════════════════════════════════════════════════════════
-// YIELD RATIOS SETTINGS (generic, per raw material, product-linked outputs)
+// PRODUCT RECIPES (replaces Yield Ratios)
 // ═══════════════════════════════════════════════════════════
-function YieldRatios(){
-  const [materials,setMaterials]=useState([]);
-  const [configs,setConfigs]=useState([]);
-  const [outputs,setOutputs]=useState([]);
-  const [allProducts,setAllProducts]=useState([]);
+function ProductRecipes(){
+  const [products,setProducts]=useState([]);
+  const [recipes,setRecipes]=useState([]);
+  const [lines,setLines]=useState([]);
   const [loading,setLoading]=useState(true);
-  const [editCfgId,setEditCfgId]=useState(null);
-  const [editRows,setEditRows]=useState([]);
+  const [editingRecipeKey,setEditingRecipeKey]=useState(null); // `${product_id}|${scheme}`
+  const [editLines,setEditLines]=useState([]);
+  const [showConfirm,setShowConfirm]=useState(false);
+  const [pendingSave,setPendingSave]=useState(null);
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:m},{data:c},{data:o},{data:p}]=await Promise.all([
-      sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true),
-      sb.from('yield_configs').select('*'),
-      sb.from('yield_config_outputs').select('*'),
+    const [{data:p},{data:r},{data:l}]=await Promise.all([
       sb.from('product_master').select('*').eq('is_active',true),
+      sb.from('product_recipes').select('*'),
+      sb.from('recipe_lines').select('*'),
     ]);
-    setMaterials(m||[]); setConfigs(c||[]); setOutputs(o||[]); setAllProducts(p||[]); setLoading(false);
+    setProducts(p||[]); setRecipes(r||[]); setLines(l||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
-  const productName=(id)=>allProducts.find(p=>p.id===id)?.product_name||'—';
+  const name=(id)=>products.find(p=>p.id===id)?.product_name||'—';
 
-  const startEdit=(cfg)=>{
-    setEditCfgId(cfg.id);
-    const rows=outputs.filter(o=>o.yield_config_id===cfg.id);
-    setEditRows(rows.length?rows.map(r=>({...r})):[{output_product_id:'',output_pct:'',is_primary_product:true}]);
+  // Finished-goods products get a recipe. Scheme-relevant ones (Atta types tied to NPS/PHH/AAY) get one row per scheme.
+  const finishedProducts=products.filter(p=>!p.is_raw_material);
+  const wheatMaterial=products.find(p=>p.product_name==='Wheat');
+  const schemes=wheatMaterial?.scheme_list?.split(',').map(s=>s.trim())||['NPS','PHH','AAY','Private'];
+
+  const startEdit=(productId,scheme)=>{
+    const key=`${productId}|${scheme||''}`;
+    setEditingRecipeKey(key);
+    const existing=recipes.find(r=>r.material_id===undefined&&r.product_id===productId&&(r.scheme||'')===(scheme||''));
+    const recipeId=existing?.id;
+    const existingLines=recipeId?lines.filter(l=>l.recipe_id===recipeId):[];
+    setEditLines(existingLines.length?existingLines.map(l=>({...l})):[{line_type:'consumes',material_id:'',qty_per_unit:''}]);
   };
 
-  const addRow=()=>setEditRows(p=>[...p,{output_product_id:'',output_pct:'',is_primary_product:false}]);
-  const removeRow=(i)=>setEditRows(p=>p.filter((_,idx)=>idx!==i));
-  const updateRow=(i,k,v)=>setEditRows(p=>p.map((r,idx)=>idx===i?{...r,[k]:v}:r));
+  const addLine=(type)=>setEditLines(p=>[...p,{line_type:type,material_id:'',qty_per_unit:''}]);
+  const removeLine=(i)=>setEditLines(p=>p.filter((_,idx)=>idx!==i));
+  const updateLine=(i,k,v)=>setEditLines(p=>p.map((l,idx)=>idx===i?{...l,[k]:v}:l));
 
-  const saveConfig=async(cfg)=>{
-    const total=editRows.reduce((s,r)=>s+Number(r.output_pct||0),0);
-    if(Math.abs(total-100)>0.01) return alert('Output percentages must add up to 100. Currently: '+total+'%');
-    if(editRows.some(r=>!r.output_product_id)) return alert('Every output needs a product selected.');
+  const attemptSave=(productId,scheme)=>{
+    if(editLines.some(l=>!l.material_id||!l.qty_per_unit)) return alert('Every line needs a material and quantity.');
+    setPendingSave({productId,scheme});
+    setShowConfirm(true);
+  };
 
-    await sb.from('yield_config_outputs').delete().eq('yield_config_id',cfg.id);
-    const toInsert=editRows.map(r=>({
-      yield_config_id:cfg.id,
-      output_product_id:r.output_product_id,
-      output_name:productName(r.output_product_id),
-      output_pct:Number(r.output_pct),
-      is_primary_product:!!r.is_primary_product
-    }));
-    await sb.from('yield_config_outputs').insert(toInsert);
+  const confirmSave=async()=>{
+    const {productId,scheme}=pendingSave;
+    let recipe=recipes.find(r=>r.product_id===productId&&(r.scheme||'')===(scheme||''));
+    if(!recipe){
+      const {data}=await sb.from('product_recipes').insert({product_id:productId,scheme:scheme||null}).select().single();
+      recipe=data;
+    }
+    await sb.from('recipe_lines').delete().eq('recipe_id',recipe.id);
+    const toInsert=editLines.map(l=>({recipe_id:recipe.id,line_type:l.line_type,material_id:l.material_id,qty_per_unit:Number(l.qty_per_unit)}));
+    await sb.from('recipe_lines').insert(toInsert);
 
-    setEditCfgId(null); setEditRows([]);
-    logActivity('Yield Ratios','update',`${materials.find(m=>m.id===cfg.material_id)?.product_name} / ${cfg.scheme} — ${toInsert.map(o=>o.output_name+' '+o.output_pct+'%').join(', ')}`);
+    logActivity('Product Recipes','update',`${name(productId)}${scheme?' / '+scheme:''} recipe updated`);
+    setShowConfirm(false); setPendingSave(null); setEditingRecipeKey(null); setEditLines([]);
     load();
   };
 
@@ -2166,77 +2170,102 @@ function YieldRatios(){
     <div className="page">
       <div className="page-header">
         <div className="page-label">System Settings</div>
-        <div className="page-title">Yield ratios by material & scheme</div>
+        <div className="page-title">Product Recipes</div>
       </div>
       <div style={{marginBottom:16,padding:'10px 16px',background:'var(--blue)10',border:'1px solid var(--blue)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
-        For every 1kg of a scheme-divided raw material, pick which existing products it splits into (e.g. Atta, Bran) and what % each represents. Percentages per scheme must total 100. Mark the main finished-goods output as "Primary".
+        For each finished product, define what it consumes and produces per 1kg made. Scheme-linked products (like Atta) get a separate recipe per scheme.
       </div>
 
-      {materials.length===0&&<div className="card"><Empty msg="No scheme-divided raw materials configured yet. Enable 'Divided into schemes?' on a raw material in Product Master first."/></div>}
-      {allProducts.length===0&&materials.length>0&&<div className="card"><Empty msg="No products exist yet to select as outputs. Add Atta, Bran, etc. in Product Master first."/></div>}
-
-      {materials.map(mat=>{
-        const matConfigs=configs.filter(c=>c.material_id===mat.id);
+      {finishedProducts.map(prod=>{
+        const isSchemeLinked=prod.product_name.toLowerCase().includes('atta'); // heuristic: Atta products are scheme-linked
+        const schemeRows=isSchemeLinked?schemes:[null];
         return(
-          <div key={mat.id} className="card" style={{marginBottom:16}}>
-            <div className="section-label">{mat.product_name}</div>
+          <div key={prod.id} className="card" style={{marginBottom:16}}>
+            <div className="section-label">{prod.product_name}</div>
             <TableWrap>
               <table>
-                <thead><tr><th>Scheme</th><th>Outputs</th><th>Edit</th></tr></thead>
+                <thead><tr><th>Scheme</th><th>Recipe (per 1kg produced)</th><th>Edit</th></tr></thead>
                 <tbody>
-                  {matConfigs.map(cfg=>{
-                    const isE=editCfgId===cfg.id;
-                    const cfgOutputs=outputs.filter(o=>o.yield_config_id===cfg.id);
+                  {schemeRows.map(scheme=>{
+                    const key=`${prod.id}|${scheme||''}`;
+                    const isE=editingRecipeKey===key;
+                    const recipe=recipes.find(r=>r.product_id===prod.id&&(r.scheme||'')===(scheme||''));
+                    const recipeLines=recipe?lines.filter(l=>l.recipe_id===recipe.id):[];
                     return(
-                      <tr key={cfg.id}>
-                        <td><span className="badge badge-blue">{cfg.scheme}</span></td>
+                      <tr key={key}>
+                        <td>{scheme?<span className="badge badge-blue">{scheme}</span>:<span className="dim">All</span>}</td>
                         <td>
                           {isE?(
                             <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                              {editRows.map((r,i)=>(
+                              {editLines.map((l,i)=>(
                                 <div key={i} style={{display:'flex',gap:8,alignItems:'center'}}>
-                                  <select className="form-input" style={{width:180}} value={r.output_product_id} onChange={e=>updateRow(i,'output_product_id',e.target.value)}>
-                                    <option value="">-- Select product --</option>
-                                    {allProducts.map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
+                                  <select className="form-input" style={{width:90}} value={l.line_type} onChange={e=>updateLine(i,'line_type',e.target.value)}>
+                                    <option value="consumes">Consumes</option>
+                                    <option value="produces">Produces</option>
                                   </select>
-                                  <input type="number" className="form-input" style={{width:80}} placeholder="%" value={r.output_pct} onChange={e=>updateRow(i,'output_pct',e.target.value)}/>
-                                  <label style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'var(--muted)'}}>
-                                    <input type="checkbox" checked={!!r.is_primary_product} onChange={e=>updateRow(i,'is_primary_product',e.target.checked)}/> Primary
-                                  </label>
-                                  <button className="btn btn-red btn-sm" onClick={()=>removeRow(i)}>✕</button>
+                                  <select className="form-input" style={{width:160}} value={l.material_id} onChange={e=>updateLine(i,'material_id',e.target.value)}>
+                                    <option value="">-- Select material --</option>
+                                    {products.map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
+                                  </select>
+                                  <input type="number" step="0.001" className="form-input" style={{width:100}} placeholder="kg per 1kg" value={l.qty_per_unit} onChange={e=>updateLine(i,'qty_per_unit',e.target.value)}/>
+                                  <button className="btn btn-red btn-sm" onClick={()=>removeLine(i)}>✕</button>
                                 </div>
                               ))}
-                              <button className="btn btn-ghost btn-sm" style={{width:'fit-content'}} onClick={addRow}>+ Add output</button>
-                              <div style={{fontSize:11,color:'var(--muted)',fontFamily:'var(--mono)'}}>
-                                Total: {editRows.reduce((s,r)=>s+Number(r.output_pct||0),0)}%
+                              <div style={{display:'flex',gap:8}}>
+                                <button className="btn btn-ghost btn-sm" onClick={()=>addLine('consumes')}>+ Consumes</button>
+                                <button className="btn btn-ghost btn-sm" onClick={()=>addLine('produces')}>+ Produces</button>
                               </div>
+                              <button className="btn btn-green btn-sm" style={{width:'fit-content'}} onClick={()=>attemptSave(prod.id,scheme)}>Review & Save</button>
                             </div>
                           ):(
                             <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                              {cfgOutputs.length===0&&<span className="dim">Not configured</span>}
-                              {cfgOutputs.map(o=>(
-                                <span key={o.id} className="badge" style={{background:o.is_primary_product?'var(--green)20':'var(--border)',color:o.is_primary_product?'var(--green)':'var(--muted)'}}>
-                                  {productName(o.output_product_id)} {o.output_pct}%
+                              {recipeLines.length===0&&<span className="dim">Not configured</span>}
+                              {recipeLines.map(l=>(
+                                <span key={l.id} className="badge" style={{background:l.line_type==='consumes'?'var(--red)15':'var(--green)15',color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
+                                  {l.line_type==='consumes'?'−':'+'} {name(l.material_id)} {l.qty_per_unit}kg
                                 </span>
                               ))}
                             </div>
                           )}
                         </td>
                         <td>
-                          {isE
-                            ?<div style={{display:'flex',gap:6}}><button className="btn btn-green btn-sm" onClick={()=>saveConfig(cfg)}>Save</button><button className="btn btn-ghost btn-sm" onClick={()=>{setEditCfgId(null);setEditRows([]);}}>Cancel</button></div>
-                            :<button className="btn btn-ghost btn-sm" onClick={()=>startEdit(cfg)}>Edit</button>}
+                          {!isE&&<button className="btn btn-ghost btn-sm" onClick={()=>startEdit(prod.id,scheme)}>Edit</button>}
+                          {isE&&<button className="btn btn-ghost btn-sm" onClick={()=>{setEditingRecipeKey(null);setEditLines([]);}}>Cancel</button>}
                         </td>
                       </tr>
                     );
                   })}
-                  {matConfigs.length===0&&<tr><td colSpan={3}><Empty msg="No schemes found for this material."/></td></tr>}
                 </tbody>
               </table>
             </TableWrap>
           </div>
         );
       })}
+
+      {showConfirm&&pendingSave&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
+          <div className="card" style={{maxWidth:480,width:'100%'}}>
+            <div className="section-label">Confirm Recipe</div>
+            <div style={{fontSize:14,marginBottom:12}}>
+              To produce <strong>1kg of {name(pendingSave.productId)}{pendingSave.scheme?` (${pendingSave.scheme})`:''}</strong>, this recipe will:
+            </div>
+            <ul style={{marginBottom:16,paddingLeft:20}}>
+              {editLines.map((l,i)=>(
+                <li key={i} style={{fontSize:13,marginBottom:4,color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
+                  {l.line_type==='consumes'?'Consume':'Produce'} <strong>{l.qty_per_unit}kg</strong> of {name(l.material_id)}
+                </li>
+              ))}
+            </ul>
+            <div style={{fontSize:12,color:'var(--muted)',marginBottom:16}}>
+              This will apply every time you log production of this item{pendingSave.scheme?` under the ${pendingSave.scheme} scheme`:''}. Existing production entries are not affected.
+            </div>
+            <div className="form-actions">
+              <button className="btn btn-green" onClick={confirmSave}>Confirm & Save</button>
+              <button className="btn btn-ghost" onClick={()=>{setShowConfirm(false);setPendingSave(null);}}>Go Back</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2269,7 +2298,7 @@ function App(){
     'private-dispatch':<PrivateDispatch/>,
     'private-inwards':<PrivateInwards/>,
     'scheme-balances':<SchemeBalances/>,
-    'yield-ratios':<YieldRatios/>,
+    'product-recipes':<ProductRecipes/>,
     'bran-stock':<BranStock/>,
     'product-master':<ProductSettings/>, // ADD THIS
     'activity-log':<ActivityLog/>,
