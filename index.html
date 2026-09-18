@@ -450,8 +450,7 @@ function Production(){
     const productScheme=form.product_type==='NPS Atta'?'NPS':form.product_type==='PHH Atta'?'PHH':form.product_type==='AAY Atta'?'AAY':null;
     const finishedProduct=(await sb.from('product_master').select('id').eq('product_name',form.product_type).maybeSingle()).data;
     if(finishedProduct){
-      const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',finishedProduct.id).eq('scheme',productScheme).maybeSingle()
-        .then(r=>r.data?r: sb.from('product_recipes').select('*').eq('product_id',finishedProduct.id).is('scheme',null).maybeSingle());
+      const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',finishedProduct.id).maybeSingle();
       if(recipe){
         const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
         const attaKgProduced=Number(form.qty_produced)*Number(form.pack_size_kg);
@@ -2099,14 +2098,14 @@ function SchemeBalances(){
 }
 
 // ═══════════════════════════════════════════════════════════
-// PRODUCT RECIPES (replaces Yield Ratios)
+// PRODUCT RECIPES
 // ═══════════════════════════════════════════════════════════
 function ProductRecipes(){
   const [products,setProducts]=useState([]);
   const [recipes,setRecipes]=useState([]);
   const [lines,setLines]=useState([]);
   const [loading,setLoading]=useState(true);
-  const [editingRecipeKey,setEditingRecipeKey]=useState(null); // `${product_id}|${scheme}`
+  const [editingProductId,setEditingProductId]=useState(null);
   const [editLines,setEditLines]=useState([]);
   const [showConfirm,setShowConfirm]=useState(false);
   const [pendingSave,setPendingSave]=useState(null);
@@ -2124,17 +2123,22 @@ function ProductRecipes(){
 
   const name=(id)=>products.find(p=>p.id===id)?.product_name||'—';
 
-  // Finished-goods products get a recipe. Scheme-relevant ones (Atta types tied to NPS/PHH/AAY) get one row per scheme.
-  const finishedProducts=products.filter(p=>!p.is_raw_material);
-  const wheatMaterial=products.find(p=>p.product_name==='Wheat');
-  const schemes=wheatMaterial?.scheme_list?.split(',').map(s=>s.trim())||['NPS','PHH','AAY','Private'];
+  // Each finished product gets exactly ONE recipe. Its scheme (if any) is inferred
+  // from its own name — NPS Atta → NPS, PHH Atta → PHH, AAY Atta → AAY, else none.
+  const schemeForProduct=(p)=>{
+    const n=p.product_name.toUpperCase();
+    if(n.includes('NPS')) return 'NPS';
+    if(n.includes('PHH')) return 'PHH';
+    if(n.includes('AAY')) return 'AAY';
+    return null;
+  };
 
-  const startEdit=(productId,scheme)=>{
-    const key=`${productId}|${scheme||''}`;
-    setEditingRecipeKey(key);
-    const existing=recipes.find(r=>r.material_id===undefined&&r.product_id===productId&&(r.scheme||'')===(scheme||''));
-    const recipeId=existing?.id;
-    const existingLines=recipeId?lines.filter(l=>l.recipe_id===recipeId):[];
+  const finishedProducts=products.filter(p=>!p.is_raw_material);
+
+  const startEdit=(prod)=>{
+    setEditingProductId(prod.id);
+    const recipe=recipes.find(r=>r.product_id===prod.id);
+    const existingLines=recipe?lines.filter(l=>l.recipe_id===recipe.id):[];
     setEditLines(existingLines.length?existingLines.map(l=>({...l})):[{line_type:'consumes',material_id:'',qty_per_unit:''}]);
   };
 
@@ -2142,25 +2146,27 @@ function ProductRecipes(){
   const removeLine=(i)=>setEditLines(p=>p.filter((_,idx)=>idx!==i));
   const updateLine=(i,k,v)=>setEditLines(p=>p.map((l,idx)=>idx===i?{...l,[k]:v}:l));
 
-  const attemptSave=(productId,scheme)=>{
+  const attemptSave=(prod)=>{
+    if(editLines.length===0) return alert('Add at least one line.');
     if(editLines.some(l=>!l.material_id||!l.qty_per_unit)) return alert('Every line needs a material and quantity.');
-    setPendingSave({productId,scheme});
+    setPendingSave(prod);
     setShowConfirm(true);
   };
 
   const confirmSave=async()=>{
-    const {productId,scheme}=pendingSave;
-    let recipe=recipes.find(r=>r.product_id===productId&&(r.scheme||'')===(scheme||''));
+    const prod=pendingSave;
+    const scheme=schemeForProduct(prod);
+    let recipe=recipes.find(r=>r.product_id===prod.id);
     if(!recipe){
-      const {data}=await sb.from('product_recipes').insert({product_id:productId,scheme:scheme||null}).select().single();
+      const {data}=await sb.from('product_recipes').insert({product_id:prod.id,scheme}).select().single();
       recipe=data;
     }
     await sb.from('recipe_lines').delete().eq('recipe_id',recipe.id);
     const toInsert=editLines.map(l=>({recipe_id:recipe.id,line_type:l.line_type,material_id:l.material_id,qty_per_unit:Number(l.qty_per_unit)}));
     await sb.from('recipe_lines').insert(toInsert);
 
-    logActivity('Product Recipes','update',`${name(productId)}${scheme?' / '+scheme:''} recipe updated`);
-    setShowConfirm(false); setPendingSave(null); setEditingRecipeKey(null); setEditLines([]);
+    logActivity('Product Recipes','update',`${prod.product_name} recipe updated`);
+    setShowConfirm(false); setPendingSave(null); setEditingProductId(null); setEditLines([]);
     load();
   };
 
@@ -2173,81 +2179,74 @@ function ProductRecipes(){
         <div className="page-title">Product Recipes</div>
       </div>
       <div style={{marginBottom:16,padding:'10px 16px',background:'var(--blue)10',border:'1px solid var(--blue)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
-        For each finished product, define what it consumes and produces per 1kg made. Scheme-linked products (like Atta) get a separate recipe per scheme.
+        For each finished product, choose which raw material(s) it consumes and which by-product(s) it produces, per 1kg made. A product's scheme (NPS/PHH/AAY, if any) is fixed by its name — no need to pick it separately.
       </div>
 
-      {finishedProducts.map(prod=>{
-        const isSchemeLinked=prod.product_name.toLowerCase().includes('atta'); // heuristic: Atta products are scheme-linked
-        const schemeRows=isSchemeLinked?schemes:[null];
-        return(
-          <div key={prod.id} className="card" style={{marginBottom:16}}>
-            <div className="section-label">{prod.product_name}</div>
-            <TableWrap>
-              <table>
-                <thead><tr><th>Scheme</th><th>Recipe (per 1kg produced)</th><th>Edit</th></tr></thead>
-                <tbody>
-                  {schemeRows.map(scheme=>{
-                    const key=`${prod.id}|${scheme||''}`;
-                    const isE=editingRecipeKey===key;
-                    const recipe=recipes.find(r=>r.product_id===prod.id&&(r.scheme||'')===(scheme||''));
-                    const recipeLines=recipe?lines.filter(l=>l.recipe_id===recipe.id):[];
-                    return(
-                      <tr key={key}>
-                        <td>{scheme?<span className="badge badge-blue">{scheme}</span>:<span className="dim">All</span>}</td>
-                        <td>
-                          {isE?(
-                            <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                              {editLines.map((l,i)=>(
-                                <div key={i} style={{display:'flex',gap:8,alignItems:'center'}}>
-                                  <select className="form-input" style={{width:90}} value={l.line_type} onChange={e=>updateLine(i,'line_type',e.target.value)}>
-                                    <option value="consumes">Consumes</option>
-                                    <option value="produces">Produces</option>
-                                  </select>
-                                  <select className="form-input" style={{width:160}} value={l.material_id} onChange={e=>updateLine(i,'material_id',e.target.value)}>
-                                    <option value="">-- Select material --</option>
-                                    {products.map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
-                                  </select>
-                                  <input type="number" step="0.001" className="form-input" style={{width:100}} placeholder="kg per 1kg" value={l.qty_per_unit} onChange={e=>updateLine(i,'qty_per_unit',e.target.value)}/>
-                                  <button className="btn btn-red btn-sm" onClick={()=>removeLine(i)}>✕</button>
-                                </div>
-                              ))}
-                              <div style={{display:'flex',gap:8}}>
-                                <button className="btn btn-ghost btn-sm" onClick={()=>addLine('consumes')}>+ Consumes</button>
-                                <button className="btn btn-ghost btn-sm" onClick={()=>addLine('produces')}>+ Produces</button>
-                              </div>
-                              <button className="btn btn-green btn-sm" style={{width:'fit-content'}} onClick={()=>attemptSave(prod.id,scheme)}>Review & Save</button>
-                            </div>
-                          ):(
-                            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                              {recipeLines.length===0&&<span className="dim">Not configured</span>}
-                              {recipeLines.map(l=>(
-                                <span key={l.id} className="badge" style={{background:l.line_type==='consumes'?'var(--red)15':'var(--green)15',color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
-                                  {l.line_type==='consumes'?'−':'+'} {name(l.material_id)} {l.qty_per_unit}kg
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </td>
-                        <td>
-                          {!isE&&<button className="btn btn-ghost btn-sm" onClick={()=>startEdit(prod.id,scheme)}>Edit</button>}
-                          {isE&&<button className="btn btn-ghost btn-sm" onClick={()=>{setEditingRecipeKey(null);setEditLines([]);}}>Cancel</button>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </TableWrap>
-          </div>
-        );
-      })}
+      <TableWrap>
+        <table>
+          <thead><tr><th>Product</th><th>Scheme</th><th>Recipe (per 1kg produced)</th><th>Edit</th></tr></thead>
+          <tbody>
+            {finishedProducts.map(prod=>{
+              const scheme=schemeForProduct(prod);
+              const isE=editingProductId===prod.id;
+              const recipe=recipes.find(r=>r.product_id===prod.id);
+              const recipeLines=recipe?lines.filter(l=>l.recipe_id===recipe.id):[];
+              return(
+                <tr key={prod.id}>
+                  <td><strong>{prod.product_name}</strong></td>
+                  <td>{scheme?<span className="badge badge-blue">{scheme}</span>:<span className="dim">—</span>}</td>
+                  <td>
+                    {isE?(
+                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                        {editLines.map((l,i)=>(
+                          <div key={i} style={{display:'flex',gap:8,alignItems:'center'}}>
+                            <select className="form-input" style={{width:90}} value={l.line_type} onChange={e=>updateLine(i,'line_type',e.target.value)}>
+                              <option value="consumes">Consumes</option>
+                              <option value="produces">Produces</option>
+                            </select>
+                            <select className="form-input" style={{width:160}} value={l.material_id} onChange={e=>updateLine(i,'material_id',e.target.value)}>
+                              <option value="">-- Select material --</option>
+                              {products.filter(p=>p.id!==prod.id).map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
+                            </select>
+                            <input type="number" step="0.001" className="form-input" style={{width:100}} placeholder="kg per 1kg" value={l.qty_per_unit} onChange={e=>updateLine(i,'qty_per_unit',e.target.value)}/>
+                            <button className="btn btn-red btn-sm" onClick={()=>removeLine(i)}>✕</button>
+                          </div>
+                        ))}
+                        <div style={{display:'flex',gap:8}}>
+                          <button className="btn btn-ghost btn-sm" onClick={()=>addLine('consumes')}>+ Consumes</button>
+                          <button className="btn btn-ghost btn-sm" onClick={()=>addLine('produces')}>+ Produces</button>
+                        </div>
+                        <button className="btn btn-green btn-sm" style={{width:'fit-content'}} onClick={()=>attemptSave(prod)}>Review & Save</button>
+                      </div>
+                    ):(
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                        {recipeLines.length===0&&<span className="dim">Not configured</span>}
+                        {recipeLines.map(l=>(
+                          <span key={l.id} className="badge" style={{background:l.line_type==='consumes'?'var(--red)15':'var(--green)15',color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
+                            {l.line_type==='consumes'?'−':'+'} {name(l.material_id)} {l.qty_per_unit}kg
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    {!isE&&<button className="btn btn-ghost btn-sm" onClick={()=>startEdit(prod)}>Edit</button>}
+                    {isE&&<button className="btn btn-ghost btn-sm" onClick={()=>{setEditingProductId(null);setEditLines([]);}}>Cancel</button>}
+                  </td>
+                </tr>
+              );
+            })}
+            {finishedProducts.length===0&&<tr><td colSpan={4}><Empty msg="No finished products yet. Add them in Product Master first."/></td></tr>}
+          </tbody>
+        </table>
+      </TableWrap>
 
       {showConfirm&&pendingSave&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
           <div className="card" style={{maxWidth:480,width:'100%'}}>
             <div className="section-label">Confirm Recipe</div>
             <div style={{fontSize:14,marginBottom:12}}>
-              To produce <strong>1kg of {name(pendingSave.productId)}{pendingSave.scheme?` (${pendingSave.scheme})`:''}</strong>, this recipe will:
+              To produce <strong>1kg of {pendingSave.product_name}</strong>, this recipe will:
             </div>
             <ul style={{marginBottom:16,paddingLeft:20}}>
               {editLines.map((l,i)=>(
@@ -2257,7 +2256,7 @@ function ProductRecipes(){
               ))}
             </ul>
             <div style={{fontSize:12,color:'var(--muted)',marginBottom:16}}>
-              This will apply every time you log production of this item{pendingSave.scheme?` under the ${pendingSave.scheme} scheme`:''}. Existing production entries are not affected.
+              This applies every time you log production of {pendingSave.product_name}. Existing production entries are not affected.
             </div>
             <div className="form-actions">
               <button className="btn btn-green" onClick={confirmSave}>Confirm & Save</button>
@@ -2266,9 +2265,6 @@ function ProductRecipes(){
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════
 // APP ROOT
