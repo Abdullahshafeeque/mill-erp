@@ -646,10 +646,10 @@ function Production(){
     const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
     const summary=[];
 
-    for(const line of (recipeLines||[])){
+        for(const line of (recipeLines||[])){
       const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
-      const material=allProducts.find(p=>p.id===line.material_id);
-      if(!material) continue;
+      const material=allProducts.find(p=>String(p.id)===String(line.material_id));
+      if(!material){ console.error('applyRecipe: material not found for line', line); continue; }
       const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
       const lineScheme = line.scheme || schemeFromName(product.product_name);
 
@@ -657,16 +657,20 @@ function Production(){
         if(material.has_schemes && lineScheme){
           const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
           if(bucket){
-            await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            const {error}=await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            if(error) console.error('scheme stock update failed', error);
           } else {
-            await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:delta});
+            const {error}=await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:delta});
+            if(error) console.error('scheme stock insert failed', error);
           }
         } else {
           const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
           if(bucket){
-            await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            const {error}=await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            if(error) console.error('raw stock update failed', error);
           } else {
-            await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
+            const {error}=await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
+            if(error) console.error('raw stock insert failed', error);
           }
         }
       } else {
@@ -675,16 +679,20 @@ function Production(){
           const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',material.id).maybeSingle();
           const bagsDelta=delta/bagSize;
           if(stockRow){
-            await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsDelta,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+            const {error}=await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsDelta,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+            if(error) console.error('current_stock update failed', error);
           } else {
-            await sb.from('current_stock').insert({product_id:material.id,qty_bags:bagsDelta});
+            const {error}=await sb.from('current_stock').insert({product_id:material.id,qty_bags:bagsDelta});
+            if(error) console.error('current_stock insert failed', error);
           }
         } else {
           const {data:kgRow}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
           if(kgRow){
-            await sb.from('raw_material_stock').update({qty_kg:Number(kgRow.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',kgRow.id);
+            const {error}=await sb.from('raw_material_stock').update({qty_kg:Number(kgRow.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',kgRow.id);
+            if(error) console.error('by-product kg update failed', error, material.product_name);
           } else {
-            await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
+            const {error}=await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
+            if(error) console.error('by-product kg insert failed', error, material.product_name);
           }
         }
       }
