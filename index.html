@@ -162,10 +162,7 @@ async function logActivity(section, action, details){
 }
 
 // ── CONSTANTS ───────────────────────────────────────────────
-const PRODUCTS  = ['NPS Atta','PHH Atta','AAY Atta','Sooji','Maida','Fine Bran','Dust','Feed','Ragi Powder','PU Atta','Broken Wheat','Puttu Podi'];
-const PACK_SIZES= {'NPS Atta':50,'PHH Atta':47.5,'AAY Atta':47.5,'Sooji':50,'Maida':50,'Fine Bran':45,'Dust':50,'Feed':50,'Ragi Powder':30,'PU Atta':50,'Broken Wheat':30,'Puttu Podi':1};
 const DISTRICTS = ['KNR','TLY','TPB','KHD','KSD','IRTTY','VLPRAMBA','NLSR','MJSR','VKND','OTHER'];
-const SCHEMES   = ['NPS','PHH','AAY'];
 const STORE_CATS= ['Packaging','Raw Material','Spare Parts','Lubricants / Oils','Chemicals','Electrical','Hardware','Miscellaneous'];
 const LEDGER_TYPES = ['Sales Receipt','Wheat Purchase','Packing Material Purchase','Salary / Wages','Fuel / Transport','Repairs & Maintenance','Electricity','Supplyco Payment Received','Supplier Payment','Daily Expenses','Loan / Advance','Other Income','Other Expense'];
 
@@ -322,9 +319,6 @@ function Dashboard(){
       </div>
 
       <div className="stat-grid">
-        <StatCard label="NPS Atta" value={fmt(stock.find(r=>r.product_type==='NPS Atta')?.qty_bags||0)+' bags'} sub="50 kg bags" col="var(--blue)"/>
-        <StatCard label="PHH Atta" value={fmt(stock.find(r=>r.product_type==='PHH Atta')?.qty_bags||0)+' bags'} sub="47.5 kg bags"
-          col={(stock.find(r=>r.product_type==='PHH Atta')?.qty_bags||0)<300?'var(--red)':'var(--green)'}/>
         <StatCard label="Produced this month" value={prodMT.toFixed(2)+' MT'} sub="all products" col="var(--amber)"/>
         <StatCard label="Dispatched this month" value={fmt(dispBags)+' bags'} sub="to Supplyco" col="var(--green)"/>
         <StatCard label="Cash in (month)" value={'₹'+fmt(cashIn)} sub="receipts & income" col="var(--green)"/>
@@ -353,27 +347,19 @@ function Dashboard(){
       <div className="two-col" style={{marginTop:24}}>
         <div className="card">
           <div className="section-label">Flour stock position</div>
-          {['NPS Atta','PHH Atta','AAY Atta'].map(p=>{
-            const row=stock.find(r=>r.product_type===p);
-            const bags=row?.qty_bags||0; const thresh=row?.min_threshold||0;
-            const col=bags===0?'var(--red)':bags<thresh?'var(--amber)':'var(--green)';
-            const max=Math.max(...stock.filter(r=>['NPS Atta','PHH Atta','AAY Atta'].includes(r.product_type)).map(r=>r.qty_bags),1);
+          {stock.filter(r=>r.qty_bags>0).map(r=>{
+            const col=r.qty_bags===0?'var(--red)':r.min_threshold>0&&r.qty_bags<r.min_threshold?'var(--amber)':'var(--green)';
+            const max=Math.max(...stock.map(x=>x.qty_bags),1);
             return(
-              <div key={p} style={{marginBottom:12}}>
+              <div key={r.id} style={{marginBottom:12}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
-                  <span>{p}</span><span style={{color:col,fontWeight:600}}>{fmt(bags)} bags</span>
+                  <span>{r.product_type}</span><span style={{color:col,fontWeight:600}}>{fmt(r.qty_bags)} bags</span>
                 </div>
-                <div className="bar-track"><div className="bar-fill" style={{width:Math.min(100,(bags/max)*100)+'%',background:col}}/></div>
+                <div className="bar-track"><div className="bar-fill" style={{width:Math.min(100,(r.qty_bags/max)*100)+'%',background:col}}/></div>
               </div>
             );
           })}
-          <div className="divider"/>
-          <div className="section-label">Other products</div>
-          {stock.filter(r=>!['NPS Atta','PHH Atta','AAY Atta'].includes(r.product_type)&&r.qty_bags>0).map(r=>(
-            <div key={r.id} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid var(--border)',fontSize:13}}>
-              <span className="dim">{r.product_type}</span><span style={{fontFamily:'var(--mono)'}}>{fmt(r.qty_bags)}</span>
-            </div>
-          ))}
+          {stock.filter(r=>r.qty_bags>0).length===0&&<Empty msg="No finished-goods stock yet."/>}
         </div>
 
         <div className="card">
@@ -417,25 +403,35 @@ function Dashboard(){
 function Production(){
   const [entries,setEntries]=useState([]);
   const [batches,setBatches]=useState([]);
+  const [finishedProducts,setFinishedProducts]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,shift:'Morning',product_type:'NPS Atta',pack_size_kg:50,qty_produced:'',wheat_used_kg:'',qty_repacked:0,qty_refeed:0,batch_id:'',notes:''};
+  const blank={date:today,shift:'Morning',product_type:'',pack_size_kg:'',qty_produced:'',wheat_used_kg:'',qty_repacked:0,qty_refeed:0,batch_id:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:e},{data:b}]=await Promise.all([
+    const [{data:e},{data:b},{data:fp}]=await Promise.all([
       sb.from('production_log').select('*').gte('date',monthStart).order('date',{ascending:false}),
       sb.from('wheat_receipts').select('*').order('date',{ascending:false}),
+      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
     ]);
-    setEntries(e||[]); setBatches(b||[]); setLoading(false);
+    setEntries(e||[]); setBatches(b||[]); setFinishedProducts(fp||[]); setLoading(false);
   },[]);
 
   useEffect(()=>{load();},[load]);
 
+  // Compute a product's own configured pack size (packeted vs loose vs raw-material-style)
+  const packSizeFor=(prod)=>{
+    if(!prod) return '';
+    if(prod.packing_type==='loose') return prod.bag_weight||'';
+    return (Number(prod.packet_weight_kg)||0)*(Number(prod.packets_per_bag)||0);
+  };
+
   const save=async()=>{
+    if(!form.product_type) return alert('Select a product.');
     if(!form.qty_produced||Number(form.qty_produced)<=0) return alert('Enter bags produced.');
     setSaving(true);
     const row={date:form.date,shift:form.shift,product_type:form.product_type,pack_size_kg:Number(form.pack_size_kg),
@@ -448,8 +444,8 @@ function Production(){
     if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('product_type',form.product_type).eq('pack_size_kg',Number(form.pack_size_kg));
 
         // Apply this product's recipe: consume raw materials, produce by-products
-    const productScheme=form.product_type==='NPS Atta'?'NPS':form.product_type==='PHH Atta'?'PHH':form.product_type==='AAY Atta'?'AAY':null;
     const finishedProduct=(await sb.from('product_master').select('id').eq('product_name',form.product_type).maybeSingle()).data;
+    const productScheme=(()=>{ const n=form.product_type.toUpperCase(); if(n.includes('NPS'))return'NPS'; if(n.includes('PHH'))return'PHH'; if(n.includes('AAY'))return'AAY'; return null; })();
     if(finishedProduct){
       const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',finishedProduct.id).maybeSingle();
       if(recipe){
@@ -534,8 +530,13 @@ function Production(){
               </select>
             </Field>
             <Field label="Product">
-              <select className="form-input" value={form.product_type} onChange={e=>{f('product_type',e.target.value);f('pack_size_kg',PACK_SIZES[e.target.value]||50);}}>
-                {PRODUCTS.map(p=><option key={p}>{p}</option>)}
+              <select className="form-input" value={form.product_type} onChange={e=>{
+                const prod=finishedProducts.find(p=>p.product_name===e.target.value);
+                f('product_type',e.target.value);
+                f('pack_size_kg',packSizeFor(prod));
+              }}>
+                <option value="">-- Select product --</option>
+                {finishedProducts.map(p=><option key={p.id} value={p.product_name}>{p.product_name}</option>)}
               </select>
             </Field>
             <Field label="Pack size (kg)"><input type="number" className="form-input" value={form.pack_size_kg} onChange={e=>f('pack_size_kg',e.target.value)}/></Field>
@@ -615,35 +616,43 @@ function Dispatch(){
   const [showWO,setShowWO]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blankD={date:today,invoice_no:'',delivery_order_no:'',work_order_id:'',scheme:'NPS',batch_no:'',depot_name:'',district:'KNR',qty_bags:'',vehicle_no:'',notes:''};
-  const blankW={work_order_no:'',work_order_date:today,scheme:'NPS',batch_no:'',knr_pkts:0,tly_pkts:0,tpb_pkts:0,khd_pkts:0,ksd_pkts:0,irtty_pkts:0,vlparamba_pkts:0,other_pkts:0};
+  const blankD={date:today,invoice_no:'',delivery_order_no:'',work_order_id:'',scheme:'',batch_no:'',depot_name:'',district:'KNR',qty_bags:'',vehicle_no:'',notes:''};
+  const blankW={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',knr_pkts:0,tly_pkts:0,tpb_pkts:0,khd_pkts:0,ksd_pkts:0,irtty_pkts:0,vlparamba_pkts:0,other_pkts:0};
   const [dForm,setDForm]=useState(blankD);
   const [wForm,setWForm]=useState(blankW);
   const df=(k,v)=>setDForm(p=>({...p,[k]:v}));
   const wf=(k,v)=>setWForm(p=>({...p,[k]:v}));
 
-  const [stockConfig, setStockConfig] = useState([]); // Add this near your other state variables
+  const [stockConfig, setStockConfig] = useState([]);
+  const [wheatMaterial, setWheatMaterial] = useState(null);
+  const [finishedProducts, setFinishedProducts] = useState([]);
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:d},{data:w},{data:s}]=await Promise.all([
+    const [{data:d},{data:w},{data:s},{data:wm},{data:fp}]=await Promise.all([
       sb.from('supplyco_dispatches').select('*').gte('date',monthStart).order('date',{ascending:false}),
       sb.from('work_orders').select('*').order('work_order_date',{ascending:false}),
-      sb.from('current_stock').select('*') // Fetch stock config
+      sb.from('current_stock').select('*'),
+      sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true).limit(1),
+      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
     ]);
-    setDispatches(d||[]); setWorkOrders(w||[]); setStockConfig(s||[]); setLoading(false);
+    setDispatches(d||[]); setWorkOrders(w||[]); setStockConfig(s||[]); setWheatMaterial((wm&&wm[0])||null); setFinishedProducts(fp||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
+  const schemeOptions=(wheatMaterial?.scheme_list?.split(',').map(s=>s.trim()):['NPS','PHH','AAY']).filter(s=>s.toLowerCase()!=='private');
+  const productForScheme=(scheme)=>finishedProducts.find(p=>p.product_name.toUpperCase().includes(scheme));
+
   const saveDispatch=async()=>{
-    if(!dForm.invoice_no||!dForm.depot_name||!dForm.qty_bags) return alert('Invoice, depot and quantity required.');
+    if(!dForm.invoice_no||!dForm.depot_name||!dForm.qty_bags||!dForm.scheme) return alert('Scheme, invoice, depot and quantity required.');
     setSaving(true);
     const {data,error}=await sb.from('supplyco_dispatches').insert({...dForm,qty_bags:Number(dForm.qty_bags),work_order_id:dForm.work_order_id||null}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
-    const packKg=dForm.scheme==='NPS'?50:47.5;
-    const prod=dForm.scheme==='NPS'?'NPS Atta':dForm.scheme==='PHH'?'PHH Atta':'AAY Atta';
-    const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',prod).eq('pack_size_kg',packKg).single();
-    if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,s.qty_bags-Number(dForm.qty_bags))}).eq('product_type',prod).eq('pack_size_kg',packKg);
+    const prod=productForScheme(dForm.scheme);
+    if(prod){
+      const {data:s}=await sb.from('current_stock').select('*').eq('product_type',prod.product_name).maybeSingle();
+      if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,s.qty_bags-Number(dForm.qty_bags))}).eq('id',s.id);
+    }
     setDispatches(p=>[data,...p]); setDForm(blankD); setShowDF(false); setSaving(false);
     logActivity('Dispatch','create',`Invoice ${dForm.invoice_no} — ${dForm.qty_bags} bags to ${dForm.depot_name}`);
   };
@@ -660,10 +669,11 @@ function Dispatch(){
   const delD=async(d)=>{
     if(!confirm('Delete dispatch? Stock will be restored.')) return;
     await sb.from('supplyco_dispatches').delete().eq('id',d.id);
-    const packKg=d.scheme==='NPS'?50:47.5;
-    const prod=d.scheme==='NPS'?'NPS Atta':d.scheme==='PHH'?'PHH Atta':'AAY Atta';
-    const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',prod).eq('pack_size_kg',packKg).single();
-    if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+d.qty_bags}).eq('product_type',prod).eq('pack_size_kg',packKg);
+    const prod=productForScheme(d.scheme);
+    if(prod){
+      const {data:s}=await sb.from('current_stock').select('*').eq('product_type',prod.product_name).maybeSingle();
+      if(s) await sb.from('current_stock').update({qty_bags:s.qty_bags+d.qty_bags}).eq('id',s.id);
+    }
     setDispatches(p=>p.filter(x=>x.id!==d.id));
     logActivity('Dispatch','delete',`Invoice ${d.invoice_no} — ${d.qty_bags} bags deleted`);
   };
@@ -700,7 +710,12 @@ function Dispatch(){
           <div className="form-grid">
             <Field label="Work order no. ★"><input className="form-input" value={wForm.work_order_no} onChange={e=>wf('work_order_no',e.target.value)}/></Field>
             <Field label="Date"><input type="date" className="form-input" value={wForm.work_order_date} onChange={e=>wf('work_order_date',e.target.value)}/></Field>
-            <Field label="Scheme"><select className="form-input" value={wForm.scheme} onChange={e=>wf('scheme',e.target.value)}>{SCHEMES.map(s=><option key={s}>{s}</option>)}</select></Field>
+            <Field label="Scheme">
+              <select className="form-input" value={wForm.scheme} onChange={e=>wf('scheme',e.target.value)}>
+                <option value="">-- Select scheme --</option>
+                {schemeOptions.map(s=><option key={s}>{s}</option>)}
+              </select>
+            </Field>
             <Field label="Batch no."><input className="form-input" value={wForm.batch_no} onChange={e=>wf('batch_no',e.target.value.toUpperCase())}/></Field>
           </div>
           <div style={{marginTop:12}}>
@@ -721,7 +736,12 @@ function Dispatch(){
         <FormCard title="Log Supplyco dispatch" col="var(--green)" onSave={saveDispatch} onCancel={()=>setShowDF(false)} saving={saving}>
           <div className="form-grid">
             <Field label="Date"><input type="date" className="form-input" value={dForm.date} max={today} onChange={e=>df('date',e.target.value)}/></Field>
-            <Field label="Scheme"><select className="form-input" value={dForm.scheme} onChange={e=>df('scheme',e.target.value)}>{SCHEMES.map(s=><option key={s}>{s}</option>)}</select></Field>
+            <Field label="Scheme">
+              <select className="form-input" value={dForm.scheme} onChange={e=>df('scheme',e.target.value)}>
+                <option value="">-- Select scheme --</option>
+                {schemeOptions.map(s=><option key={s}>{s}</option>)}
+              </select>
+            </Field>
             <Field label="Invoice no. ★"><input className="form-input" placeholder="e.g. NPS/42" value={dForm.invoice_no} onChange={e=>df('invoice_no',e.target.value)}/></Field>
             <Field label="Delivery order no."><input className="form-input" value={dForm.delivery_order_no} onChange={e=>df('delivery_order_no',e.target.value)}/></Field>
             <Field label="Work order">
@@ -1263,15 +1283,17 @@ function Wheat(){
 // ═══════════════════════════════════════════════════════════
 function PrivateDispatch(){
   const [entries,setEntries]=useState([]);
+  const [finishedProducts,setFinishedProducts]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,party_name:'',product_type:'NPS Atta',qty_bags:'',vehicle_no:'',invoice_no:'',notes:''};
+  const blank={date:today,party_name:'',product_type:'',qty_bags:'',vehicle_no:'',invoice_no:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   useEffect(()=>{
     sb.from('private_dispatches').select('*').gte('date',monthStart).order('date',{ascending:false}).then(({data})=>{setEntries(data||[]);setLoading(false);});
+    sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name').then(({data})=>{setFinishedProducts(data||[]);});
   },[]);
 
   const save=async()=>{
@@ -1310,7 +1332,8 @@ function PrivateDispatch(){
             <Field label="Party name ★"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
             <Field label="Product">
               <select className="form-input" value={form.product_type} onChange={e=>f('product_type',e.target.value)}>
-                {PRODUCTS.map(p=><option key={p}>{p}</option>)}
+                <option value="">-- Select product --</option>
+                {finishedProducts.map(p=><option key={p.id} value={p.product_name}>{p.product_name}</option>)}
               </select>
             </Field>
             <Field label="Bags dispatched ★"><input type="number" className="form-input" style={{fontWeight:600,fontSize:15}} value={form.qty_bags} onChange={e=>f('qty_bags',e.target.value)}/></Field>
