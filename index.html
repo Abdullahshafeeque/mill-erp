@@ -613,7 +613,7 @@ function Production(){
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,shift:'Morning',product_id:'',qty_produced:'',notes:''};
+  const blank={date:today,shift:'Morning',product_id:'',qty_produced:'',actual_qty_produced:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -679,7 +679,7 @@ function Production(){
     const bagSize=packSizeOf(product);
     if(!bagSize){ setSaving(false); return alert('This product has no configured pack size — set it in Product Master first.'); }
 
-    const row={date:form.date, shift:form.shift, product_id:form.product_id, qty_produced:Number(form.qty_produced), notes:form.notes};
+    const row={date:form.date, shift:form.shift, product_id:form.product_id, qty_produced:Number(form.qty_produced), actual_qty_produced: form.actual_qty_produced?Number(form.actual_qty_produced):null, notes:form.notes};
     const {data,error}=await sb.from('production_log').insert(row).select('*, product:product_id(*)').single();
     if(error){alert('Error: '+error.message);setSaving(false);return;}
 
@@ -737,6 +737,7 @@ function Production(){
             </select>
           </Field>
           <Field label="Bags produced ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty_produced} onChange={e=>f('qty_produced',e.target.value)}/></Field>
+          <Field label="Bags produced (actual/physical)"><input type="number" className="form-input" value={form.actual_qty_produced} onChange={e=>f('actual_qty_produced',e.target.value)}/></Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
         {form.product_id&&form.qty_produced&&(()=>{
@@ -762,12 +763,16 @@ function Production(){
           <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total: {totalMT.toFixed(3)} MT</div>
         </div>
         <TableWrap><table>
-          <thead><tr><th>Shift</th><th>Product</th><th>Bags</th><th>Output</th><th>Notes</th><th></th></tr></thead>
+          <thead><tr><th>Shift</th><th>Product</th><th>Bags (Formula)</th><th>Bags (Actual)</th><th>Variance</th><th>Output</th><th>Notes</th><th></th></tr></thead>
           <tbody>
             {rows.map(e=>(<tr key={e.id}>
               <td><span className="badge badge-blue">{e.shift}</span></td>
               <td><strong>{e.product?.product_name||'—'}</strong></td>
               <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmt(e.qty_produced)}</strong></td>
+              <td className="mono">{e.actual_qty_produced!=null?fmt(e.actual_qty_produced):'—'}</td>
+<td className="mono" style={{color: e.actual_qty_produced!=null && e.actual_qty_produced!==e.qty_produced ? (e.actual_qty_produced>e.qty_produced?'var(--green)':'var(--red)') : 'var(--muted)'}}>
+  {e.actual_qty_produced!=null ? (e.actual_qty_produced-e.qty_produced>0?'+':'')+fmt(e.actual_qty_produced-e.qty_produced) : '—'}
+</td>
               <td className="mono dim">{fmtMT(Number(e.qty_produced)*packSizeOf(e.product))}</td>
               <td className="dim">{e.notes||'—'}</td>
               <td><button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button></td>
