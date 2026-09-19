@@ -484,9 +484,9 @@ function ProductRecipes(){
     setEditingId(prod.id);
     const recipe=recipes.find(r=>r.product_id===prod.id);
     const ex=recipe?lines.filter(l=>l.recipe_id===recipe.id):[];
-    setEditLines(ex.length?ex.map(l=>({...l})):[{line_type:'consumes',material_id:'',qty_per_unit:'',scheme:''}]);
+    setEditLines(ex.length?ex.map(l=>({...l})):[{line_type:'consumes',material_id:'',qty_per_unit:'',scheme:'',fallback_material_id:''}]);
   };
-  const addLine=(t)=>setEditLines(p=>[...p,{line_type:t,material_id:'',qty_per_unit:'',scheme:''}]);
+  const addLine=(t)=>setEditLines(p=>[...p,{line_type:t,material_id:'',qty_per_unit:'',scheme:'',fallback_material_id:''}]);
   const removeLine=(i)=>setEditLines(p=>p.filter((_,idx)=>idx!==i));
   const updateLine=(i,k,v)=>setEditLines(p=>p.map((l,idx)=>idx===i?{...l,[k]:v}:l));
 
@@ -508,7 +508,7 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
       await sb.from('product_recipes').update({scheme,updated_at:new Date().toISOString()}).eq('id',recipe.id);
     }
     await sb.from('recipe_lines').delete().eq('recipe_id',recipe.id);
-    const toInsert=editLines.map(l=>({recipe_id:recipe.id,line_type:l.line_type,material_id:l.material_id,qty_per_unit:Number(l.qty_per_unit),scheme:l.scheme||null}));
+    const toInsert=editLines.map(l=>({recipe_id:recipe.id,line_type:l.line_type,material_id:l.material_id,qty_per_unit:Number(l.qty_per_unit),scheme:l.scheme||null,fallback_material_id:l.fallback_material_id||null}));
     await sb.from('recipe_lines').insert(toInsert);
     logActivity('Product Recipes','update',`${prod.product_name} recipe updated`);
     setConfirmProd(null); setEditingId(null); setEditLines([]);
@@ -559,6 +559,12 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
     {opts.map(s=><option key={s} value={s}>{s}</option>)}
   </select>);
 })()}
+                        {l.line_type==='consumes'&&(
+                          <select className="form-input" style={{width:170}} value={l.fallback_material_id} onChange={e=>updateLine(i,'fallback_material_id',e.target.value)}>
+                            <option value="">-- No fallback source --</option>
+                            {products.filter(p=>p.id!==l.material_id&&p.id!==prod.id).map(p=><option key={p.id} value={p.id}>Use up {p.product_name} first</option>)}
+                          </select>
+                        )}
                         <button className="btn btn-red btn-sm" onClick={()=>removeLine(i)}>✕</button>
                       </div>
                     ))}
@@ -575,7 +581,7 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
   const col=l.line_type==='consumes'?'var(--red)':'var(--green)';
   return(
     <span key={l.id} className="badge" style={{background:`color-mix(in srgb, ${col} 15%, transparent)`,color:col}}>
-      {l.line_type==='consumes'?'−':'+'} {name(l.material_id)}{l.scheme?` (${l.scheme})`:''} {l.qty_per_unit}kg
+      {l.line_type==='consumes'?'−':'+'} {name(l.material_id)}{l.scheme?` (${l.scheme})`:''} {l.qty_per_unit}kg{l.fallback_material_id?` [uses ${name(l.fallback_material_id)} first]`:''}
     </span>
   );
 })}
@@ -601,7 +607,7 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
           <ul style={{marginBottom:16,paddingLeft:20}}>
             {editLines.map((l,i)=>(
   <li key={i} style={{fontSize:13,marginBottom:4,color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
-    {l.line_type==='consumes'?'Consume':'Produce'} <strong>{l.qty_per_unit}kg</strong> of {name(l.material_id)}{l.scheme?` — ${l.scheme}`:''}
+    {l.line_type==='consumes'?'Consume':'Produce'} <strong>{l.qty_per_unit}kg</strong> of {name(l.material_id)}{l.scheme?` — ${l.scheme}`:''}{l.fallback_material_id?` (draws from ${name(l.fallback_material_id)} first)`:''}
   </li>
 ))}
           </ul>
@@ -654,7 +660,34 @@ const summary=[];
       const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
       const lineScheme = line.scheme || schemeFromName(product.product_name);
 
-      if(material.is_raw_material){
+      if(line.line_type==='consumes' && line.fallback_material_id){
+        // Draw from the fallback source first, then spill remainder onto the main material
+        let remainingKg=Math.abs(delta);
+        const {data:fbRow}=await sb.from('raw_material_stock').select('*').eq('product_id',line.fallback_material_id).maybeSingle();
+        const available=Number(fbRow?.qty_kg||0);
+        if(available>0){
+          const takeFromFallback=Math.min(available,remainingKg);
+          await sb.from('raw_material_stock').update({qty_kg:available-takeFromFallback,updated_at:new Date().toISOString()}).eq('id',fbRow.id);
+          remainingKg-=takeFromFallback;
+        }
+        if(remainingKg>0){
+          if(material.has_schemes && lineScheme){
+            const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
+            if(bucket){
+              await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-remainingKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            } else {
+              await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:-remainingKg});
+            }
+          } else {
+            const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
+            if(bucket){
+              await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)-remainingKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            } else {
+              await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:-remainingKg});
+            }
+          }
+        }
+      } else if(material.is_raw_material){
         if(material.has_schemes && lineScheme){
           const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
           if(bucket){
