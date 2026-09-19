@@ -497,12 +497,50 @@ function Production(){
   };
 
   const del=async(e)=>{
-    if(!confirm('Delete entry? Stock will be adjusted.')) return;
+    if(!confirm('Delete entry? Stock and raw material balances will be reversed.')) return;
     await sb.from('production_log').delete().eq('id',e.id);
     const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_type',e.product_type).eq('pack_size_kg',e.pack_size_kg).single();
     if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,s.qty_bags-e.qty_produced)}).eq('product_type',e.product_type).eq('pack_size_kg',e.pack_size_kg);
+
+    // Reverse this product's recipe: restore consumed raw materials, remove credited by-products
+    const finishedProduct=(await sb.from('product_master').select('id').eq('product_name',e.product_type).maybeSingle()).data;
+    if(finishedProduct){
+      const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',finishedProduct.id).maybeSingle();
+      if(recipe){
+        const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
+        const attaKgProduced=Number(e.qty_produced)*Number(e.pack_size_kg);
+        const productScheme=(()=>{ const n=e.product_type.toUpperCase(); if(n.includes('NPS'))return'NPS'; if(n.includes('PHH'))return'PHH'; if(n.includes('AAY'))return'AAY'; return null; })();
+
+        for(const line of (recipeLines||[])){
+          const qtyKg=attaKgProduced*Number(line.qty_per_unit);
+          const material=(await sb.from('product_master').select('*').eq('id',line.material_id).maybeSingle()).data;
+          if(!material) continue;
+
+          if(line.line_type==='consumes'){
+            // Restore the raw material that was deducted
+            if(material.has_schemes&&productScheme){
+              const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('material_id',material.id).eq('scheme',productScheme).maybeSingle();
+              if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+qtyKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            }
+          } else {
+            // Remove the by-product stock that was credited
+            if(material.is_raw_material){
+              const {data:existingBucket}=await sb.from('bran_stock').select('*').eq('bucket',material.product_name).maybeSingle();
+              if(existingBucket) await sb.from('bran_stock').update({qty_kg:Number(existingBucket.qty_kg)-qtyKg,updated_at:new Date().toISOString()}).eq('id',existingBucket.id);
+            } else {
+              const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_type',material.product_name).maybeSingle();
+              if(stockRow&&stockRow.pack_size_kg>0){
+                const bagsToRemove=qtyKg/Number(stockRow.pack_size_kg);
+                await sb.from('current_stock').update({qty_bags:Math.max(0,Number(stockRow.qty_bags)-bagsToRemove),updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+              }
+            }
+          }
+        }
+      }
+    }
+
     setEntries(p=>p.filter(x=>x.id!==e.id));
-    logActivity('Production','delete',`${e.product_type} — ${e.qty_produced} bags on ${e.date}`);
+    logActivity('Production','delete',`${e.product_type} — ${e.qty_produced} bags on ${e.date} (reversed recipe effects)`);
   };
 
   if(loading) return <Loading/>;
