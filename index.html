@@ -188,6 +188,7 @@ const NAV = [
   { id:'bran-stock',     label:'Bran Stock',       icon:'🌾' },
   { id:'reconciliation',label:'Reconciliation',   icon:'📊' },
   { section:'Inventory' },
+  { id:'all-stock',     label:'All Stock',        icon:'📊' },
   { id:'flour-stock',   label:'Flour Stock',      icon:'◫' },
   { id:'store',         label:'Store & Materials', icon:'📦' },
   { section:'Finance' },
@@ -2270,6 +2271,117 @@ function ProductRecipes(){
 }
 
 // ═══════════════════════════════════════════════════════════
+// ALL STOCK (unified view)
+// ═══════════════════════════════════════════════════════════
+function AllStock(){
+  const [finishedStock,setFinishedStock]=useState([]);
+  const [branStock,setBranStock]=useState([]);
+  const [rawBalances,setRawBalances]=useState([]);
+  const [products,setProducts]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [filterCat,setFilterCat]=useState('All');
+
+  useEffect(()=>{
+    Promise.all([
+      sb.from('current_stock').select('*'),
+      sb.from('bran_stock').select('*'),
+      sb.from('raw_material_scheme_stock').select('*'),
+      sb.from('product_master').select('*'),
+    ]).then(([{data:fs},{data:bs},{data:rb},{data:p}])=>{
+      setFinishedStock(fs||[]); setBranStock(bs||[]); setRawBalances(rb||[]); setProducts(p||[]);
+      setLoading(false);
+    });
+  },[]);
+
+  if(loading) return <Loading/>;
+
+  const productByName=(name)=>products.find(p=>p.product_name===name);
+
+  // Raw materials with schemes: sum their scheme balances into a physical total
+  const schemedMaterials=products.filter(p=>p.is_raw_material&&p.has_schemes);
+  const schemedRows=schemedMaterials.map(mat=>{
+    const rows=rawBalances.filter(b=>b.material_id===mat.id);
+    const total=rows.reduce((s,r)=>s+Number(r.qty_kg),0);
+    return{product:mat,category:'Raw Material',qtyLabel:fmtMT(total),schemeBreakdown:rows,statusVal:total};
+  });
+
+  // Raw materials without schemes (rare, but possible) — no dedicated stock table for these yet
+  const nonSchemedRawMaterials=products.filter(p=>p.is_raw_material&&!p.has_schemes);
+
+  // Finished goods / by-products tracked in current_stock
+  const finishedRows=finishedStock.map(row=>{
+    const product=productByName(row.product_type);
+    return{product,category:product?.category||'Finished Goods',qtyLabel:fmt(row.qty_bags)+' bags',statusVal:row.qty_bags,stockRow:row};
+  });
+
+  // Loose by-products tracked in bran_stock
+  const branRows=branStock.map(row=>{
+    const product=products.find(p=>p.product_name===row.bucket)||{product_name:row.bucket};
+    return{product,category:'By-Products',qtyLabel:fmt(row.qty_kg,1)+' kg',statusVal:row.qty_kg};
+  });
+
+  const allRows=[...schemedRows,...finishedRows,...branRows];
+  const categories=['All',...Array.from(new Set(allRows.map(r=>r.category)))];
+  const filtered=filterCat==='All'?allRows:allRows.filter(r=>r.category===filterCat);
+
+  return(
+    <div className="page">
+      <div className="page-header">
+        <div className="page-label">Inventory</div>
+        <div className="page-title">All stock — unified view</div>
+      </div>
+
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+        {categories.map(c=>(
+          <button key={c} className={`btn btn-sm ${filterCat===c?'btn-amber':'btn-ghost'}`} onClick={()=>setFilterCat(c)}>{c}</button>
+        ))}
+      </div>
+
+      <TableWrap>
+        <table>
+          <thead><tr><th>Product</th><th>Category</th><th>Current Stock</th><th>Details</th></tr></thead>
+          <tbody>
+            {filtered.length===0&&<tr><td colSpan={4}><Empty msg="No stock records found."/></td></tr>}
+            {filtered.map((r,i)=>{
+              const isLow=r.stockRow&&r.stockRow.min_threshold>0&&r.stockRow.qty_bags<r.stockRow.min_threshold;
+              const col=isLow?'var(--red)':r.statusVal<0?'var(--red)':'var(--green)';
+              return(
+                <tr key={i}>
+                  <td><strong>{r.product?.product_name||'—'}</strong></td>
+                  <td><span className="badge badge-blue">{r.category}</span></td>
+                  <td><strong style={{color:col,fontFamily:'var(--mono)',fontSize:14}}>{r.qtyLabel}</strong></td>
+                  <td>
+                    {r.schemeBreakdown?(
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        {r.schemeBreakdown.map(s=>(
+                          <span key={s.id} className="badge" style={{background:Number(s.qty_kg)<0?'var(--red)15':'var(--border)',color:Number(s.qty_kg)<0?'var(--red)':'var(--muted)'}}>
+                            {s.scheme}: {fmtMT(s.qty_kg)}
+                          </span>
+                        ))}
+                      </div>
+                    ):isLow?(
+                      <span className="dim" style={{color:'var(--red)'}}>Below min. threshold ({fmt(r.stockRow.min_threshold)})</span>
+                    ):(
+                      <span className="dim">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </TableWrap>
+
+      {nonSchemedRawMaterials.length>0&&(
+        <div style={{marginTop:16,padding:'10px 16px',background:'var(--amber)10',border:'1px solid var(--amber)30',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
+          Note: {nonSchemedRawMaterials.map(m=>m.product_name).join(', ')} {nonSchemedRawMaterials.length===1?'is':'are'} raw material(s) without scheme division — stock tracking for these isn't wired up yet.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // APP ROOT
 // ═══════════════════════════════════════════════════════════
 function App(){
@@ -2291,6 +2403,7 @@ function App(){
     'dispatch':<Dispatch/>,
     'wheat':<Wheat/>,
     'reconciliation':<Reconciliation/>,
+    'all-stock':<AllStock/>,
     'flour-stock':<FlourStock/>,
     'store':<Store/>,
     'ledger':<Ledger/>,
