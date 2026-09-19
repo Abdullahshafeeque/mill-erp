@@ -251,7 +251,7 @@ function ProductMaster(){
     product_code: form.product_code, product_name: form.product_name.trim(), category: form.category, hsn_code: form.hsn_code,
     is_raw_material: !!form.is_raw_material,
     available_for_supplyco: form.is_raw_material ? !!form.available_for_supplyco : false,
-    available_for_private_dispatch: !form.is_raw_material ? !!form.available_for_private_dispatch : false,
+    available_for_private_dispatch: !!form.available_for_private_dispatch,
     available_for_supplyco_dispatch: !form.is_raw_material ? !!form.available_for_supplyco_dispatch : false,
     packing_type: form.is_raw_material ? null : form.packing_type,
     packet_weight_kg: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packet_weight_kg) : null,
@@ -366,22 +366,22 @@ function ProductMaster(){
             </Field>
           </div>
         )}
-        {!form.is_raw_material&&(
-          <div style={{marginTop:10,display:'flex',gap:24,flexWrap:'wrap'}}>
-            <Field label="Dispatchable via Private Dispatch?">
-              <label style={{display:'flex',alignItems:'center',gap:8}}>
-                <input type="checkbox" checked={form.available_for_private_dispatch} onChange={e=>f('available_for_private_dispatch',e.target.checked)}/>
-                <span style={{fontSize:13}}>Yes</span>
-              </label>
-            </Field>
+        <div style={{marginTop:10,display:'flex',gap:24,flexWrap:'wrap'}}>
+          <Field label="Dispatchable via Private Dispatch?">
+            <label style={{display:'flex',alignItems:'center',gap:8}}>
+              <input type="checkbox" checked={form.available_for_private_dispatch} onChange={e=>f('available_for_private_dispatch',e.target.checked)}/>
+              <span style={{fontSize:13}}>Yes</span>
+            </label>
+          </Field>
+          {!form.is_raw_material&&(
             <Field label="Dispatchable via Supplyco Dispatch?">
               <label style={{display:'flex',alignItems:'center',gap:8}}>
                 <input type="checkbox" checked={form.available_for_supplyco_dispatch} onChange={e=>f('available_for_supplyco_dispatch',e.target.checked)}/>
                 <span style={{fontSize:13}}>Yes</span>
               </label>
             </Field>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className="divider"/>
         {!form.is_raw_material&&(
@@ -1430,53 +1430,79 @@ function Dispatch(){
 // ══════════════════════════════════════════════════════════
 function PrivateDispatch(){
   const [entries,setEntries]=useState([]);
-  const [finishedProducts,setFinishedProducts]=useState([]);
+  const [products,setProducts]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,party_name:'',product_id:'',qty_bags:'',vehicle_no:'',invoice_no:'',notes:''};
+  const blank={date:today,party_name:'',product_id:'',qty:'',vehicle_no:'',invoice_no:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:e},{data:fp}]=await Promise.all([
+    const [{data:e},{data:p}]=await Promise.all([
       sb.from('private_dispatches').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
-      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).eq('available_for_private_dispatch',true).order('product_name'),
+      sb.from('product_master').select('*').eq('is_active',true).eq('available_for_private_dispatch',true).order('product_name'),
     ]);
-    setEntries(e||[]); setFinishedProducts(fp||[]); setLoading(false);
+    setEntries(e||[]); setProducts(p||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
+  const selectedProduct=products.find(p=>p.id===form.product_id);
+  const isRaw=selectedProduct?.is_raw_material;
+
+  const debitStock=async(product, qty, sign)=>{
+    // sign = -1 to deduct on dispatch, +1 to restore on delete
+    if(product.is_raw_material){
+      if(product.has_schemes){
+        const scheme='Private';
+        const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',product.id).eq('scheme',scheme).maybeSingle();
+        if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+sign*qty,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+      } else {
+        const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',product.id).maybeSingle();
+        if(bucket) await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)+sign*qty,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+      }
+    } else {
+      const bagSize=packSizeOf(product);
+      if(bagSize>0){
+        const {data:s}=await sb.from('current_stock').select('*').eq('product_id',product.id).maybeSingle();
+        if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,Number(s.qty_bags)+sign*qty),updated_at:new Date().toISOString()}).eq('id',s.id);
+      } else {
+        const {data:kgRow}=await sb.from('raw_material_stock').select('*').eq('product_id',product.id).maybeSingle();
+        if(kgRow) await sb.from('raw_material_stock').update({qty_kg:Number(kgRow.qty_kg)+sign*qty,updated_at:new Date().toISOString()}).eq('id',kgRow.id);
+      }
+    }
+  };
+
   const save=async()=>{
-    if(!form.party_name||!form.product_id||!form.qty_bags) return alert('Party name, product and quantity required.');
+    if(!form.party_name||!form.product_id||!form.qty) return alert('Party name, product and quantity required.');
     setSaving(true);
-    const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:Number(form.qty_bags),vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes};
+    const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:Number(form.qty),qty_kg:isRaw?Number(form.qty):null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes};
     const {data,error}=await sb.from('private_dispatches').insert(row).select('*, product:product_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
-    const {data:s}=await sb.from('current_stock').select('*').eq('product_id',form.product_id).maybeSingle();
-    if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,Number(s.qty_bags)-Number(form.qty_bags)),updated_at:new Date().toISOString()}).eq('id',s.id);
+    await debitStock(selectedProduct, Number(form.qty), -1);
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('Private Dispatch','create',`${form.party_name} — ${form.qty_bags} bags`);
+    logActivity('Private Dispatch','create',`${form.party_name} — ${form.qty}${isRaw?'kg':' bags'} of ${selectedProduct.product_name}`);
   };
 
   const del=async(e)=>{
     if(!confirm('Delete entry? Stock will be restored.')) return;
     await sb.from('private_dispatches').delete().eq('id',e.id);
-    const {data:s}=await sb.from('current_stock').select('*').eq('product_id',e.product_id).maybeSingle();
-    if(s) await sb.from('current_stock').update({qty_bags:Number(s.qty_bags)+Number(e.qty_bags),updated_at:new Date().toISOString()}).eq('id',s.id);
+    const qty=e.product?.is_raw_material?Number(e.qty_kg):Number(e.qty_bags);
+    if(e.product) await debitStock(e.product, qty, 1);
     setEntries(p=>p.filter(x=>x.id!==e.id));
     logActivity('Private Dispatch','delete',`${e.party_name} deleted`);
   };
 
   if(loading) return <Loading/>;
-  const total=entries.reduce((s,e)=>s+Number(e.qty_bags),0);
+  const totalBags=entries.filter(e=>!e.product?.is_raw_material).reduce((s,e)=>s+Number(e.qty_bags||0),0);
+  const totalKg=entries.filter(e=>e.product?.is_raw_material).reduce((s,e)=>s+Number(e.qty_kg||0),0);
 
   return(<div className="page">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
       <div className="page-header" style={{marginBottom:0}}>
         <div className="page-label">Sales</div>
-        <div className="page-title">Private dispatch — this month: {fmt(total)} bags</div>
+        <div className="page-title">Private dispatch — this month: {fmt(totalBags)} bags, {fmtMT(totalKg)}</div>
       </div>
       <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ Log dispatch</button>
     </div>
@@ -1489,10 +1515,10 @@ function PrivateDispatch(){
           <Field label="Product">
             <select className="form-input" value={form.product_id} onChange={e=>f('product_id',e.target.value)}>
               <option value="">-- Select product --</option>
-              {finishedProducts.map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
+              {products.map(p=><option key={p.id} value={p.id}>{p.product_name}{p.is_raw_material?' (raw material)':''}</option>)}
             </select>
           </Field>
-          <Field label="Bags dispatched ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty_bags} onChange={e=>f('qty_bags',e.target.value)}/></Field>
+          <Field label={isRaw?'Quantity (kg) ★':'Bags dispatched ★'}><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty} onChange={e=>f('qty',e.target.value)}/></Field>
           <Field label="Vehicle no."><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
           <Field label="Invoice no."><input className="form-input" value={form.invoice_no} onChange={e=>f('invoice_no',e.target.value)}/></Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
@@ -1501,14 +1527,14 @@ function PrivateDispatch(){
     )}
 
     <TableWrap><table>
-      <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Bags</th><th>Vehicle</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Qty</th><th>Vehicle</th><th></th></tr></thead>
       <tbody>
         {entries.length===0&&<tr><td colSpan={6}><Empty msg="No private dispatches this month."/></td></tr>}
         {entries.map(e=>(<tr key={e.id}>
           <td className="mono dim">{e.date}</td>
           <td><strong>{e.party_name}</strong></td>
           <td>{e.product?.product_name||'—'}</td>
-          <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmt(e.qty_bags)}</strong></td>
+          <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{e.product?.is_raw_material?fmtMT(e.qty_kg):fmt(e.qty_bags)+' bags'}</strong></td>
           <td className="dim">{e.vehicle_no||'—'}</td>
           <td><button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button></td>
         </tr>))}
