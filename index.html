@@ -640,23 +640,22 @@ function Production(){
   },[]);
   useEffect(()=>{load();},[load]);
 
-  const applyRecipe=async(product, qtyProducedKg, sign)=>{
-    // sign = 1 to apply forward (on create), -1 to reverse (on delete)
+    const applyRecipe=async(product, qtyProducedKg, sign)=>{
     const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',product.id).maybeSingle();
     if(!recipe) return [];
     const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
     const summary=[];
 
-for(const line of (recipeLines||[])){
-  const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
-  const material=allProducts.find(p=>p.id===line.material_id);
-  if(!material) continue;
-  const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
-  const lineScheme = line.scheme || schemeFromName(product.product_name);
+    for(const line of (recipeLines||[])){
+      const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
+      const material=allProducts.find(p=>p.id===line.material_id);
+      if(!material) continue;
+      const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
+      const lineScheme = line.scheme || schemeFromName(product.product_name);
 
-  if(material.is_raw_material){
-    if(material.has_schemes && lineScheme){
-      const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
+      if(material.is_raw_material){
+        if(material.has_schemes && lineScheme){
+          const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
           if(bucket){
             await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
           } else {
@@ -681,7 +680,6 @@ for(const line of (recipeLines||[])){
             await sb.from('current_stock').insert({product_id:material.id,qty_bags:bagsDelta});
           }
         } else {
-          // No bag size configured — track this by-product in kg instead, so nothing is silently lost
           const {data:kgRow}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
           if(kgRow){
             await sb.from('raw_material_stock').update({qty_kg:Number(kgRow.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',kgRow.id);
