@@ -474,15 +474,20 @@ function Production(){
               const bucketName=material.product_name;
               const {data:existingBucket}=await sb.from('bran_stock').select('*').eq('bucket',bucketName).maybeSingle();
               if(existingBucket){
-                await sb.from('bran_stock').update({qty_kg:Number(existingBucket.qty_kg)+qtyKg,updated_at:new Date().toISOString()}).eq('id',existingBucket.id);
+                const {error:upErr}=await sb.from('bran_stock').update({qty_kg:Number(existingBucket.qty_kg)+qtyKg,updated_at:new Date().toISOString()}).eq('id',existingBucket.id);
+                if(upErr) console.error('bran_stock update failed:',upErr.message,bucketName);
               } else {
-                await sb.from('bran_stock').insert({bucket:bucketName,qty_kg:qtyKg});
+                const {error:insErr}=await sb.from('bran_stock').insert({bucket:bucketName,qty_kg:qtyKg});
+                if(insErr) console.error('bran_stock insert failed:',insErr.message,bucketName);
               }
             } else {
               const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_type',material.product_name).maybeSingle();
               if(stockRow&&stockRow.pack_size_kg>0){
                 const bagsToAdd=qtyKg/Number(stockRow.pack_size_kg);
-                await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsToAdd,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+                const {error:csErr}=await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsToAdd,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+                if(csErr) console.error('current_stock update failed:',csErr.message,material.product_name);
+              } else {
+                console.error('No current_stock row or invalid pack_size_kg for by-product:',material.product_name,stockRow);
               }
             }
             summary.push(`+${qtyKg.toFixed(1)}kg ${material.product_name}`);
