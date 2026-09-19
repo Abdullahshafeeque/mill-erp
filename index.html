@@ -483,15 +483,16 @@ function ProductRecipes(){
     setEditingId(prod.id);
     const recipe=recipes.find(r=>r.product_id===prod.id);
     const ex=recipe?lines.filter(l=>l.recipe_id===recipe.id):[];
-    setEditLines(ex.length?ex.map(l=>({...l})):[{line_type:'consumes',material_id:'',qty_per_unit:''}]);
+    setEditLines(ex.length?ex.map(l=>({...l})):[{line_type:'consumes',material_id:'',qty_per_unit:'',scheme:''}]);
   };
-  const addLine=(t)=>setEditLines(p=>[...p,{line_type:t,material_id:'',qty_per_unit:''}]);
+  const addLine=(t)=>setEditLines(p=>[...p,{line_type:t,material_id:'',qty_per_unit:'',scheme:''}]);
   const removeLine=(i)=>setEditLines(p=>p.filter((_,idx)=>idx!==i));
   const updateLine=(i,k,v)=>setEditLines(p=>p.map((l,idx)=>idx===i?{...l,[k]:v}:l));
 
   const attemptSave=(prod)=>{
     if(editLines.length===0) return alert('Add at least one line.');
     if(editLines.some(l=>!l.material_id||!l.qty_per_unit)) return alert('Every line needs a material and quantity.');
+if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.has_schemes && !l.scheme;})) return alert('Select a scheme for every material that has schemes.');
     setConfirmProd(prod);
   };
 
@@ -506,7 +507,7 @@ function ProductRecipes(){
       await sb.from('product_recipes').update({scheme,updated_at:new Date().toISOString()}).eq('id',recipe.id);
     }
     await sb.from('recipe_lines').delete().eq('recipe_id',recipe.id);
-    const toInsert=editLines.map(l=>({recipe_id:recipe.id,line_type:l.line_type,material_id:l.material_id,qty_per_unit:Number(l.qty_per_unit)}));
+    const toInsert=editLines.map(l=>({recipe_id:recipe.id,line_type:l.line_type,material_id:l.material_id,qty_per_unit:Number(l.qty_per_unit),scheme:l.scheme||null}));
     await sb.from('recipe_lines').insert(toInsert);
     logActivity('Product Recipes','update',`${prod.product_name} recipe updated`);
     setConfirmProd(null); setEditingId(null); setEditLines([]);
@@ -549,6 +550,14 @@ function ProductRecipes(){
                           {products.filter(p=>p.id!==prod.id).map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
                         </select>
                         <input type="number" step="0.0001" className="form-input" style={{width:110}} placeholder="kg per 1kg" value={l.qty_per_unit} onChange={e=>updateLine(i,'qty_per_unit',e.target.value)}/>
+                        {(()=>{const mat=products.find(p=>p.id===l.material_id);
+  if(!mat?.has_schemes) return null;
+  const opts=(mat.scheme_list||'').split(',').map(s=>s.trim()).filter(Boolean);
+  return(<select className="form-input" style={{width:110}} value={l.scheme} onChange={e=>updateLine(i,'scheme',e.target.value)}>
+    <option value="">-- Scheme --</option>
+    {opts.map(s=><option key={s} value={s}>{s}</option>)}
+  </select>);
+})()}
                         <button className="btn btn-red btn-sm" onClick={()=>removeLine(i)}>✕</button>
                       </div>
                     ))}
@@ -562,10 +571,10 @@ function ProductRecipes(){
                   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                     {recipeLines.length===0&&<span className="dim">Not configured</span>}
                     {recipeLines.map(l=>(
-                      <span key={l.id} className="badge" style={{background:l.line_type==='consumes'?'var(--red)':'var(--green)',opacity:0.15,color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
-                        {l.line_type==='consumes'?'−':'+'} {name(l.material_id)} {l.qty_per_unit}kg
-                      </span>
-                    ))}
+  <span key={l.id} className="badge" style={{background:l.line_type==='consumes'?'var(--red)':'var(--green)',opacity:0.15,color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
+    {l.line_type==='consumes'?'−':'+'} {name(l.material_id)}{l.scheme?` (${l.scheme})`:''} {l.qty_per_unit}kg
+  </span>
+))}
                   </div>
                 )}
               </td>
@@ -587,10 +596,10 @@ function ProductRecipes(){
           <div style={{fontSize:14,marginBottom:12}}>To produce <strong>1kg of {confirmProd.product_name}</strong>, this recipe will:</div>
           <ul style={{marginBottom:16,paddingLeft:20}}>
             {editLines.map((l,i)=>(
-              <li key={i} style={{fontSize:13,marginBottom:4,color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
-                {l.line_type==='consumes'?'Consume':'Produce'} <strong>{l.qty_per_unit}kg</strong> of {name(l.material_id)}
-              </li>
-            ))}
+  <li key={i} style={{fontSize:13,marginBottom:4,color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
+    {l.line_type==='consumes'?'Consume':'Produce'} <strong>{l.qty_per_unit}kg</strong> of {name(l.material_id)}{l.scheme?` — ${l.scheme}`:''}
+  </li>
+))}
           </ul>
           <div style={{fontSize:12,color:'var(--muted)',marginBottom:16}}>This applies to every future production entry for {confirmProd.product_name}. Past entries are unaffected.</div>
           <div className="form-actions">
@@ -633,22 +642,22 @@ function Production(){
     const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',product.id).maybeSingle();
     if(!recipe) return [];
     const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
-    const scheme=schemeFromName(product.product_name);
     const summary=[];
 
-    for(const line of (recipeLines||[])){
-      const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
-      const material=allProducts.find(p=>p.id===line.material_id);
-      if(!material) continue;
-      const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
+for(const line of (recipeLines||[])){
+  const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
+  const material=allProducts.find(p=>p.id===line.material_id);
+  if(!material) continue;
+  const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
+  const lineScheme = line.scheme || schemeFromName(product.product_name);
 
-      if(material.is_raw_material){
-        if(material.has_schemes && scheme){
-          const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',scheme).maybeSingle();
+  if(material.is_raw_material){
+    if(material.has_schemes && lineScheme){
+      const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
           if(bucket){
             await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
           } else {
-            await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme,qty_kg:delta});
+            await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:delta});
           }
         } else {
           const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
