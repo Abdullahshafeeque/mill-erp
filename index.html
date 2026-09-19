@@ -140,7 +140,8 @@ const NAV = [
   { id:'production', label:'Production', icon:'⚙' },
   { id:'dispatch', label:'Supplyco Dispatch', icon:'🚛' },
   { id:'private-dispatch', label:'Private Dispatch', icon:'🚚' },
-  { id:'fci-inwards', label:'FCI Inwards', icon:'🌾' },
+  { id:'lifting-orders', label:'Lifting Orders', icon:'📋' },
+{ id:'fci-inwards', label:'FCI Inwards', icon:'🌾' },
   { id:'private-inwards', label:'Private Inwards', icon:'🌿' },
   { id:'reconciliation', label:'Reconciliation', icon:'📊' },
   { section:'Inventory' },
@@ -814,26 +815,23 @@ const summary=[];
   </div>);
 }
 
-// ══════════════════════════════════════════════════════════
-// FCI INWARDS
-// ══════════════════════════════════════════════════════════
-function FciInwards(){
-  const [receipts,setReceipts]=useState([]);
+function LiftingOrders(){
+  const [orders,setOrders]=useState([]);
   const [rawMaterials,setRawMaterials]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,batch_no:'',material_id:'',scheme:'',received_kg:'',allotment_kg:'',vehicle_no:'',lorry_receipt_no:'',supplier_name:'Supplyco',notes:''};
+  const blank={order_no:'',order_date:today,material_id:'',scheme:'',allotted_kg:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:r},{data:rm}]=await Promise.all([
-      sb.from('fci_inwards').select('*, material:material_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+    const [{data:o},{data:rm}]=await Promise.all([
+      sb.from('lifting_orders').select('*, material:material_id(*)').order('order_date',{ascending:false}),
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('available_for_supplyco',true).eq('is_active',true),
     ]);
-    setReceipts(r||[]); setRawMaterials(rm||[]); setLoading(false);
+    setOrders(o||[]); setRawMaterials(rm||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
@@ -841,30 +839,149 @@ function FciInwards(){
   const schemeOptions=(selectedMaterial?.scheme_list?selectedMaterial.scheme_list.split(',').map(s=>s.trim()):['NPS','PHH','AAY']).filter(s=>s.toLowerCase()!=='private');
 
   const save=async()=>{
-    if(!form.material_id||!form.scheme||!form.batch_no||!form.received_kg) return alert('Material, scheme, batch no. and received KG required.');
+    if(!form.order_no||!form.material_id||!form.scheme||!form.allotted_kg) return alert('Order no., material, scheme and allotted quantity required.');
     setSaving(true);
-    const row={date:form.date,batch_no:form.batch_no,material_id:form.material_id,scheme:form.scheme,received_kg:Number(form.received_kg),allotment_kg:Number(form.allotment_kg)||0,vehicle_no:form.vehicle_no,lorry_receipt_no:form.lorry_receipt_no,supplier_name:form.supplier_name,notes:form.notes};
-    const {data,error}=await sb.from('fci_inwards').insert(row).select('*, material:material_id(*)').single();
+    const row={order_no:form.order_no,order_date:form.order_date,material_id:form.material_id,scheme:form.scheme,allotted_kg:Number(form.allotted_kg),lifted_kg:0,notes:form.notes};
+    const {data,error}=await sb.from('lifting_orders').insert(row).select('*, material:material_id(*)').single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setOrders(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Lifting Orders','create',`${form.order_no} — ${form.allotted_kg}kg ${selectedMaterial?.product_name} (${form.scheme})`);
+  };
+
+  const del=async(o)=>{
+    if(!confirm('Delete this lifting order? This cannot be undone.')) return;
+    const {error}=await sb.from('lifting_orders').delete().eq('id',o.id);
+    if(error){alert('Could not delete: '+error.message);return;}
+    setOrders(p=>p.filter(x=>x.id!==o.id));
+    logActivity('Lifting Orders','delete',`${o.order_no} deleted`);
+  };
+
+  if(loading) return <Loading/>;
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Raw Materials</div>
+        <div className="page-title">Lifting orders</div>
+      </div>
+      <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ New lifting order</button>
+    </div>
+
+    {showForm&&(
+      <FormCard title="Register lifting order" col="var(--amber)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+        <div className="form-grid">
+          <Field label="Order no. ★"><input className="form-input" value={form.order_no} onChange={e=>f('order_no',e.target.value)}/></Field>
+          <Field label="Date"><input type="date" className="form-input" value={form.order_date} onChange={e=>f('order_date',e.target.value)}/></Field>
+          <Field label="Raw Material">
+            <select className="form-input" value={form.material_id} onChange={e=>{f('material_id',e.target.value);f('scheme','');}}>
+              <option value="">-- Select material --</option>
+              {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
+            </select>
+          </Field>
+          <Field label="Scheme">
+            <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>
+              <option value="">-- Select scheme --</option>
+              {schemeOptions.map(s=><option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Allotted quantity (kg) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.allotted_kg} onChange={e=>f('allotted_kg',e.target.value)}/></Field>
+          <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
+        </div>
+      </FormCard>
+    )}
+
+    <TableWrap><table>
+      <thead><tr><th>Order no.</th><th>Date</th><th>Material</th><th>Scheme</th><th>Allotted</th><th>Lifted</th><th>Balance</th><th></th></tr></thead>
+      <tbody>
+        {orders.length===0&&<tr><td colSpan={8}><Empty msg="No lifting orders yet."/></td></tr>}
+        {orders.map(o=>{
+          const balance=Number(o.allotted_kg)-Number(o.lifted_kg);
+          return(<tr key={o.id}>
+            <td><strong className="mono">{o.order_no}</strong></td>
+            <td className="mono dim">{o.order_date}</td>
+            <td>{o.material?.product_name||'—'}</td>
+            <td><span className="badge badge-blue">{o.scheme}</span></td>
+            <td className="mono">{fmtMT(o.allotted_kg)}</td>
+            <td className="mono" style={{color:'var(--green)'}}>{fmtMT(o.lifted_kg)}</td>
+            <td className="mono" style={{color:balance>0?'var(--amber)':'var(--green)',fontWeight:600}}>{fmtMT(balance)}</td>
+            <td><button className="btn btn-red btn-sm" onClick={()=>del(o)}>✕</button></td>
+          </tr>);
+        })}
+      </tbody>
+    </table></TableWrap>
+  </div>);
+}
+
+// ══════════════════════════════════════════════════════════
+// FCI INWARDS
+// ══════════════════════════════════════════════════════════
+function FciInwards(){
+  const [receipts,setReceipts]=useState([]);
+  const [liftingOrders,setLiftingOrders]=useState([]);
+  const [suppliers,setSuppliers]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const blank={date:today,lifting_order_id:'',received_kg:'',vehicle_no:'',supplier_id:'',notes:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const [{data:r},{data:lo},{data:sup}]=await Promise.all([
+      sb.from('fci_inwards').select('*, material:material_id(*), lifting_order:lifting_order_id(*), supplier:supplier_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+      sb.from('lifting_orders').select('*, material:material_id(*)').order('order_date',{ascending:false}),
+      sb.from('suppliers').select('*').order('name'),
+    ]);
+    setReceipts(r||[]); setLiftingOrders(lo||[]); setSuppliers(sup||[]); setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const ordersWithBalance=liftingOrders.filter(o=>Number(o.allotted_kg)-Number(o.lifted_kg)>0);
+  const selectedOrder=liftingOrders.find(o=>o.id===form.lifting_order_id);
+
+  const save=async()=>{
+    if(!form.lifting_order_id||!form.received_kg||!form.supplier_id) return alert('Lifting order, received quantity and supplier required.');
+    setSaving(true);
+    const row={
+      date:form.date,
+      material_id:selectedOrder.material_id,
+      scheme:selectedOrder.scheme,
+      lifting_order_id:form.lifting_order_id,
+      received_kg:Number(form.received_kg),
+      vehicle_no:form.vehicle_no,
+      supplier_id:form.supplier_id,
+      notes:form.notes
+    };
+    const {data,error}=await sb.from('fci_inwards').insert(row).select('*, material:material_id(*), lifting_order:lifting_order_id(*), supplier:supplier_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
 
-    const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',form.material_id).eq('scheme',form.scheme).maybeSingle();
+    const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',selectedOrder.material_id).eq('scheme',selectedOrder.scheme).maybeSingle();
     if(bucket){
       await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+Number(form.received_kg),updated_at:new Date().toISOString()}).eq('id',bucket.id);
     } else {
-      await sb.from('raw_material_scheme_stock').insert({product_id:form.material_id,scheme:form.scheme,qty_kg:Number(form.received_kg)});
+      await sb.from('raw_material_scheme_stock').insert({product_id:selectedOrder.material_id,scheme:selectedOrder.scheme,qty_kg:Number(form.received_kg)});
     }
 
-    setReceipts(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('FCI Inwards','create',`Batch ${form.batch_no} — ${form.received_kg}kg ${selectedMaterial?.product_name} (${form.scheme})`);
+    await sb.from('lifting_orders').update({lifted_kg:Number(selectedOrder.lifted_kg)+Number(form.received_kg)}).eq('id',form.lifting_order_id);
+
+    setReceipts(p=>[data,...p]);
+    setLiftingOrders(p=>p.map(o=>o.id===form.lifting_order_id?{...o,lifted_kg:Number(o.lifted_kg)+Number(form.received_kg)}:o));
+    setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('FCI Inwards','create',`${form.received_kg}kg ${selectedOrder.material?.product_name} against ${selectedOrder.order_no}`);
   };
 
   const del=async(r)=>{
-    if(!confirm('Delete this receipt? Stock will be reversed.')) return;
+    if(!confirm('Delete this receipt? Stock and lifting order balance will be reversed.')) return;
     await sb.from('fci_inwards').delete().eq('id',r.id);
     const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',r.material_id).eq('scheme',r.scheme).maybeSingle();
     if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-Number(r.received_kg),updated_at:new Date().toISOString()}).eq('id',bucket.id);
+    if(r.lifting_order_id){
+      const {data:lo}=await sb.from('lifting_orders').select('*').eq('id',r.lifting_order_id).maybeSingle();
+      if(lo) await sb.from('lifting_orders').update({lifted_kg:Math.max(0,Number(lo.lifted_kg)-Number(r.received_kg))}).eq('id',r.lifting_order_id);
+    }
     setReceipts(p=>p.filter(x=>x.id!==r.id));
-    logActivity('FCI Inwards','delete',`Batch ${r.batch_no} deleted`);
+    logActivity('FCI Inwards','delete',`Receipt deleted`);
   };
 
   if(loading) return <Loading/>;
@@ -883,40 +1000,53 @@ function FciInwards(){
       <FormCard title="New FCI receipt" col="var(--amber)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
         <div className="form-grid">
           <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
-          <Field label="Batch no. ★"><input className="form-input" value={form.batch_no} onChange={e=>f('batch_no',e.target.value.toUpperCase())}/></Field>
-          <Field label="Raw Material">
-            <select className="form-input" value={form.material_id} onChange={e=>{f('material_id',e.target.value);f('scheme','');}}>
-              <option value="">-- Select material --</option>
-              {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
+          <Field label="Lifting order">
+            <select className="form-input" value={form.lifting_order_id} onChange={e=>f('lifting_order_id',e.target.value)}>
+              <option value="">-- Select lifting order --</option>
+              {ordersWithBalance.map(o=><option key={o.id} value={o.id}>{o.order_no} · {o.material?.product_name} · Balance: {fmtMT(Number(o.allotted_kg)-Number(o.lifted_kg))}</option>)}
             </select>
           </Field>
           <Field label="Scheme">
-            <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>
-              <option value="">-- Select scheme --</option>
-              {schemeOptions.map(s=><option key={s}>{s}</option>)}
+            <select className="form-input" value={selectedOrder?.scheme||''} disabled style={{opacity:0.6}}>
+              <option>{selectedOrder?.scheme||'-- auto from lifting order --'}</option>
             </select>
           </Field>
           <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.received_kg} onChange={e=>f('received_kg',e.target.value)}/></Field>
-          <Field label="Allotment (kg)"><input type="number" className="form-input" value={form.allotment_kg} onChange={e=>f('allotment_kg',e.target.value)}/></Field>
-          <Field label="Vehicle no."><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
-          <Field label="Lorry receipt no."><input className="form-input" value={form.lorry_receipt_no} onChange={e=>f('lorry_receipt_no',e.target.value)}/></Field>
-          <Field label="Supplier"><input className="form-input" value={form.supplier_name} onChange={e=>f('supplier_name',e.target.value)}/></Field>
+          <Field label="Vehicle no. ★"><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
+          <Field label="Supplier">
+            <select className="form-input" value={form.supplier_id} onChange={e=>{
+              if(e.target.value==='__new__'){
+                const name=prompt('New supplier name:');
+                if(name&&name.trim()){
+                  sb.from('suppliers').insert({name:name.trim()}).select().single().then(({data,error})=>{
+                    if(error) return alert(error.message);
+                    setSuppliers(p=>[...p,data]); f('supplier_id',data.id);
+                  });
+                }
+              } else f('supplier_id',e.target.value);
+            }}>
+              <option value="">-- Select supplier --</option>
+              {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              <option value="__new__">+ Add new supplier…</option>
+            </select>
+          </Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
       </FormCard>
     )}
 
     <TableWrap><table>
-      <thead><tr><th>Date</th><th>Batch</th><th>Material</th><th>Scheme</th><th>Received</th><th>Vehicle</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Order</th><th>Material</th><th>Scheme</th><th>Received</th><th>Vehicle</th><th>Supplier</th><th></th></tr></thead>
       <tbody>
-        {receipts.length===0&&<tr><td colSpan={7}><Empty/></td></tr>}
+        {receipts.length===0&&<tr><td colSpan={8}><Empty/></td></tr>}
         {receipts.map(r=>(<tr key={r.id}>
           <td className="mono dim">{r.date}</td>
-          <td><strong style={{color:'var(--amber)',fontFamily:'var(--mono)'}}>{r.batch_no}</strong></td>
+          <td><strong style={{color:'var(--amber)',fontFamily:'var(--mono)'}}>{r.lifting_order?.order_no||'—'}</strong></td>
           <td>{r.material?.product_name||'—'}</td>
           <td><span className="badge badge-blue">{r.scheme}</span></td>
           <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmtMT(r.received_kg)}</strong></td>
           <td className="dim">{r.vehicle_no||'—'}</td>
+          <td className="dim">{r.supplier?.name||'—'}</td>
           <td><button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button></td>
         </tr>))}
       </tbody>
@@ -1848,6 +1978,7 @@ function App(){
   const VIEWS={
     'dashboard':<Dashboard/>,
     'production':<Production/>,
+    'lifting-orders':<LiftingOrders/>,
     'dispatch':<Dispatch/>,
     'private-dispatch':<PrivateDispatch/>,
     'fci-inwards':<FciInwards/>,
