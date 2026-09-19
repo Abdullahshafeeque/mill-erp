@@ -643,8 +643,9 @@ function Production(){
     const applyRecipe=async(product, qtyProducedKg, sign)=>{
     const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',product.id).maybeSingle();
     if(!recipe) return [];
-    const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
-    const summary=[];
+const {data:recipeLines,error:linesErr}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
+console.log('RECIPE LINES FETCHED:', recipeLines, 'ERROR:', linesErr, 'recipe.id used:', recipe.id);
+const summary=[];
 
         for(const line of (recipeLines||[])){
       const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
