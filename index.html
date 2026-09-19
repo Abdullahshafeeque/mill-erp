@@ -650,6 +650,7 @@ function Production(){
       const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
       const material=allProducts.find(p=>String(p.id)===String(line.material_id));
       if(!material){ console.error('applyRecipe: material not found for line', line); continue; }
+console.log('MATERIAL DEBUG:', material.product_name, JSON.stringify(material));
       const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
       const lineScheme = line.scheme || schemeFromName(product.product_name);
 
