@@ -570,11 +570,14 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
                 ):(
                   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                     {recipeLines.length===0&&<span className="dim">Not configured</span>}
-                    {recipeLines.map(l=>(
-  <span key={l.id} className="badge" style={{background:l.line_type==='consumes'?'var(--red)':'var(--green)',opacity:0.15,color:l.line_type==='consumes'?'var(--red)':'var(--green)'}}>
-    {l.line_type==='consumes'?'−':'+'} {name(l.material_id)}{l.scheme?` (${l.scheme})`:''} {l.qty_per_unit}kg
-  </span>
-))}
+                    {recipeLines.map(l=>{
+  const col=l.line_type==='consumes'?'var(--red)':'var(--green)';
+  return(
+    <span key={l.id} className="badge" style={{background:`color-mix(in srgb, ${col} 15%, transparent)`,color:col}}>
+      {l.line_type==='consumes'?'−':'+'} {name(l.material_id)}{l.scheme?` (${l.scheme})`:''} {l.qty_per_unit}kg
+    </span>
+  );
+})}
                   </div>
                 )}
               </td>
