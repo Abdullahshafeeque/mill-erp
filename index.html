@@ -626,7 +626,7 @@ function Production(){
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,shift:'Morning',product_id:'',qty_produced:'',actual_qty_produced:'',notes:''};
+  const blank={date:today,shift:'Morning',product_id:'',qty_produced:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -710,7 +710,7 @@ const summary=[];
     const bagSize=packSizeOf(product);
     if(!bagSize){ setSaving(false); return alert('This product has no configured pack size — set it in Product Master first.'); }
 
-    const row={date:form.date, shift:form.shift, product_id:form.product_id, qty_produced:Number(form.qty_produced), actual_qty_produced: form.actual_qty_produced?Number(form.actual_qty_produced):null, notes:form.notes};
+    const row={date:form.date, shift:form.shift, product_id:form.product_id, qty_produced:Number(form.qty_produced), notes:form.notes};
     const {data,error}=await sb.from('production_log').insert(row).select('*, product:product_id(*)').single();
     if(error){alert('Error: '+error.message);setSaving(false);return;}
 
@@ -768,7 +768,6 @@ const summary=[];
             </select>
           </Field>
           <Field label="Bags produced ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty_produced} onChange={e=>f('qty_produced',e.target.value)}/></Field>
-          <Field label="Bags produced (actual/physical)"><input type="number" className="form-input" value={form.actual_qty_produced} onChange={e=>f('actual_qty_produced',e.target.value)}/></Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
         {form.product_id&&form.qty_produced&&(()=>{
@@ -794,16 +793,12 @@ const summary=[];
           <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total: {totalMT.toFixed(3)} MT</div>
         </div>
         <TableWrap><table>
-          <thead><tr><th>Shift</th><th>Product</th><th>Bags (Formula)</th><th>Bags (Actual)</th><th>Variance</th><th>Output</th><th>Notes</th><th></th></tr></thead>
+          <thead><tr><th>Shift</th><th>Product</th><th>Bags</th><th>Output</th><th>Notes</th><th></th></tr></thead>
           <tbody>
             {rows.map(e=>(<tr key={e.id}>
               <td><span className="badge badge-blue">{e.shift}</span></td>
               <td><strong>{e.product?.product_name||'—'}</strong></td>
               <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmt(e.qty_produced)}</strong></td>
-              <td className="mono">{e.actual_qty_produced!=null?fmt(e.actual_qty_produced):'—'}</td>
-<td className="mono" style={{color: e.actual_qty_produced!=null && e.actual_qty_produced!==e.qty_produced ? (e.actual_qty_produced>e.qty_produced?'var(--green)':'var(--red)') : 'var(--muted)'}}>
-  {e.actual_qty_produced!=null ? (e.actual_qty_produced-e.qty_produced>0?'+':'')+fmt(e.actual_qty_produced-e.qty_produced) : '—'}
-</td>
               <td className="mono dim">{fmtMT(Number(e.qty_produced)*packSizeOf(e.product))}</td>
               <td className="dim">{e.notes||'—'}</td>
               <td><button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button></td>
@@ -1070,10 +1065,10 @@ function PrivateInwards(){
   const load=useCallback(async()=>{
     setLoading(true);
     const [{data:e},{data:rm}]=await Promise.all([
-      sb.from('private_inwards').select('*, material:material_id(*)').gte('date',monthStart).order('date',{ascending:false}),
-      sb.from('product_master').select('*').eq('is_raw_material',true).eq('is_active',true),
-    ]);
-    setEntries(e||[]); setRawMaterials(rm||[]); setLoading(false);
+  sb.from('private_inwards').select('*, material:material_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+  sb.from('product_master').select('*').eq('is_active',true).order('product_name'),
+]);
+setEntries(e||[]); setRawMaterials(rm||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
@@ -1082,19 +1077,40 @@ function PrivateInwards(){
   const creditStock=async(materialId, kg)=>{
     const material=rawMaterials.find(m=>m.id===materialId);
     if(!material) return;
-    if(material.has_schemes){
-      const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',materialId).eq('scheme','Private').maybeSingle();
-      if(bucket){
-        await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+kg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+
+    if(material.is_raw_material){
+      if(material.has_schemes){
+        const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',materialId).eq('scheme','Private').maybeSingle();
+        if(bucket){
+          await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+kg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+        } else {
+          await sb.from('raw_material_scheme_stock').insert({product_id:materialId,scheme:'Private',qty_kg:kg});
+        }
       } else {
-        await sb.from('raw_material_scheme_stock').insert({product_id:materialId,scheme:'Private',qty_kg:kg});
+        const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',materialId).maybeSingle();
+        if(bucket){
+          await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)+kg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+        } else {
+          await sb.from('raw_material_stock').insert({product_id:materialId,qty_kg:kg});
+        }
       }
     } else {
-      const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',materialId).maybeSingle();
-      if(bucket){
-        await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)+kg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+      const bagSize=packSizeOf(material);
+      if(bagSize>0){
+        const bagsDelta=kg/bagSize;
+        const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',materialId).maybeSingle();
+        if(stockRow){
+          await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsDelta,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+        } else {
+          await sb.from('current_stock').insert({product_id:materialId,qty_bags:bagsDelta});
+        }
       } else {
-        await sb.from('raw_material_stock').insert({product_id:materialId,qty_kg:kg});
+        const {data:kgRow}=await sb.from('raw_material_stock').select('*').eq('product_id',materialId).maybeSingle();
+        if(kgRow){
+          await sb.from('raw_material_stock').update({qty_kg:Number(kgRow.qty_kg)+kg,updated_at:new Date().toISOString()}).eq('id',kgRow.id);
+        } else {
+          await sb.from('raw_material_stock').insert({product_id:materialId,qty_kg:kg});
+        }
       }
     }
   };
@@ -1143,12 +1159,12 @@ function PrivateInwards(){
         <div className="form-grid">
           <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
           <Field label="Party name ★"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
-          <Field label="Material">
-            <select className="form-input" value={form.material_id} onChange={e=>f('material_id',e.target.value)}>
-              <option value="">-- Select material --</option>
-              {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
-            </select>
-          </Field>
+          <Field label="Item">
+  <select className="form-input" value={form.material_id} onChange={e=>f('material_id',e.target.value)}>
+    <option value="">-- Select item --</option>
+    {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}{m.is_raw_material?'':' (finished/by-product)'}</option>)}
+  </select>
+</Field>
           {selectedMaterial?.has_standard_weight&&(
             <Field label="Entry mode">
               <select className="form-input" value={form.entry_mode} onChange={e=>f('entry_mode',e.target.value)}>
