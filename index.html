@@ -222,7 +222,8 @@ function ProductMaster(){
     packing_type:'packeted', packet_weight_kg:'', packets_per_bag:50,
     has_standard_weight:false, bag_weight:'', unit:'kg',
     has_schemes:false, scheme_list:'NPS,PHH,AAY,Private',
-    min_stock_alert:0, max_stock_alert:0
+    min_stock_alert:0, max_stock_alert:0,
+    available_for_private_dispatch:true, available_for_supplyco_dispatch:true
   };
   const [products,setProducts]=useState([]);
   const [showForm,setShowForm]=useState(false);
@@ -250,6 +251,8 @@ function ProductMaster(){
     product_code: form.product_code, product_name: form.product_name.trim(), category: form.category, hsn_code: form.hsn_code,
     is_raw_material: !!form.is_raw_material,
     available_for_supplyco: form.is_raw_material ? !!form.available_for_supplyco : false,
+    available_for_private_dispatch: !form.is_raw_material ? !!form.available_for_private_dispatch : false,
+    available_for_supplyco_dispatch: !form.is_raw_material ? !!form.available_for_supplyco_dispatch : false,
     packing_type: form.is_raw_material ? null : form.packing_type,
     packet_weight_kg: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packet_weight_kg) : null,
     packets_per_bag: (!form.is_raw_material && form.packing_type==='packeted') ? Number(form.packets_per_bag) : null,
@@ -297,7 +300,9 @@ function ProductMaster(){
       packing_type:p.packing_type||'packeted', packet_weight_kg:p.packet_weight_kg||'', packets_per_bag:p.packets_per_bag||50,
       has_standard_weight:!!p.has_standard_weight, bag_weight:p.bag_weight||'', unit:p.unit||'kg',
       has_schemes:!!p.has_schemes, scheme_list:p.scheme_list||'NPS,PHH,AAY,Private',
-      min_stock_alert:p.min_stock_alert||0, max_stock_alert:p.max_stock_alert||0
+      min_stock_alert:p.min_stock_alert||0, max_stock_alert:p.max_stock_alert||0,
+      available_for_private_dispatch: p.available_for_private_dispatch!==false,
+      available_for_supplyco_dispatch: p.available_for_supplyco_dispatch!==false
     });
     setShowForm(true);
   };
@@ -356,6 +361,22 @@ function ProductMaster(){
             <Field label="Available for Supplyco (FCI) inward?">
               <label style={{display:'flex',alignItems:'center',gap:8}}>
                 <input type="checkbox" checked={form.available_for_supplyco} onChange={e=>f('available_for_supplyco',e.target.checked)}/>
+                <span style={{fontSize:13}}>Yes</span>
+              </label>
+            </Field>
+          </div>
+        )}
+        {!form.is_raw_material&&(
+          <div style={{marginTop:10,display:'flex',gap:24,flexWrap:'wrap'}}>
+            <Field label="Dispatchable via Private Dispatch?">
+              <label style={{display:'flex',alignItems:'center',gap:8}}>
+                <input type="checkbox" checked={form.available_for_private_dispatch} onChange={e=>f('available_for_private_dispatch',e.target.checked)}/>
+                <span style={{fontSize:13}}>Yes</span>
+              </label>
+            </Field>
+            <Field label="Dispatchable via Supplyco Dispatch?">
+              <label style={{display:'flex',alignItems:'center',gap:8}}>
+                <input type="checkbox" checked={form.available_for_supplyco_dispatch} onChange={e=>f('available_for_supplyco_dispatch',e.target.checked)}/>
                 <span style={{fontSize:13}}>Yes</span>
               </label>
             </Field>
@@ -640,7 +661,7 @@ function Production(){
     setLoading(true);
     const [{data:e},{data:fp},{data:ap}]=await Promise.all([
       sb.from('production_log').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
-      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).eq('available_for_private_dispatch',true).order('product_name'),
       sb.from('product_master').select('*'),
     ]);
     setEntries(e||[]); setFinishedProducts(fp||[]); setAllProducts(ap||[]); setLoading(false);
@@ -1260,7 +1281,7 @@ function Dispatch(){
     const [{data:d},{data:w},{data:fp},{data:wm}]=await Promise.all([
       sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
       sb.from('work_orders').select('*').order('work_order_date',{ascending:false}),
-      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).eq('available_for_supplyco_dispatch',true).order('product_name'),
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true).limit(1),
     ]);
     setDispatches(d||[]); setWorkOrders(w||[]); setFinishedProducts(fp||[]); setWheatMaterial((wm&&wm[0])||null); setLoading(false);
@@ -1421,7 +1442,7 @@ function PrivateDispatch(){
     setLoading(true);
     const [{data:e},{data:fp}]=await Promise.all([
       sb.from('private_dispatches').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
-      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).eq('available_for_private_dispatch',true).order('product_name'),
     ]);
     setEntries(e||[]); setFinishedProducts(fp||[]); setLoading(false);
   },[]);
