@@ -864,7 +864,7 @@ function LiftingOrders(){
   useEffect(()=>{load();},[load]);
 
   const selectedMaterial=rawMaterials.find(m=>m.id===form.material_id);
-  const schemeOptions=(selectedMaterial?.scheme_list?selectedMaterial.scheme_list.split(',').map(s=>s.trim()):['NPS','PHH','AAY']).filter(s=>s.toLowerCase()!=='private');
+const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.split(',').map(s=>s.trim()).filter(s=>s.toLowerCase()!=='private'):[];
 
   const save=async()=>{
     if(!form.order_no||!form.material_id||!form.scheme||!form.allotted_kg) return alert('Order no., material, scheme and allotted quantity required.');
@@ -907,11 +907,11 @@ function LiftingOrders(){
             </select>
           </Field>
           <Field label="Scheme">
-            <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)}>
-              <option value="">-- Select scheme --</option>
-              {schemeOptions.map(s=><option key={s}>{s}</option>)}
-            </select>
-          </Field>
+  <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)} disabled={!selectedMaterial}>
+    <option value="">{selectedMaterial?'-- Select scheme --':'-- Select material first --'}</option>
+    {schemeOptions.map(s=><option key={s}>{s}</option>)}
+  </select>
+</Field>
           <Field label="Allotted quantity (kg) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.allotted_kg} onChange={e=>f('allotted_kg',e.target.value)}/></Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
@@ -951,7 +951,7 @@ function FciInwards(){
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
   const blank={date:today,lifting_order_id:'',received_kg:'',vehicle_no:'',supplier_id:'',notes:''};
-  const [form,setForm]=useState(blank);
+const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem('lastFciSupplierId')||''}));
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   const load=useCallback(async()=>{
@@ -995,7 +995,8 @@ function FciInwards(){
 
     setReceipts(p=>[data,...p]);
     setLiftingOrders(p=>p.map(o=>o.id===form.lifting_order_id?{...o,lifted_kg:Number(o.lifted_kg)+Number(form.received_kg)}:o));
-    setForm(blank); setShowForm(false); setSaving(false);
+    localStorage.setItem('lastFciSupplierId', form.supplier_id);
+    setForm({...blank, supplier_id: form.supplier_id}); setShowForm(false); setSaving(false);
     logActivity('FCI Inwards','create',`${form.received_kg}kg ${selectedOrder.material?.product_name} against ${selectedOrder.order_no}`);
   };
 
