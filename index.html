@@ -765,6 +765,45 @@ function Production(){
     }
   };
 
+  const reverseDay=async(dayRows)=>{
+    for(const r of dayRows){
+      const p=r.product;
+      if(!p) continue;
+      const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',p.id).maybeSingle();
+      if(stockRow) await sb.from('current_stock').update({qty_bags:Number(r.opening_bags),updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+      if(Number(r.production_bags)!==0){
+        const bagSize=packSizeOf(p);
+        if(bagSize>0) await applyRecipe(p, Number(r.production_bags)*bagSize, -1);
+      }
+      await sb.from('daily_production_log').delete().eq('id',r.id);
+    }
+  };
+
+  const deleteDay=async(date,dayRows)=>{
+    if(!confirm(`Delete the production log for ${date}? Stock and recipe effects will be reversed. This must be the most recent day.`)) return;
+    setSaving(true);
+    await reverseDay(dayRows);
+    logActivity('Production','delete',`Daily log for ${date} deleted`);
+    setSaving(false);
+    load();
+  };
+
+  const editDay=async(date,dayRows)=>{
+    if(!confirm(`Edit the production log for ${date}? Current entries for this day will be reversed and reopened for editing.`)) return;
+    setSaving(true);
+    const init={};
+    finishedProducts.forEach(p=>{
+      const existing=dayRows.find(r=>r.product_id===p.id);
+      const opening=existing?Number(existing.opening_bags):openingFor(p.id);
+      init[p.id]={opening, production: existing?String(existing.production_bags):'', closing: existing?String(existing.closing_bags):''};
+    });
+    await reverseDay(dayRows);
+    setRows(init); setEntryDate(date); setSaving(false);
+    load();
+  };
+
+  const saveDay=async()=>{
+
   const saveDay=async()=>{
     setSaving(true);
     for(const p of finishedProducts){
@@ -841,13 +880,22 @@ function Production(){
       </div>
     )}
 
-    {loggedDates.length===0 ? <Empty msg="No production days logged yet."/> : loggedDates.map(date=>{
+    {loggedDates.length===0 ? <Empty msg="No production days logged yet."/> : loggedDates.map((date,idx)=>{
       const dayRows=logs.filter(l=>l.date===date);
       const totalMT=dayRows.reduce((s,r)=>s+Number(r.production_bags)*packSizeOf(r.product),0)/1000;
+      const isLatest=idx===0;
       return(<div key={date} style={{marginBottom:20}}>
         <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
           <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--amber)'}}>{date}</div>
-          <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total production: {totalMT.toFixed(3)} MT</div>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total production: {totalMT.toFixed(3)} MT</div>
+            {isLatest && !entryDate && (
+              <div style={{display:'flex',gap:6}}>
+                <button className="btn btn-blue btn-sm" onClick={()=>editDay(date,dayRows)}>Edit</button>
+                <button className="btn btn-red btn-sm" onClick={()=>deleteDay(date,dayRows)}>Delete</button>
+              </div>
+            )}
+          </div>
         </div>
         <TableWrap><table>
           <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Closing</th></tr></thead>
