@@ -139,6 +139,7 @@ const NAV = [
   { id:'dashboard', label:'Dashboard', icon:'⬡' },
   { id:'production', label:'Production', icon:'⚙' },
   { id:'dispatch', label:'Supplyco Dispatch', icon:'🚛' },
+  { id:'work-order-tracker', label:'Work Order Tracker', icon:'📊' },
   { id:'private-dispatch', label:'Private Dispatch', icon:'🚚' },
   { id:'lifting-orders', label:'Lifting Orders', icon:'📋' },
 { id:'fci-inwards', label:'FCI Inwards', icon:'🌾' },
@@ -1327,7 +1328,8 @@ function Dispatch(){
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
   const blankD={date:today,invoice_no:'',delivery_order_no:'',work_order_id:'',scheme:'',product_id:'',batch_no:'',depot_name:'',district:'KNR',qty_bags:'',vehicle_no:'',notes:''};
-  const blankW={work_order_no:'',work_order_date:today,scheme:'',batch_no:''};
+  const nowWO=new Date();
+  const blankW={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',period_month:nowWO.getMonth()+1,period_year:nowWO.getFullYear()};
   const [dForm,setDForm]=useState(blankD);
   const [wForm,setWForm]=useState(blankW);
   const [depots,setDepots]=useState([]);
@@ -1425,6 +1427,14 @@ function Dispatch(){
           <Field label="Date"><input type="date" className="form-input" value={wForm.work_order_date} onChange={e=>wf('work_order_date',e.target.value)}/></Field>
           <Field label="Scheme"><select className="form-input" value={wForm.scheme} onChange={e=>wf('scheme',e.target.value)}><option value="">-- Select --</option>{schemeOptions.map(s=><option key={s}>{s}</option>)}</select></Field>
           <Field label="Batch no."><input className="form-input" value={wForm.batch_no} onChange={e=>wf('batch_no',e.target.value.toUpperCase())}/></Field>
+          <Field label="Assigned month">
+            <select className="form-input" value={wForm.period_month} onChange={e=>wf('period_month',Number(e.target.value))}>
+              {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
+            </select>
+          </Field>
+          <Field label="Assigned year">
+            <select className="form-input" value={wForm.period_year} onChange={e=>wf('period_year',Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
+          </Field>
         </div>
         <div style={{marginTop:12}}>
           <div className="section-label" style={{marginBottom:8}}>Depot allotments (packets)</div>
@@ -1474,54 +1484,6 @@ function Dispatch(){
         {dForm.scheme&&<div style={{marginTop:10,fontSize:12,color:'var(--muted)'}}>Will dispatch from: <strong>{productForScheme(dForm.scheme)?.product_name||'no matching product found'}</strong></div>}
       </FormCard>
     )}
-
-    {woBalances.length>0&&(<>
-      <div className="section-label">Work order balances</div>
-      {woBalances.map(wo=>{
-        // Per-depot dispatched quantity: attribute dispatches to this WO's depots proportionally by name match
-        const prod=productForScheme(wo.scheme);
-        const pktsPerBag=prod?.packets_per_bag||1;
-        const depotDispatched={};
-        dispatches.filter(d=>d.work_order_id===wo.id).forEach(d=>{
-          const key=d.depot_name||'—';
-          depotDispatched[key]=(depotDispatched[key]||0)+Number(d.qty_bags)*pktsPerBag;
-        });
-        return(
-          <div key={wo.id} className="card" style={{marginBottom:20,padding:0,overflow:'hidden'}}>
-            <div style={{padding:'14px 18px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
-              <div>
-                <strong className="mono" style={{fontSize:14}}>{wo.work_order_no}</strong>
-                <span className="badge badge-blue" style={{marginLeft:8}}>{wo.scheme}</span>
-                <span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.work_order_date}</span>
-              </div>
-              <div style={{display:'flex',gap:16,fontFamily:'var(--mono)',fontSize:13}}>
-                <span>Allotted: <strong>{fmt(wo.total_pkts)} pkts</strong></span>
-                <span style={{color:'var(--green)'}}>Dispatched: <strong>{fmt(wo.sentPkts)} pkts</strong></span>
-                <span style={{color:wo.balance>0?'var(--red)':'var(--green)'}}>Balance: <strong>{fmt(wo.balance)} pkts</strong></span>
-              </div>
-            </div>
-            <table>
-              <thead><tr><th>#</th><th>Depot</th><th>Allotted</th><th>Dispatched</th><th>Pending</th></tr></thead>
-              <tbody>
-                {(wo.allots||[]).map((a,i)=>{
-                  const depotName=a.depot?.name||'—';
-                  const dispatched=depotDispatched[depotName]||0;
-                  const pending=Number(a.allotted_pkts)-dispatched;
-                  return(<tr key={a.id}>
-                    <td className="dim">{i+1}</td>
-                    <td>{depotName}</td>
-                    <td className="mono">{fmt(a.allotted_pkts)}</td>
-                    <td className="mono" style={{color:'var(--green)'}}>{fmt(dispatched)}</td>
-                    <td className="mono" style={{color:pending>0?'var(--red)':'var(--green)',fontWeight:600}}>{fmt(pending)}</td>
-                  </tr>);
-                })}
-                {(!wo.allots||wo.allots.length===0)&&<tr><td colSpan={5}><Empty msg="No depot allotments for this work order."/></td></tr>}
-              </tbody>
-            </table>
-          </div>
-        );
-      })}
-    </>)}
 
     <div className="section-label">This month's dispatch log</div>
     <TableWrap><table>
@@ -2322,6 +2284,143 @@ function DepotSettings(){
   </div>);
 }
 
+function WorkOrderTracker(){
+  const [workOrders,setWorkOrders]=useState([]);
+  const [dispatches,setDispatches]=useState([]);
+  const [finishedProducts,setFinishedProducts]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [editingId,setEditingId]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const now=new Date();
+  const [filterMonth,setFilterMonth]=useState(now.getMonth()+1);
+  const [filterYear,setFilterYear]=useState(now.getFullYear());
+  const eBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
+  const [eForm,setEForm]=useState(eBlank);
+  const ef=(k,v)=>setEForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const [{data:w},{data:d},{data:fp}]=await Promise.all([
+      sb.from('work_orders').select('*, allotments:work_order_allotments(*, depot:depot_id(*))').order('work_order_date',{ascending:false}),
+      sb.from('supplyco_dispatches').select('*'),
+      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+    ]);
+    setWorkOrders(w||[]); setDispatches(d||[]); setFinishedProducts(fp||[]); setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const productForScheme=(scheme)=>finishedProducts.find(p=>p.product_name.toUpperCase().includes(scheme));
+
+  const startEdit=(wo)=>{
+    setEditingId(wo.id);
+    setEForm({
+      work_order_no:wo.work_order_no, work_order_date:wo.work_order_date, scheme:wo.scheme, batch_no:wo.batch_no||'',
+      period_month: wo.period_month||now.getMonth()+1, period_year: wo.period_year||now.getFullYear()
+    });
+  };
+
+  const saveEdit=async()=>{
+    setSaving(true);
+    const {error}=await sb.from('work_orders').update({
+      work_order_no:eForm.work_order_no, work_order_date:eForm.work_order_date, scheme:eForm.scheme, batch_no:eForm.batch_no,
+      period_month:Number(eForm.period_month), period_year:Number(eForm.period_year)
+    }).eq('id',editingId);
+    if(error){alert(error.message);setSaving(false);return;}
+    logActivity('Work Order Tracker','update',`Edited ${eForm.work_order_no}`);
+    setEditingId(null); setSaving(false);
+    load();
+  };
+
+  if(loading) return <Loading/>;
+
+  const filtered=workOrders.filter(wo=>(wo.period_month||new Date(wo.work_order_date).getMonth()+1)===Number(filterMonth) && (wo.period_year||new Date(wo.work_order_date).getFullYear())===Number(filterYear));
+
+  const woBalances=filtered.map(wo=>{
+    const prod=productForScheme(wo.scheme);
+    const pktsPerBag=prod?.packets_per_bag||1;
+    const sentBags=dispatches.filter(d=>d.work_order_id===wo.id).reduce((s,d)=>s+Number(d.qty_bags),0);
+    const sentPkts=sentBags*pktsPerBag;
+    return{...wo, sentPkts, balance:(wo.total_pkts||0)-sentPkts, allots:wo.allotments||[], pktsPerBag};
+  });
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Supplyco Operations</div>
+        <div className="page-title">Work order tracker</div>
+      </div>
+      <div style={{display:'flex',gap:8}}>
+        <select style={{width:130}} value={filterMonth} onChange={e=>setFilterMonth(Number(e.target.value))}>
+          {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
+        </select>
+        <select style={{width:90}} value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
+      </div>
+    </div>
+
+    {woBalances.length===0 && <Empty msg={`No work orders assigned to ${new Date(filterYear,filterMonth-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'})}.`}/>}
+
+    {woBalances.map(wo=>(
+      <div key={wo.id} className="card" style={{marginBottom:20,padding:0,overflow:'hidden'}}>
+        {editingId===wo.id ? (
+          <div style={{padding:18}}>
+            <div className="section-label" style={{marginBottom:12}}>Edit work order</div>
+            <div className="form-grid">
+              <Field label="Work order no."><input className="form-input" value={eForm.work_order_no} onChange={e=>ef('work_order_no',e.target.value)}/></Field>
+              <Field label="Date"><input type="date" className="form-input" value={eForm.work_order_date} onChange={e=>ef('work_order_date',e.target.value)}/></Field>
+              <Field label="Scheme"><input className="form-input" value={eForm.scheme} onChange={e=>ef('scheme',e.target.value)}/></Field>
+              <Field label="Batch no."><input className="form-input" value={eForm.batch_no} onChange={e=>ef('batch_no',e.target.value)}/></Field>
+              <Field label="Assigned month">
+                <select className="form-input" value={eForm.period_month} onChange={e=>ef('period_month',e.target.value)}>
+                  {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
+                </select>
+              </Field>
+              <Field label="Assigned year">
+                <select className="form-input" value={eForm.period_year} onChange={e=>ef('period_year',e.target.value)}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
+              </Field>
+            </div>
+            <div className="form-actions">
+              <button className="btn btn-green" onClick={saveEdit} disabled={saving}>{saving?'Saving…':'Save'}</button>
+              <button className="btn btn-ghost" onClick={()=>setEditingId(null)}>Cancel</button>
+            </div>
+          </div>
+        ):(<>
+          <div style={{padding:'14px 18px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+            <div>
+              <strong className="mono" style={{fontSize:14}}>{wo.work_order_no}</strong>
+              <span className="badge badge-blue" style={{marginLeft:8}}>{wo.scheme}</span>
+              <span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.work_order_date}</span>
+              <button className="btn btn-ghost btn-sm" style={{marginLeft:10}} onClick={()=>startEdit(wo)}>Edit</button>
+            </div>
+            <div style={{display:'flex',gap:16,fontFamily:'var(--mono)',fontSize:13}}>
+              <span>Allotted: <strong>{fmt(wo.total_pkts)} pkts</strong></span>
+              <span style={{color:'var(--green)'}}>Dispatched: <strong>{fmt(wo.sentPkts)} pkts</strong></span>
+              <span style={{color:wo.balance>0?'var(--red)':'var(--green)'}}>Balance: <strong>{fmt(wo.balance)} pkts</strong></span>
+            </div>
+          </div>
+          <table>
+            <thead><tr><th>#</th><th>Depot</th><th>Allotted</th><th>Dispatched</th><th>Pending</th></tr></thead>
+            <tbody>
+              {wo.allots.map((a,i)=>{
+                const depotName=a.depot?.name||'—';
+                const dispatched=dispatches.filter(d=>d.work_order_id===wo.id && d.depot_name===depotName).reduce((s,d)=>s+Number(d.qty_bags),0)*wo.pktsPerBag;
+                const pending=Number(a.allotted_pkts)-dispatched;
+                return(<tr key={a.id}>
+                  <td className="dim">{i+1}</td>
+                  <td>{depotName}</td>
+                  <td className="mono">{fmt(a.allotted_pkts)}</td>
+                  <td className="mono" style={{color:'var(--green)'}}>{fmt(dispatched)}</td>
+                  <td className="mono" style={{color:pending>0?'var(--red)':'var(--green)',fontWeight:600}}>{fmt(pending)}</td>
+                </tr>);
+              })}
+              {wo.allots.length===0&&<tr><td colSpan={5}><Empty msg="No depot allotments for this work order."/></td></tr>}
+            </tbody>
+          </table>
+        </>)}
+      </div>
+    ))}
+  </div>);
+}
+
 // ══════════════════════════════════════════════════════════
 // APP ROOT
 // ══════════════════════════════════════════════════════════
@@ -2343,6 +2442,7 @@ function App(){
     'production':<Production/>,
     'lifting-orders':<LiftingOrders/>,
     'dispatch':<Dispatch/>,
+    'work-order-tracker':<WorkOrderTracker/>,
     'private-dispatch':<PrivateDispatch/>,
     'fci-inwards':<FciInwards/>,
     'private-inwards':<PrivateInwards/>,
