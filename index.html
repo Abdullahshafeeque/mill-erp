@@ -647,34 +647,72 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
 // PRODUCTION
 // ══════════════════════════════════════════════════════════
 function Production(){
-  const [entries,setEntries]=useState([]);
   const [finishedProducts,setFinishedProducts]=useState([]);
   const [allProducts,setAllProducts]=useState([]);
-  const [showForm,setShowForm]=useState(false);
-  const [saving,setSaving]=useState(false);
+  const [logs,setLogs]=useState([]);
   const [loading,setLoading]=useState(true);
-  const blank={date:today,shift:'Morning',product_id:'',qty_produced:'',notes:''};
-  const [form,setForm]=useState(blank);
-  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const [saving,setSaving]=useState(false);
+  const [entryDate,setEntryDate]=useState(null);
+  const [rows,setRows]=useState({});
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:e},{data:fp},{data:ap}]=await Promise.all([
-      sb.from('production_log').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
-      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).eq('available_for_private_dispatch',true).order('product_name'),
+    const [{data:fp},{data:ap},{data:lg}]=await Promise.all([
+      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
       sb.from('product_master').select('*'),
+      sb.from('daily_production_log').select('*, product:product_id(*)').order('date',{ascending:false}),
     ]);
-    setEntries(e||[]); setFinishedProducts(fp||[]); setAllProducts(ap||[]); setLoading(false);
+    setFinishedProducts(fp||[]); setAllProducts(ap||[]); setLogs(lg||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
-    const applyRecipe=async(product, qtyProducedKg, sign)=>{
-    const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',product.id).maybeSingle();
-    if(!recipe) return [];
-const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
-const summary=[];
+  const lastLoggedDate=logs.length?logs[0].date:null;
+  const nextEntryDate=(()=>{
+    if(!lastLoggedDate) return today;
+    const d=new Date(lastLoggedDate+'T00:00:00'); d.setDate(d.getDate()+1);
+    const nd=d.toISOString().split('T')[0];
+    return nd<=today?nd:null;
+  })();
 
-        for(const line of (recipeLines||[])){
+  const openingFor=(productId)=>{
+    const prior=logs.filter(l=>l.product_id===productId).sort((a,b)=>b.date.localeCompare(a.date))[0];
+    return prior?Number(prior.closing_bags):0;
+  };
+
+  const startEntry=()=>{
+    if(!nextEntryDate) return;
+    const init={};
+    finishedProducts.forEach(p=>{
+      const opening=openingFor(p.id);
+      init[p.id]={opening, production:'', closing:''};
+    });
+    setRows(init); setEntryDate(nextEntryDate);
+  };
+
+  const updateProduction=(productId,val)=>{
+    setRows(prev=>{
+      const r=prev[productId]; const opening=r.opening;
+      const production=val===''?'':Number(val);
+      const closing=val===''?'':opening+Number(val);
+      return {...prev,[productId]:{...r,production:val,closing:closing===''?'':String(closing)}};
+    });
+  };
+
+  const updateClosing=(productId,val)=>{
+    setRows(prev=>{
+      const r=prev[productId]; const opening=r.opening;
+      const closing=val===''?'':Number(val);
+      const production=val===''?'':closing-opening;
+      return {...prev,[productId]:{...r,closing:val,production:production===''?'':String(production)}};
+    });
+  };
+
+  const applyRecipe=async(product, qtyProducedKg, sign)=>{
+    const {data:recipe}=await sb.from('product_recipes').select('*').eq('product_id',product.id).maybeSingle();
+    if(!recipe) return;
+    const {data:recipeLines}=await sb.from('recipe_lines').select('*').eq('recipe_id',recipe.id);
+
+    for(const line of (recipeLines||[])){
       const qtyKg=qtyProducedKg*Number(line.qty_per_unit)*sign;
       const material=allProducts.find(p=>String(p.id)===String(line.material_id));
       if(!material) continue;
@@ -682,7 +720,6 @@ const summary=[];
       const lineScheme = line.scheme || schemeFromName(product.product_name);
 
       if(line.line_type==='consumes' && line.fallback_material_id){
-        // Draw from the fallback source first, then spill remainder onto the main material
         let remainingKg=Math.abs(delta);
         const {data:fbRow}=await sb.from('raw_material_stock').select('*').eq('product_id',line.fallback_material_id).maybeSingle();
         const available=Number(fbRow?.qty_kg||0);
@@ -694,168 +731,132 @@ const summary=[];
         if(remainingKg>0){
           if(material.has_schemes && lineScheme){
             const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
-            if(bucket){
-              await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-remainingKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
-            } else {
-              await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:-remainingKg});
-            }
+            if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-remainingKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            else await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:-remainingKg});
           } else {
             const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
-            if(bucket){
-              await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)-remainingKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
-            } else {
-              await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:-remainingKg});
-            }
+            if(bucket) await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)-remainingKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+            else await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:-remainingKg});
           }
         }
       } else if(material.is_raw_material){
         if(material.has_schemes && lineScheme){
           const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
-          if(bucket){
-            const {error}=await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
-            if(error) console.error('scheme stock update failed', error);
-          } else {
-            const {error}=await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:delta});
-            if(error) console.error('scheme stock insert failed', error);
-          }
+          if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+          else await sb.from('raw_material_scheme_stock').insert({product_id:material.id,scheme:lineScheme,qty_kg:delta});
         } else {
           const {data:bucket}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
-          if(bucket){
-            const {error}=await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
-            if(error) console.error('raw stock update failed', error);
-          } else {
-            const {error}=await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
-            if(error) console.error('raw stock insert failed', error);
-          }
+          if(bucket) await sb.from('raw_material_stock').update({qty_kg:Number(bucket.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',bucket.id);
+          else await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
         }
       } else {
         const bagSize=packSizeOf(material);
         if(bagSize>0){
           const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',material.id).maybeSingle();
           const bagsDelta=delta/bagSize;
-          if(stockRow){
-            const {error}=await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsDelta,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
-            if(error) console.error('current_stock update failed', error);
-          } else {
-            const {error}=await sb.from('current_stock').insert({product_id:material.id,qty_bags:bagsDelta});
-            if(error) console.error('current_stock insert failed', error);
-          }
+          if(stockRow) await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+bagsDelta,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+          else await sb.from('current_stock').insert({product_id:material.id,qty_bags:bagsDelta});
         } else {
           const {data:kgRow}=await sb.from('raw_material_stock').select('*').eq('product_id',material.id).maybeSingle();
-          if(kgRow){
-            const {error}=await sb.from('raw_material_stock').update({qty_kg:Number(kgRow.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',kgRow.id);
-            if(error) console.error('by-product kg update failed', error, material.product_name);
-          } else {
-            const {error}=await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
-            if(error) console.error('by-product kg insert failed', error, material.product_name);
-          }
+          if(kgRow) await sb.from('raw_material_stock').update({qty_kg:Number(kgRow.qty_kg)+delta,updated_at:new Date().toISOString()}).eq('id',kgRow.id);
+          else await sb.from('raw_material_stock').insert({product_id:material.id,qty_kg:delta});
         }
       }
-      summary.push(`${delta>=0?'+':''}${Math.abs(qtyKg).toFixed(2)}kg ${material.product_name}`);
     }
-    return summary;
   };
 
-  const save=async()=>{
-    if(!form.product_id) return alert('Select a product.');
-    if(!form.qty_produced||Number(form.qty_produced)<=0) return alert('Enter bags produced.');
+  const saveDay=async()=>{
     setSaving(true);
-    const product=finishedProducts.find(p=>p.id===form.product_id);
-    const bagSize=packSizeOf(product);
-    if(!bagSize){ setSaving(false); return alert('This product has no configured pack size — set it in Product Master first.'); }
+    for(const p of finishedProducts){
+      const r=rows[p.id];
+      if(!r || r.production===''){ continue; }
+      const productionBags=Number(r.production);
+      const closingBags=Number(r.closing);
 
-    const row={date:form.date, shift:form.shift, product_id:form.product_id, qty_produced:Number(form.qty_produced), notes:form.notes};
-    const {data,error}=await sb.from('production_log').insert(row).select('*, product:product_id(*)').single();
-    if(error){alert('Error: '+error.message);setSaving(false);return;}
+      const {error}=await sb.from('daily_production_log').insert({
+        date:entryDate, product_id:p.id, opening_bags:r.opening, production_bags:productionBags, closing_bags:closingBags
+      });
+      if(error){ alert(`Error saving ${p.product_name}: `+error.message); setSaving(false); return; }
 
-    // Credit finished-goods stock
-    const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',form.product_id).maybeSingle();
-    if(stockRow) await sb.from('current_stock').update({qty_bags:Number(stockRow.qty_bags)+Number(form.qty_produced),updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+      const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',p.id).maybeSingle();
+      if(stockRow) await sb.from('current_stock').update({qty_bags:closingBags,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+      else await sb.from('current_stock').insert({product_id:p.id,qty_bags:closingBags});
 
-    const qtyProducedKg=Number(form.qty_produced)*bagSize;
-    const summary=await applyRecipe(product, qtyProducedKg, 1);
-
-    setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('Production',data,'create',`${product.product_name} — ${form.qty_produced} bags on ${form.date}. ${summary.join(', ')}`);
-  };
-
-  const del=async(e)=>{
-    if(!confirm('Delete entry? Stock and recipe effects will be reversed.')) return;
-    await sb.from('production_log').delete().eq('id',e.id);
-    const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',e.product_id).maybeSingle();
-    if(stockRow) await sb.from('current_stock').update({qty_bags:Math.max(0,Number(stockRow.qty_bags)-Number(e.qty_produced)),updated_at:new Date().toISOString()}).eq('id',stockRow.id);
-
-    const bagSize=packSizeOf(e.product);
-    if(bagSize) await applyRecipe(e.product, Number(e.qty_produced)*bagSize, -1);
-
-    setEntries(p=>p.filter(x=>x.id!==e.id));
-    logActivity('Production','delete',`${e.product?.product_name} — ${e.qty_produced} bags on ${e.date} (reversed)`);
+      if(productionBags!==0){
+        const bagSize=packSizeOf(p);
+        if(bagSize>0) await applyRecipe(p, productionBags*bagSize, 1);
+      }
+    }
+    logActivity('Production','create',`Daily log submitted for ${entryDate}`);
+    setEntryDate(null); setRows({}); setSaving(false);
+    load();
   };
 
   if(loading) return <Loading/>;
 
-  const byDate={};
-  entries.forEach(e=>{ if(!byDate[e.date]) byDate[e.date]=[]; byDate[e.date].push(e); });
+  const loggedDates=Array.from(new Set(logs.map(l=>l.date))).sort().reverse();
 
   return(<div className="page">
-    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
-      <div className="page-header" style={{marginBottom:0}}>
-        <div className="page-label">Mill Operations</div>
-        <div className="page-title">Daily production log</div>
-      </div>
-      <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ New entry</button>
+    <div className="page-header">
+      <div className="page-label">Mill Operations</div>
+      <div className="page-title">Daily production log</div>
     </div>
 
-    {showForm&&(
-      <FormCard title="Log production" col="var(--green)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
-        <div className="form-grid">
-          <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
-          <Field label="Shift">
-            <select className="form-input" value={form.shift} onChange={e=>f('shift',e.target.value)}>
-              {['Morning','Night','Full Day'].map(s=><option key={s}>{s}</option>)}
-            </select>
-          </Field>
-          <Field label="Product">
-            <select className="form-input" value={form.product_id} onChange={e=>f('product_id',e.target.value)}>
-              <option value="">-- Select product --</option>
-              {finishedProducts.map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
-            </select>
-          </Field>
-          <Field label="Bags produced ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty_produced} onChange={e=>f('qty_produced',e.target.value)}/></Field>
-          <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
-        </div>
-        {form.product_id&&form.qty_produced&&(()=>{
-          const prod=finishedProducts.find(p=>p.id===form.product_id);
-          const bagSize=packSizeOf(prod);
-          return bagSize>0 ? (
-            <div style={{marginTop:12,padding:'8px 14px',background:'var(--surface2)',borderRadius:6,fontSize:12,fontFamily:'var(--mono)'}}>
-              Output: {((Number(form.qty_produced)*bagSize)/1000).toFixed(3)} MT ({bagSize}kg/bag)
+    {!entryDate && (
+      <div className="card" style={{marginBottom:24}}>
+        {nextEntryDate ? (
+          <>
+            <div style={{marginBottom:12,fontSize:13,color:'var(--muted)'}}>
+              {lastLoggedDate ? `Last entry logged: ${lastLoggedDate}. Next day to enter:` : 'No entries yet. Start with:'} <strong>{nextEntryDate}</strong>
             </div>
-          ) : <div style={{marginTop:12,padding:'8px 14px',background:'var(--red)15',color:'var(--red)',borderRadius:6,fontSize:12}}>This product has no pack size configured yet.</div>;
-        })()}
-      </FormCard>
+            <button className="btn btn-green" onClick={startEntry}>+ Enter {nextEntryDate}</button>
+          </>
+        ) : (
+          <div style={{color:'var(--muted)',fontSize:13}}>All days up to today ({today}) are already logged.</div>
+        )}
+      </div>
     )}
 
-    {Object.keys(byDate).length===0&&!showForm&&<div className="table-wrap"><Empty msg="No production entries this month."/></div>}
+    {entryDate && (
+      <div className="card" style={{marginBottom:24,borderLeft:'3px solid var(--green)'}}>
+        <div className="section-label" style={{marginBottom:16}}>Entry for {entryDate}</div>
+        <TableWrap><table>
+          <thead><tr><th>Product</th><th>Opening (bags)</th><th>Production (bags)</th><th>Closing (bags)</th></tr></thead>
+          <tbody>
+            {finishedProducts.map(p=>{
+              const r=rows[p.id]||{opening:0,production:'',closing:''};
+              return(<tr key={p.id}>
+                <td><strong>{p.product_name}</strong></td>
+                <td className="mono dim">{fmt(r.opening)}</td>
+                <td><input type="number" className="form-input" style={{width:120}} value={r.production} onChange={e=>updateProduction(p.id,e.target.value)}/></td>
+                <td><input type="number" className="form-input" style={{width:120}} value={r.closing} onChange={e=>updateClosing(p.id,e.target.value)}/></td>
+              </tr>);
+            })}
+          </tbody>
+        </table></TableWrap>
+        <div className="form-actions">
+          <button className="btn btn-green" onClick={saveDay} disabled={saving}>{saving?'Saving…':'Submit day'}</button>
+          <button className="btn btn-ghost" onClick={()=>{setEntryDate(null);setRows({});}}>Cancel</button>
+        </div>
+      </div>
+    )}
 
-    {Object.keys(byDate).sort().reverse().map(date=>{
-      const rows=byDate[date];
-      const totalMT=rows.reduce((s,r)=>s+(Number(r.qty_produced)*packSizeOf(r.product)),0)/1000;
+    {loggedDates.length===0 ? <Empty msg="No production days logged yet."/> : loggedDates.map(date=>{
+      const dayRows=logs.filter(l=>l.date===date);
+      const totalMT=dayRows.reduce((s,r)=>s+Number(r.production_bags)*packSizeOf(r.product),0)/1000;
       return(<div key={date} style={{marginBottom:20}}>
         <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
-          <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--amber)'}}>{new Date(date+'T12:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long'})}</div>
-          <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total: {totalMT.toFixed(3)} MT</div>
+          <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--amber)'}}>{date}</div>
+          <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total production: {totalMT.toFixed(3)} MT</div>
         </div>
         <TableWrap><table>
-          <thead><tr><th>Shift</th><th>Product</th><th>Bags</th><th>Output</th><th>Notes</th><th></th></tr></thead>
+          <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Closing</th></tr></thead>
           <tbody>
-            {rows.map(e=>(<tr key={e.id}>
-              <td><span className="badge badge-blue">{e.shift}</span></td>
-              <td><strong>{e.product?.product_name||'—'}</strong></td>
-              <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmt(e.qty_produced)}</strong></td>
-              <td className="mono dim">{fmtMT(Number(e.qty_produced)*packSizeOf(e.product))}</td>
-              <td className="dim">{e.notes||'—'}</td>
-              <td><button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button></td>
+            {dayRows.map(r=>(<tr key={r.id}>
+              <td><strong>{r.product?.product_name||'—'}</strong></td>
+              <td className="mono dim">{fmt(r.opening_bags)}</td>
+              <td className="mono" style={{color:'var(--green)'}}>{fmt(r.production_bags)}</td>
+              <td className="mono">{fmt(r.closing_bags)}</td>
             </tr>))}
           </tbody>
         </table></TableWrap>
