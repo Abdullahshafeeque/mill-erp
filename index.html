@@ -152,6 +152,7 @@ const NAV = [
   { section:'Settings' },
   { id:'product-master', label:'Product Master', icon:'⚙️' },
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
+  { id:'depot-settings', label:'Depots', icon:'🏢' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
 ];
@@ -1326,21 +1327,27 @@ function Dispatch(){
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
   const blankD={date:today,invoice_no:'',delivery_order_no:'',work_order_id:'',scheme:'',product_id:'',batch_no:'',depot_name:'',district:'KNR',qty_bags:'',vehicle_no:'',notes:''};
-  const blankW={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',knr_pkts:0,tly_pkts:0,tpb_pkts:0,khd_pkts:0,ksd_pkts:0,irtty_pkts:0,vlparamba_pkts:0,other_pkts:0};
+  const blankW={work_order_no:'',work_order_date:today,scheme:'',batch_no:''};
   const [dForm,setDForm]=useState(blankD);
   const [wForm,setWForm]=useState(blankW);
+  const [depots,setDepots]=useState([]);
+  const [depotAllotments,setDepotAllotments]=useState({});
+  const [woAllotments,setWoAllotments]=useState({});
   const df=(k,v)=>setDForm(p=>({...p,[k]:v}));
   const wf=(k,v)=>setWForm(p=>({...p,[k]:v}));
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:d},{data:w},{data:fp},{data:wm}]=await Promise.all([
+    const [{data:d},{data:w},{data:fp},{data:wm},{data:dep},{data:woa}]=await Promise.all([
       sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
       sb.from('work_orders').select('*').order('work_order_date',{ascending:false}),
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).eq('available_for_supplyco_dispatch',true).order('product_name'),
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true).limit(1),
+      sb.from('depots').select('*').order('name'),
+      sb.from('work_order_allotments').select('*, depot:depot_id(*)'),
     ]);
-    setDispatches(d||[]); setWorkOrders(w||[]); setFinishedProducts(fp||[]); setWheatMaterial((wm&&wm[0])||null); setLoading(false);
+    setDispatches(d||[]); setWorkOrders(w||[]); setFinishedProducts(fp||[]); setWheatMaterial((wm&&wm[0])||null);
+    setDepots(dep||[]); setWoAllotments(woa||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
@@ -1364,9 +1371,18 @@ function Dispatch(){
   const saveWO=async()=>{
     if(!wForm.work_order_no) return alert('Work order number required.');
     setSaving(true);
-    const {data,error}=await sb.from('work_orders').insert(wForm).select().single();
+    const totalPkts=Object.values(depotAllotments).reduce((s,v)=>s+(Number(v)||0),0);
+    const {data,error}=await sb.from('work_orders').insert({...wForm, total_pkts:totalPkts}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
-    setWorkOrders(p=>[data,...p]); setWForm(blankW); setShowWO(false); setSaving(false);
+
+    const allotRows=Object.entries(depotAllotments).filter(([,v])=>Number(v)>0).map(([depotId,v])=>({work_order_id:data.id, depot_id:depotId, allotted_pkts:Number(v)}));
+    if(allotRows.length){
+      const {data:inserted,error:aErr}=await sb.from('work_order_allotments').insert(allotRows).select('*, depot:depot_id(*)');
+      if(aErr){ alert('Work order saved, but allotments failed: '+aErr.message); }
+      else setWoAllotments(p=>[...p, ...inserted]);
+    }
+
+    setWorkOrders(p=>[data,...p]); setWForm(blankW); setDepotAllotments({}); setShowWO(false); setSaving(false);
     logActivity('Dispatch','create',`Work order ${wForm.work_order_no} registered`);
   };
 
@@ -1386,7 +1402,8 @@ function Dispatch(){
     const pktsPerBag=prod?.packets_per_bag||1;
     const sentBags=dispatches.filter(d=>d.work_order_id===wo.id).reduce((s,d)=>s+Number(d.qty_bags),0);
     const sentPkts=sentBags*pktsPerBag;
-    return{...wo, sentBags, sentPkts, balance: wo.total_pkts - sentPkts};
+    const allots=woAllotments.filter(a=>a.work_order_id===wo.id);
+    return{...wo, sentBags, sentPkts, balance: wo.total_pkts - sentPkts, allots};
   });
 
   return(<div className="page">
@@ -1410,12 +1427,18 @@ function Dispatch(){
           <Field label="Batch no."><input className="form-input" value={wForm.batch_no} onChange={e=>wf('batch_no',e.target.value.toUpperCase())}/></Field>
         </div>
         <div style={{marginTop:12}}>
-          <div className="section-label" style={{marginBottom:8}}>District allotments (packets)</div>
-          <div className="form-grid">
-            {[['KNR','knr_pkts'],['TLY','tly_pkts'],['TPB','tpb_pkts'],['KHD','khd_pkts'],['KSD','ksd_pkts'],['IRTTY','irtty_pkts'],['V.Paramba','vlparamba_pkts'],['Other','other_pkts']].map(([l,k])=>(
-              <Field key={k} label={l}><input type="number" className="form-input" value={wForm[k]} onChange={e=>wf(k,Number(e.target.value))}/></Field>
-            ))}
-          </div>
+          <div className="section-label" style={{marginBottom:8}}>Depot allotments (packets)</div>
+          {depots.length===0 ? (
+            <div style={{fontSize:12,color:'var(--muted)'}}>No depots configured yet — add them under Settings → Depots first.</div>
+          ) : (
+            <div className="form-grid">
+              {depots.map(d=>(
+                <Field key={d.id} label={d.name}>
+                  <input type="number" className="form-input" value={depotAllotments[d.id]||''} onChange={e=>setDepotAllotments(p=>({...p,[d.id]:e.target.value}))}/>
+                </Field>
+              ))}
+            </div>
+          )}
         </div>
       </FormCard>
     )}
@@ -1433,8 +1456,17 @@ function Dispatch(){
               {workOrders.map(w=><option key={w.id} value={w.id}>{w.work_order_no} · {w.scheme}</option>)}
             </select>
           </Field>
-          <Field label="Depot name ★"><input className="form-input" value={dForm.depot_name} onChange={e=>df('depot_name',e.target.value)}/></Field>
-          <Field label="District"><select className="form-input" value={dForm.district} onChange={e=>df('district',e.target.value)}>{DISTRICTS.map(d=><option key={d}>{d}</option>)}</select></Field>
+          <Field label="Depot ★">
+  <select className="form-input" value={dForm.depot_name} onChange={e=>{
+  const dep=depots.find(x=>x.name===e.target.value);
+  df('depot_name',e.target.value);
+  if(dep?.district) df('district',dep.district);
+}}>
+    <option value="">-- Select depot --</option>
+    {depots.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+  </select>
+</Field>
+          <Field label="District"><input className="form-input" value={dForm.district} onChange={e=>df('district',e.target.value)} placeholder="Auto-fills from depot, editable"/></Field>
           <Field label="Bags dispatched ★"><input type="number" className="form-input" style={{fontWeight:600}} value={dForm.qty_bags} onChange={e=>df('qty_bags',e.target.value)}/></Field>
           <Field label="Vehicle no."><input className="form-input" value={dForm.vehicle_no} onChange={e=>df('vehicle_no',e.target.value)}/></Field>
           <Field label="Batch no."><input className="form-input" value={dForm.batch_no} onChange={e=>df('batch_no',e.target.value)}/></Field>
@@ -1449,7 +1481,14 @@ function Dispatch(){
         <thead><tr><th>Work order</th><th>Date</th><th>Scheme</th><th>Allotted</th><th>Dispatched</th><th>Balance</th></tr></thead>
         <tbody>
           {woBalances.map(wo=>(<tr key={wo.id}>
-            <td><strong className="mono">{wo.work_order_no}</strong></td>
+            <td>
+              <strong className="mono">{wo.work_order_no}</strong>
+              {wo.allots?.length>0 && (
+                <div style={{marginTop:4,display:'flex',gap:4,flexWrap:'wrap'}}>
+                  {wo.allots.map(a=><span key={a.id} className="badge badge-muted">{a.depot?.name||'—'}: {fmt(a.allotted_pkts)}</span>)}
+                </div>
+              )}
+            </td>
             <td className="dim">{wo.work_order_date}</td>
             <td><span className="badge badge-blue">{wo.scheme}</span></td>
             <td className="mono">{fmt(wo.total_pkts)} pkts</td>
@@ -2193,6 +2232,73 @@ function ProductionSettings(){
   </div>);
 }
 
+function DepotSettings(){
+  const [depots,setDepots]=useState([]);
+  const [showForm,setShowForm]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const blank={name:'',district:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(()=>{
+    setLoading(true);
+    sb.from('depots').select('*').order('name').then(({data})=>{setDepots(data||[]);setLoading(false);});
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const save=async()=>{
+    if(!form.name.trim()) return alert('Depot name is required.');
+    setSaving(true);
+    const {data,error}=await sb.from('depots').insert({name:form.name.trim(),district:form.district.trim()||null}).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+    setDepots(p=>[...p,data].sort((a,b)=>a.name.localeCompare(b.name)));
+    setForm(blank); setShowForm(false); setSaving(false);
+    logActivity('Depot Settings','create',`New depot — ${data.name}`);
+  };
+
+  const del=async(d)=>{
+    if(!confirm(`Delete depot "${d.name}"? Existing work order allotments to it will remain but won't show a depot name.`)) return;
+    const {error}=await sb.from('depots').delete().eq('id',d.id);
+    if(error){alert('Could not delete: '+error.message);return;}
+    setDepots(p=>p.filter(x=>x.id!==d.id));
+    logActivity('Depot Settings','delete',`Deleted depot ${d.name}`);
+  };
+
+  if(loading) return <Loading/>;
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">System Settings</div>
+        <div className="page-title">Depots</div>
+      </div>
+      <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Add depot</button>
+    </div>
+
+    {showForm&&(
+      <FormCard title="Add depot" col="var(--amber)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+        <div className="form-grid">
+          <Field label="Depot name ★"><input className="form-input" value={form.name} onChange={e=>f('name',e.target.value)}/></Field>
+          <Field label="District (optional)"><input className="form-input" value={form.district} onChange={e=>f('district',e.target.value)}/></Field>
+        </div>
+      </FormCard>
+    )}
+
+    <TableWrap><table>
+      <thead><tr><th>Depot</th><th>District</th><th></th></tr></thead>
+      <tbody>
+        {depots.length===0&&<tr><td colSpan={3}><Empty msg="No depots yet."/></td></tr>}
+        {depots.map(d=>(<tr key={d.id}>
+          <td><strong>{d.name}</strong></td>
+          <td className="dim">{d.district||'—'}</td>
+          <td><button className="btn btn-red btn-sm" onClick={()=>del(d)}>✕</button></td>
+        </tr>))}
+      </tbody>
+    </table></TableWrap>
+  </div>);
+}
+
 // ══════════════════════════════════════════════════════════
 // APP ROOT
 // ══════════════════════════════════════════════════════════
@@ -2223,6 +2329,7 @@ function App(){
     'ledger':<Ledger/>,
     'product-master':<ProductMaster/>,
     'production-settings':<ProductionSettings/>,
+    'depot-settings':<DepotSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
   };
