@@ -668,10 +668,18 @@ function Production(){
   useEffect(()=>{load();},[load]);
 
   const lastLoggedDate=logs.length?logs[0].date:null;
+  const addDays=(dateStr,n)=>{
+    const [y,m,d]=dateStr.split('-').map(Number);
+    const dt=new Date(y,m-1,d);
+    dt.setDate(dt.getDate()+n);
+    const yy=dt.getFullYear();
+    const mm=String(dt.getMonth()+1).padStart(2,'0');
+    const dd=String(dt.getDate()).padStart(2,'0');
+    return `${yy}-${mm}-${dd}`;
+  };
   const nextEntryDate=(()=>{
     if(!lastLoggedDate) return localStorage.getItem('productionFirstEntryDate')||today;
-    const d=new Date(lastLoggedDate+'T00:00:00'); d.setDate(d.getDate()+1);
-    const nd=d.toISOString().split('T')[0];
+    const nd=addDays(lastLoggedDate,1);
     return nd<=today?nd:null;
   })();
 
@@ -1110,7 +1118,7 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
             </select>
           </Field>
           <Field label="Received (kg) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.received_kg} onChange={e=>f('received_kg',e.target.value)}/></Field>
-          <Field label="Vehicle no. ★"><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
+          <Field label="Vehicle no. ★"><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value.toUpperCase())}/></Field>
           <Field label="Supplier">
             <select className="form-input" value={form.supplier_id} onChange={e=>{
               if(e.target.value==='__new__'){
