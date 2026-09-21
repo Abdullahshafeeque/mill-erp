@@ -1477,27 +1477,50 @@ function Dispatch(){
 
     {woBalances.length>0&&(<>
       <div className="section-label">Work order balances</div>
-      <TableWrap><table>
-        <thead><tr><th>Work order</th><th>Date</th><th>Scheme</th><th>Allotted</th><th>Dispatched</th><th>Balance</th></tr></thead>
-        <tbody>
-          {woBalances.map(wo=>(<tr key={wo.id}>
-            <td>
-              <strong className="mono">{wo.work_order_no}</strong>
-              {wo.allots?.length>0 && (
-                <div style={{marginTop:4,display:'flex',gap:4,flexWrap:'wrap'}}>
-                  {wo.allots.map(a=><span key={a.id} className="badge badge-muted">{a.depot?.name||'—'}: {fmt(a.allotted_pkts)}</span>)}
-                </div>
-              )}
-            </td>
-            <td className="dim">{wo.work_order_date}</td>
-            <td><span className="badge badge-blue">{wo.scheme}</span></td>
-            <td className="mono">{fmt(wo.total_pkts)} pkts</td>
-            <td className="mono" style={{color:'var(--green)'}}>{fmt(wo.sentPkts)} pkts</td>
-            <td className="mono" style={{color:wo.balance>0?'var(--red)':'var(--green)',fontWeight:600}}>{fmt(wo.balance)} pkts</td>
-          </tr>))}
-        </tbody>
-      </table></TableWrap>
-      <div style={{marginBottom:24}}/>
+      {woBalances.map(wo=>{
+        // Per-depot dispatched quantity: attribute dispatches to this WO's depots proportionally by name match
+        const prod=productForScheme(wo.scheme);
+        const pktsPerBag=prod?.packets_per_bag||1;
+        const depotDispatched={};
+        dispatches.filter(d=>d.work_order_id===wo.id).forEach(d=>{
+          const key=d.depot_name||'—';
+          depotDispatched[key]=(depotDispatched[key]||0)+Number(d.qty_bags)*pktsPerBag;
+        });
+        return(
+          <div key={wo.id} className="card" style={{marginBottom:20,padding:0,overflow:'hidden'}}>
+            <div style={{padding:'14px 18px',borderBottom:'1px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+              <div>
+                <strong className="mono" style={{fontSize:14}}>{wo.work_order_no}</strong>
+                <span className="badge badge-blue" style={{marginLeft:8}}>{wo.scheme}</span>
+                <span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.work_order_date}</span>
+              </div>
+              <div style={{display:'flex',gap:16,fontFamily:'var(--mono)',fontSize:13}}>
+                <span>Allotted: <strong>{fmt(wo.total_pkts)} pkts</strong></span>
+                <span style={{color:'var(--green)'}}>Dispatched: <strong>{fmt(wo.sentPkts)} pkts</strong></span>
+                <span style={{color:wo.balance>0?'var(--red)':'var(--green)'}}>Balance: <strong>{fmt(wo.balance)} pkts</strong></span>
+              </div>
+            </div>
+            <table>
+              <thead><tr><th>#</th><th>Depot</th><th>Allotted</th><th>Dispatched</th><th>Pending</th></tr></thead>
+              <tbody>
+                {(wo.allots||[]).map((a,i)=>{
+                  const depotName=a.depot?.name||'—';
+                  const dispatched=depotDispatched[depotName]||0;
+                  const pending=Number(a.allotted_pkts)-dispatched;
+                  return(<tr key={a.id}>
+                    <td className="dim">{i+1}</td>
+                    <td>{depotName}</td>
+                    <td className="mono">{fmt(a.allotted_pkts)}</td>
+                    <td className="mono" style={{color:'var(--green)'}}>{fmt(dispatched)}</td>
+                    <td className="mono" style={{color:pending>0?'var(--red)':'var(--green)',fontWeight:600}}>{fmt(pending)}</td>
+                  </tr>);
+                })}
+                {(!wo.allots||wo.allots.length===0)&&<tr><td colSpan={5}><Empty msg="No depot allotments for this work order."/></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
     </>)}
 
     <div className="section-label">This month's dispatch log</div>
