@@ -1324,20 +1324,14 @@ function Dispatch(){
   const [finishedProducts,setFinishedProducts]=useState([]);
   const [wheatMaterial,setWheatMaterial]=useState(null);
   const [showDF,setShowDF]=useState(false);
-  const [showWO,setShowWO]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
   const blankD={date:today,invoice_no:'',delivery_order_no:'',work_order_id:'',scheme:'',product_id:'',batch_no:'',depot_name:'',district:'KNR',qty_bags:'',vehicle_no:'',notes:''};
-  const nowWO=new Date();
-  const blankW={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',period_month:nowWO.getMonth()+1,period_year:nowWO.getFullYear()};
   const [dForm,setDForm]=useState(blankD);
-  const [wForm,setWForm]=useState(blankW);
   const [depots,setDepots]=useState([]);
   const [depotAllotments,setDepotAllotments]=useState({});
   const [woAllotments,setWoAllotments]=useState({});
   const df=(k,v)=>setDForm(p=>({...p,[k]:v}));
-  const wf=(k,v)=>setWForm(p=>({...p,[k]:v}));
-
   const load=useCallback(async()=>{
     setLoading(true);
     const [{data:d},{data:w},{data:fp},{data:wm},{data:dep},{data:woa}]=await Promise.all([
@@ -1370,24 +1364,6 @@ function Dispatch(){
     logActivity('Dispatch','create',`Invoice ${dForm.invoice_no} — ${dForm.qty_bags} bags to ${dForm.depot_name}`);
   };
 
-  const saveWO=async()=>{
-    if(!wForm.work_order_no) return alert('Work order number required.');
-    setSaving(true);
-    const totalPkts=Object.values(depotAllotments).reduce((s,v)=>s+(Number(v)||0),0);
-    const {data,error}=await sb.from('work_orders').insert({...wForm, total_pkts:totalPkts}).select().single();
-    if(error){alert(error.message);setSaving(false);return;}
-
-    const allotRows=Object.entries(depotAllotments).filter(([,v])=>Number(v)>0).map(([depotId,v])=>({work_order_id:data.id, depot_id:depotId, allotted_pkts:Number(v)}));
-    if(allotRows.length){
-      const {data:inserted,error:aErr}=await sb.from('work_order_allotments').insert(allotRows).select('*, depot:depot_id(*)');
-      if(aErr){ alert('Work order saved, but allotments failed: '+aErr.message); }
-      else setWoAllotments(p=>[...p, ...inserted]);
-    }
-
-    setWorkOrders(p=>[data,...p]); setWForm(blankW); setDepotAllotments({}); setShowWO(false); setSaving(false);
-    logActivity('Dispatch','create',`Work order ${wForm.work_order_no} registered`);
-  };
-
   const delD=async(d)=>{
     if(!confirm('Delete dispatch? Stock will be restored.')) return;
     await sb.from('supplyco_dispatches').delete().eq('id',d.id);
@@ -1415,43 +1391,9 @@ function Dispatch(){
         <div className="page-title">Dispatch & work orders</div>
       </div>
       <div style={{display:'flex',gap:8}}>
-        <button className="btn btn-amber" onClick={()=>setShowWO(v=>!v)}>+ Work order</button>
         <button className="btn btn-green" onClick={()=>setShowDF(v=>!v)}>+ Log dispatch</button>
       </div>
     </div>
-
-    {showWO&&(
-      <FormCard title="Register work order" col="var(--amber)" onSave={saveWO} onCancel={()=>setShowWO(false)} saving={saving}>
-        <div className="form-grid">
-          <Field label="Work order no. ★"><input className="form-input" value={wForm.work_order_no} onChange={e=>wf('work_order_no',e.target.value)}/></Field>
-          <Field label="Date"><input type="date" className="form-input" value={wForm.work_order_date} onChange={e=>wf('work_order_date',e.target.value)}/></Field>
-          <Field label="Scheme"><select className="form-input" value={wForm.scheme} onChange={e=>wf('scheme',e.target.value)}><option value="">-- Select --</option>{schemeOptions.map(s=><option key={s}>{s}</option>)}</select></Field>
-          <Field label="Batch no."><input className="form-input" value={wForm.batch_no} onChange={e=>wf('batch_no',e.target.value.toUpperCase())}/></Field>
-          <Field label="Assigned month">
-            <select className="form-input" value={wForm.period_month} onChange={e=>wf('period_month',Number(e.target.value))}>
-              {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
-            </select>
-          </Field>
-          <Field label="Assigned year">
-            <select className="form-input" value={wForm.period_year} onChange={e=>wf('period_year',Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
-          </Field>
-        </div>
-        <div style={{marginTop:12}}>
-          <div className="section-label" style={{marginBottom:8}}>Depot allotments (packets)</div>
-          {depots.length===0 ? (
-            <div style={{fontSize:12,color:'var(--muted)'}}>No depots configured yet — add them under Settings → Depots first.</div>
-          ) : (
-            <div className="form-grid">
-              {depots.map(d=>(
-                <Field key={d.id} label={d.name}>
-                  <input type="number" className="form-input" value={depotAllotments[d.id]||''} onChange={e=>setDepotAllotments(p=>({...p,[d.id]:e.target.value}))}/>
-                </Field>
-              ))}
-            </div>
-          )}
-        </div>
-      </FormCard>
-    )}
 
     {showDF&&(
       <FormCard title="Log Supplyco dispatch" col="var(--green)" onSave={saveDispatch} onCancel={()=>setShowDF(false)} saving={saving}>
@@ -1513,6 +1455,9 @@ function PrivateDispatch(){
   const [products,setProducts]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
+  const [showCreate,setShowCreate]=useState(false);
+  const [depots,setDepots]=useState([]);
+  const [depotAllotments,setDepotAllotments]=useState({});
   const [loading,setLoading]=useState(true);
   const blank={date:today,party_name:'',product_id:'',qty:'',vehicle_no:'',invoice_no:'',notes:''};
   const [form,setForm]=useState(blank);
@@ -2288,28 +2233,57 @@ function WorkOrderTracker(){
   const [workOrders,setWorkOrders]=useState([]);
   const [dispatches,setDispatches]=useState([]);
   const [finishedProducts,setFinishedProducts]=useState([]);
+  const [depots,setDepots]=useState([]);
+  const [wheatMaterial,setWheatMaterial]=useState(null);
   const [loading,setLoading]=useState(true);
   const [editingId,setEditingId]=useState(null);
   const [saving,setSaving]=useState(false);
+  const [showCreate,setShowCreate]=useState(false);
+  const [depotAllotments,setDepotAllotments]=useState({});
   const now=new Date();
   const [filterMonth,setFilterMonth]=useState(now.getMonth()+1);
   const [filterYear,setFilterYear]=useState(now.getFullYear());
   const eBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
+  const cBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
+  const [cForm,setCForm]=useState(cBlank);
+  const cf=(k,v)=>setCForm(p=>({...p,[k]:v}));
   const [eForm,setEForm]=useState(eBlank);
   const ef=(k,v)=>setEForm(p=>({...p,[k]:v}));
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:w},{data:d},{data:fp}]=await Promise.all([
+    const [{data:w},{data:d},{data:fp},{data:dep},{data:wm}]=await Promise.all([
       sb.from('work_orders').select('*, allotments:work_order_allotments(*, depot:depot_id(*))').order('work_order_date',{ascending:false}),
       sb.from('supplyco_dispatches').select('*'),
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+      sb.from('depots').select('*').order('name'),
+      sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true).limit(1),
     ]);
-    setWorkOrders(w||[]); setDispatches(d||[]); setFinishedProducts(fp||[]); setLoading(false);
+    setWorkOrders(w||[]); setDispatches(d||[]); setFinishedProducts(fp||[]); setDepots(dep||[]);
+    setWheatMaterial((wm&&wm[0])||null); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
   const productForScheme=(scheme)=>finishedProducts.find(p=>p.product_name.toUpperCase().includes(scheme));
+  const schemeOptions=(wheatMaterial?.scheme_list?wheatMaterial.scheme_list.split(',').map(s=>s.trim()):['NPS','PHH','AAY']).filter(s=>s.toLowerCase()!=='private');
+
+  const saveCreate=async()=>{
+    if(!cForm.work_order_no) return alert('Work order number required.');
+    setSaving(true);
+    const totalPkts=Object.values(depotAllotments).reduce((s,v)=>s+(Number(v)||0),0);
+    const {data,error}=await sb.from('work_orders').insert({...cForm, total_pkts:totalPkts}).select().single();
+    if(error){alert(error.message);setSaving(false);return;}
+
+    const allotRows=Object.entries(depotAllotments).filter(([,v])=>Number(v)>0).map(([depotId,v])=>({work_order_id:data.id, depot_id:depotId, allotted_pkts:Number(v)}));
+    if(allotRows.length){
+      const {error:aErr}=await sb.from('work_order_allotments').insert(allotRows);
+      if(aErr) alert('Work order saved, but allotments failed: '+aErr.message);
+    }
+
+    setCForm(cBlank); setDepotAllotments({}); setShowCreate(false); setSaving(false);
+    logActivity('Work Order Tracker','create',`Work order ${cForm.work_order_no} registered`);
+    load();
+  };
 
   const startEdit=(wo)=>{
     setEditingId(wo.id);
@@ -2354,8 +2328,42 @@ function WorkOrderTracker(){
           {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
         </select>
         <select style={{width:90}} value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
+        <button className="btn btn-amber" onClick={()=>setShowCreate(v=>!v)}>+ Work order</button>
       </div>
     </div>
+
+    {showCreate&&(
+      <FormCard title="Register work order" col="var(--amber)" onSave={saveCreate} onCancel={()=>setShowCreate(false)} saving={saving}>
+        <div className="form-grid">
+          <Field label="Work order no. ★"><input className="form-input" value={cForm.work_order_no} onChange={e=>cf('work_order_no',e.target.value)}/></Field>
+          <Field label="Date"><input type="date" className="form-input" value={cForm.work_order_date} onChange={e=>cf('work_order_date',e.target.value)}/></Field>
+          <Field label="Scheme"><select className="form-input" value={cForm.scheme} onChange={e=>cf('scheme',e.target.value)}><option value="">-- Select --</option>{schemeOptions.map(s=><option key={s}>{s}</option>)}</select></Field>
+          <Field label="Batch no."><input className="form-input" value={cForm.batch_no} onChange={e=>cf('batch_no',e.target.value.toUpperCase())}/></Field>
+          <Field label="Assigned month">
+            <select className="form-input" value={cForm.period_month} onChange={e=>cf('period_month',Number(e.target.value))}>
+              {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
+            </select>
+          </Field>
+          <Field label="Assigned year">
+            <select className="form-input" value={cForm.period_year} onChange={e=>cf('period_year',Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
+          </Field>
+        </div>
+        <div style={{marginTop:12}}>
+          <div className="section-label" style={{marginBottom:8}}>Depot allotments (packets)</div>
+          {depots.length===0 ? (
+            <div style={{fontSize:12,color:'var(--muted)'}}>No depots configured yet — add them under Settings → Depots first.</div>
+          ) : (
+            <div className="form-grid">
+              {depots.map(d=>(
+                <Field key={d.id} label={d.name}>
+                  <input type="number" className="form-input" value={depotAllotments[d.id]||''} onChange={e=>setDepotAllotments(p=>({...p,[d.id]:e.target.value}))}/>
+                </Field>
+              ))}
+            </div>
+          )}
+        </div>
+      </FormCard>
+    )}
 
     {woBalances.length===0 && <Empty msg={`No work orders assigned to ${new Date(filterYear,filterMonth-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'})}.`}/>}
 
