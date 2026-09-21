@@ -151,6 +151,7 @@ const NAV = [
   { id:'ledger', label:'Daily Cash Book', icon:'₹' },
   { section:'Settings' },
   { id:'product-master', label:'Product Master', icon:'⚙️' },
+  { id:'production-settings', label:'Production Settings', icon:'🗓️' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
 ];
@@ -668,7 +669,7 @@ function Production(){
 
   const lastLoggedDate=logs.length?logs[0].date:null;
   const nextEntryDate=(()=>{
-    if(!lastLoggedDate) return today;
+    if(!lastLoggedDate) return localStorage.getItem('productionFirstEntryDate')||today;
     const d=new Date(lastLoggedDate+'T00:00:00'); d.setDate(d.getDate()+1);
     const nd=d.toISOString().split('T')[0];
     return nd<=today?nd:null;
@@ -2103,6 +2104,56 @@ function Dashboard(){
   </div>);
 }
 
+function ProductionSettings(){
+  const [firstDate,setFirstDate]=useState(localStorage.getItem('productionFirstEntryDate')||today);
+  const [hasLogs,setHasLogs]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [saved,setSaved]=useState(false);
+
+  useEffect(()=>{
+    sb.from('daily_production_log').select('id',{count:'exact',head:true}).then(({count})=>{
+      setHasLogs((count||0)>0); setLoading(false);
+    });
+  },[]);
+
+  const save=()=>{
+    localStorage.setItem('productionFirstEntryDate', firstDate);
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2000);
+  };
+
+  if(loading) return <Loading/>;
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Production log settings</div>
+    </div>
+
+    <div className="card" style={{maxWidth:500}}>
+      <div className="section-label" style={{marginBottom:12}}>First production entry date</div>
+      {hasLogs ? (
+        <div style={{fontSize:13,color:'var(--muted)'}}>
+          Production entries already exist, so the starting date is locked in. This setting only applies before the very first day is logged.
+        </div>
+      ) : (
+        <>
+          <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+            Choose which date the first production entry should represent. Every entry after that must follow sequentially, day by day.
+          </div>
+          <div style={{display:'flex',gap:10,alignItems:'flex-end'}}>
+            <Field label="Start date">
+              <input type="date" className="form-input" style={{width:180}} value={firstDate} max={today} onChange={e=>setFirstDate(e.target.value)}/>
+            </Field>
+            <button className="btn btn-amber" onClick={save}>Save</button>
+          </div>
+          {saved&&<div style={{marginTop:10,fontSize:12,color:'var(--green)'}}>Saved. Go to Production to begin.</div>}
+        </>
+      )}
+    </div>
+  </div>);
+}
+
 // ══════════════════════════════════════════════════════════
 // APP ROOT
 // ══════════════════════════════════════════════════════════
@@ -2132,6 +2183,7 @@ function App(){
     'store':<Store/>,
     'ledger':<Ledger/>,
     'product-master':<ProductMaster/>,
+    'production-settings':<ProductionSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
   };
