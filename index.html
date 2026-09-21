@@ -2109,6 +2109,7 @@ function ProductionSettings(){
   const [hasLogs,setHasLogs]=useState(null);
   const [loading,setLoading]=useState(true);
   const [saved,setSaved]=useState(false);
+  const [truncating,setTruncating]=useState(false);
 
   useEffect(()=>{
     sb.from('daily_production_log').select('id',{count:'exact',head:true}).then(({count})=>{
@@ -2120,6 +2121,28 @@ function ProductionSettings(){
     localStorage.setItem('productionFirstEntryDate', firstDate);
     setSaved(true);
     setTimeout(()=>setSaved(false),2000);
+  };
+
+  const truncateStock=async()=>{
+    const pw=prompt('This will set ALL stock to zero across the entire system. Enter the password to confirm:');
+    if(pw===null) return;
+    if(pw!=='Abdu@1998'){ alert('Incorrect password. Nothing was changed.'); return; }
+    if(!confirm('Final confirmation: this will zero out ALL raw material, scheme, finished-goods and store stock. This cannot be undone. Proceed?')) return;
+
+    setTruncating(true);
+    const nowIso=new Date().toISOString();
+    const [{error:e1},{error:e2},{error:e3},{error:e4}]=await Promise.all([
+      sb.from('current_stock').update({qty_bags:0,updated_at:nowIso}).gte('qty_bags',-999999999),
+      sb.from('raw_material_stock').update({qty_kg:0,updated_at:nowIso}).gte('qty_kg',-999999999),
+      sb.from('raw_material_scheme_stock').update({qty_kg:0,updated_at:nowIso}).gte('qty_kg',-999999999),
+      sb.from('store_stock').update({qty:0,updated_at:nowIso}).gte('qty',-999999999),
+    ]);
+    const err=e1||e2||e3||e4;
+    if(err){ alert('Error while truncating: '+err.message); setTruncating(false); return; }
+
+    logActivity('Settings','update','ALL STOCK TRUNCATED TO ZERO');
+    setTruncating(false);
+    alert('All stock has been set to zero.');
   };
 
   if(loading) return <Loading/>;
@@ -2150,6 +2173,14 @@ function ProductionSettings(){
           {saved&&<div style={{marginTop:10,fontSize:12,color:'var(--green)'}}>Saved. Go to Production to begin.</div>}
         </>
       )}
+    </div>
+
+    <div className="card" style={{maxWidth:500,marginTop:20,borderLeft:'3px solid var(--red)'}}>
+      <div className="section-label" style={{marginBottom:12,color:'var(--red)'}}>Danger zone</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+        Truncate all stock — sets every raw material, scheme stock, finished-goods, and store item quantity to zero. This does not delete transaction history, only resets current balances. Requires a password.
+      </div>
+      <button className="btn btn-red" onClick={truncateStock} disabled={truncating}>{truncating?'Truncating…':'Truncate all stock to zero'}</button>
     </div>
   </div>);
 }
