@@ -1012,15 +1012,19 @@ function Production(){
       const dayRows=logs.filter(l=>l.date===date);
       const totalMT=dayRows.reduce((s,r)=>s+Number(r.production_bags)*packSizeOf(r.product),0)/1000;
       const isLatest=idx===0;
-      return(<div key={date} style={{marginBottom:20}}>
+      const frozen=isFrozen(date);
+      return(<div key={date} style={{marginBottom:20,opacity:frozen?0.7:1}}>
         <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
-          <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--amber)'}}>{date}</div>
+          <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--amber)',display:'flex',alignItems:'center',gap:8}}>
+            {date}
+            {frozen&&<span className="badge badge-muted">🔒 Frozen</span>}
+          </div>
           <div style={{display:'flex',alignItems:'center',gap:12}}>
             <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total production: {totalMT.toFixed(3)} MT</div>
-            {isLatest && !entryDate && (
+            {!entryDate && !frozen && (
               <div style={{display:'flex',gap:6}}>
                 <button className="btn btn-blue btn-sm" onClick={()=>editDay(date,dayRows)}>Edit</button>
-                <button className="btn btn-red btn-sm" onClick={()=>deleteDay(date,dayRows)}>Delete</button>
+                {isLatest && <button className="btn btn-red btn-sm" onClick={()=>deleteDay(date,dayRows)}>Delete</button>}
               </div>
             )}
           </div>
