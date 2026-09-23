@@ -669,6 +669,9 @@ function Production(){
   };
   const returnsFor=(date,productId)=>
     returns.filter(r=>r.date===date&&r.product_id===productId).reduce((s,r)=>s+Number(r.qty_bags),0);
+  // True stock closing, always derived live — never trust a stored closing_bags value.
+  const netClosing=(opening,production,date,productId)=>
+    Number(opening)+Number(production)-salesFor(date,productId)+returnsFor(date,productId);
 
   const load=useCallback(async()=>{
     setLoading(true);
@@ -703,7 +706,8 @@ function Production(){
 
   const openingFor=(productId)=>{
     const prior=logs.filter(l=>l.product_id===productId).sort((a,b)=>b.date.localeCompare(a.date))[0];
-    return prior?Number(prior.closing_bags):0;
+    if(!prior) return 0;
+    return netClosing(prior.opening_bags,prior.production_bags,prior.date,productId);
   };
 
   const startEntry=()=>{
@@ -716,11 +720,13 @@ function Production(){
     setRows(init); setEntryDate(nextEntryDate);
   };
 
+  // Closing = Opening + Production - Sales + Returns  →  Production = Closing - Opening + Sales - Returns
   const updateProduction=(productId,val)=>{
     setRows(prev=>{
       const r=prev[productId]; const opening=r.opening;
+      const sales=salesFor(entryDate,productId), ret=returnsFor(entryDate,productId);
       const production=val===''?'':Number(val);
-      const closing=val===''?'':opening+Number(val);
+      const closing=val===''?'':opening+Number(val)-sales+ret;
       return {...prev,[productId]:{...r,production:val,closing:closing===''?'':String(closing)}};
     });
   };
@@ -728,8 +734,9 @@ function Production(){
   const updateClosing=(productId,val)=>{
     setRows(prev=>{
       const r=prev[productId]; const opening=r.opening;
+      const sales=salesFor(entryDate,productId), ret=returnsFor(entryDate,productId);
       const closing=val===''?'':Number(val);
-      const production=val===''?'':closing-opening;
+      const production=val===''?'':(closing-opening+sales-ret);
       return {...prev,[productId]:{...r,closing:val,production:production===''?'':String(production)}};
     });
   };
@@ -885,13 +892,16 @@ function Production(){
       <div className="card" style={{marginBottom:24,borderLeft:'3px solid var(--green)'}}>
         <div className="section-label" style={{marginBottom:16}}>Entry for {entryDate}</div>
         <TableWrap><table>
-          <thead><tr><th>Product</th><th>Opening (bags)</th><th>Production (bags)</th><th>Closing (bags)</th></tr></thead>
+          <thead><tr><th>Product</th><th>Opening (bags)</th><th>Sales (bags)</th><th>Returns (bags)</th><th>Production (bags)</th><th>Closing (bags)</th></tr></thead>
           <tbody>
             {finishedProducts.map(p=>{
               const r=rows[p.id]||{opening:0,production:'',closing:''};
+              const sales=salesFor(entryDate,p.id), ret=returnsFor(entryDate,p.id);
               return(<tr key={p.id}>
                 <td><strong>{p.product_name}</strong></td>
                 <td className="mono dim">{fmt(r.opening)}</td>
+                <td className="mono dim">{sales>0?'−'+fmt(sales):'—'}</td>
+                <td className="mono dim">{ret>0?'+'+fmt(ret):'—'}</td>
                 <td><input type="number" className="form-input" style={{width:120}} value={r.production} onChange={e=>updateProduction(p.id,e.target.value)}/></td>
                 <td><input type="number" className="form-input" style={{width:120}} value={r.closing} onChange={e=>updateClosing(p.id,e.target.value)}/></td>
               </tr>);
@@ -923,20 +933,19 @@ function Production(){
           </div>
         </div>
         <TableWrap><table>
-          <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Closing</th><th>Sales</th><th>Returns</th><th>Net Closing</th></tr></thead>
+          <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Sales</th><th>Returns</th><th>Closing</th></tr></thead>
           <tbody>
             {dayRows.map(r=>{
               const sales=salesFor(r.date,r.product_id);
               const ret=returnsFor(r.date,r.product_id);
-              const netClosing=Number(r.closing_bags)-sales+ret;
+              const closing=netClosing(r.opening_bags,r.production_bags,r.date,r.product_id);
               return(<tr key={r.id}>
                 <td><strong>{r.product?.product_name||'—'}</strong></td>
                 <td className="mono dim">{fmt(r.opening_bags)}</td>
                 <td className="mono" style={{color:'var(--green)'}}>{fmt(r.production_bags)}</td>
-                <td className="mono">{fmt(r.closing_bags)}</td>
                 <td className="mono" style={{color:sales>0?'var(--red)':'var(--dim)'}}>{sales>0?'−'+fmt(sales):'—'}</td>
                 <td className="mono" style={{color:ret>0?'var(--blue)':'var(--dim)'}}>{ret>0?'+'+fmt(ret):'—'}</td>
-                <td className="mono" style={{fontWeight:600}}>{fmt(netClosing)}</td>
+                <td className="mono" style={{fontWeight:600}}>{fmt(closing)}</td>
               </tr>);
             })}
           </tbody>
