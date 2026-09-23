@@ -656,8 +656,11 @@ function Production(){
   const [logs,setLogs]=useState([]);
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState(false);
+  const freezeDate=localStorage.getItem('productionFreezeDate')||'';
+  const isFrozen=(date)=>freezeDate&&date<=freezeDate;
   const [entryDate,setEntryDate]=useState(null);
   const [rows,setRows]=useState({});
+  const [editingOriginal,setEditingOriginal]=useState(null); // dayRows being edited, or null for a fresh entry
   const [supplycoDisp,setSupplycoDisp]=useState([]);
   const [privateDisp,setPrivateDisp]=useState([]);
   const [returns,setReturns]=useState([]);
@@ -799,12 +802,12 @@ function Production(){
     }
   };
 
-  const reverseDay=async(dayRows)=>{
+  // Delete only this day's rows + undo its own recipe/stock effect. Does NOT touch other days —
+  // caller is responsible for cascading subsequent days when editing (not deleting) mid-history.
+  const deleteDayRowsOnly=async(dayRows)=>{
     for(const r of dayRows){
       const p=r.product;
       if(!p) continue;
-      const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',p.id).maybeSingle();
-      if(stockRow) await sb.from('current_stock').update({qty_bags:Number(r.opening_bags),updated_at:new Date().toISOString()}).eq('id',stockRow.id);
       if(Number(r.production_bags)!==0){
         const bagSize=packSizeOf(p);
         if(bagSize>0) await applyRecipe(p, Number(r.production_bags)*bagSize, -1);
@@ -814,16 +817,29 @@ function Production(){
   };
 
   const deleteDay=async(date,dayRows)=>{
-    if(!confirm(`Delete the production log for ${date}? Stock and recipe effects will be reversed. This must be the most recent day.`)) return;
+    if(isFrozen(date)) return alert(`${date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
+    const isLatest=loggedDatesSorted()[0]===date;
+    if(!isLatest) return alert('Only the most recent unfrozen day can be deleted. To correct an earlier day, use Edit instead.');
+    if(!confirm(`Delete the production log for ${date}? Stock and recipe effects will be reversed.`)) return;
     setSaving(true);
-    await reverseDay(dayRows);
+    // Reverse this day's own stock effect back to its opening (safe: it's the latest day).
+    for(const r of dayRows){
+      const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',r.product_id).maybeSingle();
+      if(stockRow) await sb.from('current_stock').update({qty_bags:Number(r.opening_bags),updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+    }
+    await deleteDayRowsOnly(dayRows);
     logActivity('Production','delete',`Daily log for ${date} deleted`);
     setSaving(false);
     load();
   };
 
+  const loggedDatesSorted=()=>Array.from(new Set(logs.map(l=>l.date))).sort().reverse();
+
+  // Edit any day: recompute its own closing, then cascade-correct every later day's
+  // opening/closing, then apply the NET stock/recipe delta only (not a full reverse+replay).
   const editDay=async(date,dayRows)=>{
-    if(!confirm(`Edit the production log for ${date}? Current entries for this day will be reversed and reopened for editing.`)) return;
+    if(isFrozen(date)) return alert(`${date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
+    if(!confirm(`Edit the production log for ${date}? Later days will be automatically recalculated to stay consistent.`)) return;
     setSaving(true);
     const init={};
     finishedProducts.forEach(p=>{
@@ -831,35 +847,112 @@ function Production(){
       const opening=existing?Number(existing.opening_bags):openingFor(p.id);
       init[p.id]={opening, production: existing?String(existing.production_bags):'', closing: existing?String(existing.closing_bags):''};
     });
-    await reverseDay(dayRows);
-    setRows(init); setEntryDate(date); setSaving(false);
-    load();
+    setRows(init); setEntryDate(date); setEditingOriginal(dayRows); setSaving(false);
+  };
+
+  const cancelEdit=()=>{
+    setEntryDate(null); setRows({}); setEditingOriginal(null);
   };
 
   const saveDay=async()=>{
     setSaving(true);
+
+    if(!editingOriginal){
+      // ── Fresh entry (existing behaviour, unchanged) ──
+      for(const p of finishedProducts){
+        const r=rows[p.id];
+        if(!r || r.production===''){ continue; }
+        const productionBags=Number(r.production);
+        const closingBags=Number(r.closing);
+
+        const {error}=await sb.from('daily_production_log').insert({
+          date:entryDate, product_id:p.id, opening_bags:r.opening, production_bags:productionBags, closing_bags:closingBags
+        });
+        if(error){ alert(`Error saving ${p.product_name}: `+error.message); setSaving(false); return; }
+
+        const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',p.id).maybeSingle();
+        if(stockRow) await sb.from('current_stock').update({qty_bags:closingBags,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+        else await sb.from('current_stock').insert({product_id:p.id,qty_bags:closingBags});
+
+        if(productionBags!==0){
+          const bagSize=packSizeOf(p);
+          if(bagSize>0) await applyRecipe(p, productionBags*bagSize, 1);
+        }
+      }
+      logActivity('Production','create',`Daily log submitted for ${entryDate}`);
+      setEntryDate(null); setRows({}); setSaving(false);
+      load();
+      return;
+    }
+
+    // ── Editing an existing day: cascade forward ──
+    // 1. Figure out every later logged day, per product, in date order.
+    const allDatesAsc=Array.from(new Set(logs.map(l=>l.date))).sort();
+    const laterDates=allDatesAsc.filter(d=>d>entryDate);
+
     for(const p of finishedProducts){
       const r=rows[p.id];
-      if(!r || r.production===''){ continue; }
-      const productionBags=Number(r.production);
-      const closingBags=Number(r.closing);
+      const oldRow=editingOriginal.find(x=>x.product_id===p.id);
+      const oldProduction=oldRow?Number(oldRow.production_bags):0;
 
-      const {error}=await sb.from('daily_production_log').insert({
-        date:entryDate, product_id:p.id, opening_bags:r.opening, production_bags:productionBags, closing_bags:closingBags
-      });
-      if(error){ alert(`Error saving ${p.product_name}: `+error.message); setSaving(false); return; }
-
-      const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',p.id).maybeSingle();
-      if(stockRow) await sb.from('current_stock').update({qty_bags:closingBags,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
-      else await sb.from('current_stock').insert({product_id:p.id,qty_bags:closingBags});
-
-      if(productionBags!==0){
-        const bagSize=packSizeOf(p);
-        if(bagSize>0) await applyRecipe(p, productionBags*bagSize, 1);
+      if(!r || r.production===''){
+        // Product removed from this day's entry entirely.
+        if(oldRow){
+          if(oldProduction!==0){
+            const bagSize=packSizeOf(p);
+            if(bagSize>0) await applyRecipe(p, oldProduction*bagSize, -1); // undo old recipe effect
+          }
+          await sb.from('daily_production_log').delete().eq('id',oldRow.id);
+        }
+        continue;
       }
+
+      const newProduction=Number(r.production);
+      const newClosing=Number(r.closing);
+      const productionDelta=newProduction-oldProduction;
+
+      if(oldRow){
+        const {error}=await sb.from('daily_production_log').update({
+          opening_bags:r.opening, production_bags:newProduction, closing_bags:newClosing
+        }).eq('id',oldRow.id);
+        if(error){ alert(`Error updating ${p.product_name}: `+error.message); setSaving(false); return; }
+      } else {
+        const {error}=await sb.from('daily_production_log').insert({
+          date:entryDate, product_id:p.id, opening_bags:r.opening, production_bags:newProduction, closing_bags:newClosing
+        });
+        if(error){ alert(`Error saving ${p.product_name}: `+error.message); setSaving(false); return; }
+      }
+
+      // Apply only the DIFFERENCE in recipe effect (raw materials), not the full new amount.
+      if(productionDelta!==0){
+        const bagSize=packSizeOf(p);
+        if(bagSize>0) await applyRecipe(p, productionDelta*bagSize, 1);
+      }
+
+      // 2. Cascade: rewrite opening_bags for every later day of this product, in order,
+      //    and recompute their closing (closing itself is derived live elsewhere, but we
+      //    keep opening_bags stored & correct so it displays right without a full live walk).
+      let runningClosingBags=newClosing;
+      for(const d of laterDates){
+        const laterRow=logs.find(l=>l.date===d&&l.product_id===p.id);
+        if(!laterRow) continue; // this product wasn't logged that day
+        const laterSales=salesFor(d,p.id), laterReturns=returnsFor(d,p.id);
+        const newOpening=runningClosingBags;
+        const newLaterClosing=newOpening+Number(laterRow.production_bags)-laterSales+laterReturns;
+        await sb.from('daily_production_log').update({
+          opening_bags:newOpening, closing_bags:newLaterClosing
+        }).eq('id',laterRow.id);
+        runningClosingBags=newLaterClosing;
+      }
+
+      // 3. current_stock should end at the final cascaded closing (last known day for this product).
+      const {data:stockRow}=await sb.from('current_stock').select('*').eq('product_id',p.id).maybeSingle();
+      if(stockRow) await sb.from('current_stock').update({qty_bags:runningClosingBags,updated_at:new Date().toISOString()}).eq('id',stockRow.id);
+      else await sb.from('current_stock').insert({product_id:p.id,qty_bags:runningClosingBags});
     }
-    logActivity('Production','create',`Daily log submitted for ${entryDate}`);
-    setEntryDate(null); setRows({}); setSaving(false);
+
+    logActivity('Production','update',`Daily log for ${entryDate} edited; later days recalculated`);
+    setEntryDate(null); setRows({}); setEditingOriginal(null); setSaving(false);
     load();
   };
 
@@ -909,8 +1002,8 @@ function Production(){
           </tbody>
         </table></TableWrap>
         <div className="form-actions">
-          <button className="btn btn-green" onClick={saveDay} disabled={saving}>{saving?'Saving…':'Submit day'}</button>
-          <button className="btn btn-ghost" onClick={()=>{setEntryDate(null);setRows({});}}>Cancel</button>
+          <button className="btn btn-green" onClick={saveDay} disabled={saving}>{saving?'Saving…':(editingOriginal?'Save changes':'Submit day')}</button>
+          <button className="btn btn-ghost" onClick={cancelEdit}>Cancel</button>
         </div>
       </div>
     )}
@@ -2217,10 +2310,18 @@ function Dashboard(){
 
 function ProductionSettings(){
   const [firstDate,setFirstDate]=useState(localStorage.getItem('productionFirstEntryDate')||today);
+  const [freezeDate,setFreezeDate]=useState(localStorage.getItem('productionFreezeDate')||'');
+  const [freezeSaved,setFreezeSaved]=useState(false);
   const [hasLogs,setHasLogs]=useState(null);
   const [loading,setLoading]=useState(true);
   const [saved,setSaved]=useState(false);
   const [truncating,setTruncating]=useState(false);
+
+  const saveFreeze=()=>{
+    localStorage.setItem('productionFreezeDate', freezeDate);
+    setFreezeSaved(true);
+    setTimeout(()=>setFreezeSaved(false),2000);
+  };
 
   useEffect(()=>{
     sb.from('daily_production_log').select('id',{count:'exact',head:true}).then(({count})=>{
@@ -2284,6 +2385,22 @@ function ProductionSettings(){
           {saved&&<div style={{marginTop:10,fontSize:12,color:'var(--green)'}}>Saved. Go to Production to begin.</div>}
         </>
       )}
+    </div>
+
+    <div className="card" style={{maxWidth:500,marginTop:20,borderLeft:'3px solid var(--blue)'}}>
+      <div className="section-label" style={{marginBottom:12}}>Freeze past records</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+        Production entries on or before this date can no longer be edited or deleted. Set this once your books for a period are finalized (e.g. 31 March each year).
+      </div>
+      <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+        <Field label="Freeze up to and including">
+          <input type="date" className="form-input" style={{width:180}} value={freezeDate} max={today} onChange={e=>setFreezeDate(e.target.value)}/>
+        </Field>
+        <button className="btn btn-blue" onClick={saveFreeze}>Save</button>
+        {freezeDate&&<button className="btn btn-ghost" onClick={()=>{setFreezeDate('');localStorage.removeItem('productionFreezeDate');}}>Clear</button>}
+      </div>
+      {freezeSaved&&<div style={{marginTop:10,fontSize:12,color:'var(--green)'}}>Saved.</div>}
+      {freezeDate&&<div style={{marginTop:10,fontSize:12,color:'var(--blue)'}}>Currently frozen: all days on or before {freezeDate}.</div>}
     </div>
 
     <div className="card" style={{maxWidth:500,marginTop:20,borderLeft:'3px solid var(--red)'}}>
