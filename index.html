@@ -1055,6 +1055,7 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
 function Returns(){
   const [returns,setReturns]=useState([]);
   const [products,setProducts]=useState([]);
+  const [depots,setDepots]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
@@ -1065,11 +1066,12 @@ function Returns(){
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:r},{data:p}]=await Promise.all([
+    const [{data:r},{data:p},{data:dep}]=await Promise.all([
       sb.from('product_returns').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+      sb.from('depots').select('*').order('name'),
     ]);
-    setReturns(r||[]); setProducts(p||[]); setLoading(false);
+    setReturns(r||[]); setProducts(p||[]); setDepots(dep||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
@@ -1118,7 +1120,12 @@ function Returns(){
             </select>
           </Field>
           <Field label="Bags returned ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty_bags} onChange={e=>f('qty_bags',e.target.value)}/></Field>
-          <Field label="Returned from (depot/party)"><input className="form-input" value={form.source_name} onChange={e=>f('source_name',e.target.value)}/></Field>
+          <Field label="Returned from (depot)">
+            <select className="form-input" value={form.source_name} onChange={e=>f('source_name',e.target.value)}>
+              <option value="">-- Select depot --</option>
+              {depots.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>
+          </Field>
           <Field label="Reason">
             <select className="form-input" value={form.reason} onChange={e=>f('reason',e.target.value)}>
               {REASONS.map(r=><option key={r}>{r}</option>)}
