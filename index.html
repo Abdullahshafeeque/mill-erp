@@ -117,6 +117,13 @@ const today = (() => { const d=new Date(); d.setMinutes(d.getMinutes()-d.getTime
 const fmt = (n,dec=0) => Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:dec,maximumFractionDigits:dec});
 const fmtMT = (kg) => (Number(kg||0)/1000).toFixed(3)+' MT';
 const monthStart = today.slice(0,7)+'-01';
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const YEAR_OPTIONS = Array.from({length: new Date().getFullYear()-2023+1}, (_,i)=>2024+i);
+const monthRange = (m,y) => {
+  const ms = String(m).padStart(2,'0');
+  const last = new Date(y,m,0).getDate();
+  return { start:`${y}-${ms}-01`, end:`${y}-${ms}-${String(last).padStart(2,'0')}` };
+};
 
 // Infer scheme from a product's own name — the one deliberate naming convention
 const schemeFromName = (name) => {
@@ -188,6 +195,16 @@ function FormCard({title,col='var(--amber)',children,onSave,onCancel,saving}){
 function TableWrap({children}){ return <div className="table-wrap">{children}</div>; }
 function Field({label,children}){ return(<div className="form-field"><div className="form-label">{label}</div>{children}</div>); }
 function Loading(){ return <div style={{padding:60,textAlign:'center',color:'var(--muted)',fontFamily:'var(--mono)',fontSize:13}}>loading…</div>; }
+function MonthYearPicker({month,year,setMonth,setYear}){
+  return(<div style={{display:'flex',gap:8,marginTop:10}}>
+    <select style={{width:130}} value={month} onChange={e=>setMonth(Number(e.target.value))}>
+      {MONTH_NAMES.map((n,i)=><option key={i+1} value={i+1}>{n}</option>)}
+    </select>
+    <select style={{width:90}} value={year} onChange={e=>setYear(Number(e.target.value))}>
+      {YEAR_OPTIONS.map(y=><option key={y} value={y}>{y}</option>)}
+    </select>
+  </div>);
+}
 function Empty({msg}){ return <div style={{padding:40,textAlign:'center',color:'var(--muted)',fontSize:13}}>{msg||'No entries yet.'}</div>; }
 
 // ══════════════════════════════════════════════════════════
@@ -1292,6 +1309,10 @@ function FciInwards(){
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
+  const [month,setMonth]=useState(new Date().getMonth()+1);
+  const [year,setYear]=useState(new Date().getFullYear());
+  const {start:periodStart,end:periodEnd}=monthRange(month,year);
+  const periodLabel=`${MONTH_NAMES[month-1]} ${year}`;
   const blank={date:today,lifting_order_id:'',received_kg:'',vehicle_no:'',supplier_id:'',notes:''};
 const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem('lastFciSupplierId')||''}));
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
@@ -1299,12 +1320,12 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
   const load=useCallback(async()=>{
     setLoading(true);
     const [{data:r},{data:lo},{data:sup}]=await Promise.all([
-      sb.from('fci_inwards').select('*, material:material_id(*), lifting_order:lifting_order_id(*), supplier:supplier_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+      sb.from('fci_inwards').select('*, material:material_id(*), lifting_order:lifting_order_id(*), supplier:supplier_id(*)').gte('date',periodStart).lte('date',periodEnd).order('date',{ascending:false}),
       sb.from('lifting_orders').select('*, material:material_id(*)').order('order_date',{ascending:false}),
       sb.from('suppliers').select('*').order('name'),
     ]);
     setReceipts(r||[]); setLiftingOrders(lo||[]); setSuppliers(sup||[]); setLoading(false);
-  },[]);
+  },[periodStart,periodEnd]);
   useEffect(()=>{load();},[load]);
 
   const ordersWithBalance=liftingOrders.filter(o=>Number(o.allotted_kg)-Number(o.lifted_kg)>0);
@@ -1362,7 +1383,8 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
       <div className="page-header" style={{marginBottom:0}}>
         <div className="page-label">Raw Materials</div>
-        <div className="page-title">FCI Inwards — this month: {fmtMT(total)}</div>
+        <div className="page-title">FCI Inwards — {periodLabel}: {fmtMT(total)}</div>
+        <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
       <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Log receipt</button>
     </div>
@@ -1434,6 +1456,10 @@ function PrivateInwards(){
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
+  const [month,setMonth]=useState(new Date().getMonth()+1);
+  const [year,setYear]=useState(new Date().getFullYear());
+  const {start:periodStart,end:periodEnd}=monthRange(month,year);
+  const periodLabel=`${MONTH_NAMES[month-1]} ${year}`;
   const blank={date:today,party_name:'',material_id:'',entry_mode:'weight',qty_bags_input:'',qty_kg:'',vehicle_no:'',lorry_receipt_no:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
@@ -1441,11 +1467,11 @@ function PrivateInwards(){
   const load=useCallback(async()=>{
     setLoading(true);
     const [{data:e},{data:rm}]=await Promise.all([
-  sb.from('private_inwards').select('*, material:material_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+  sb.from('private_inwards').select('*, material:material_id(*)').gte('date',periodStart).lte('date',periodEnd).order('date',{ascending:false}),
   sb.from('product_master').select('*').eq('is_active',true).order('product_name'),
 ]);
 setEntries(e||[]); setRawMaterials(rm||[]); setLoading(false);
-  },[]);
+  },[periodStart,periodEnd]);
   useEffect(()=>{load();},[load]);
 
   const selectedMaterial=rawMaterials.find(m=>m.id===form.material_id);
@@ -1525,7 +1551,8 @@ setEntries(e||[]); setRawMaterials(rm||[]); setLoading(false);
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
       <div className="page-header" style={{marginBottom:0}}>
         <div className="page-label">Raw Materials</div>
-        <div className="page-title">Private inwards — this month: {fmtMT(total)}</div>
+        <div className="page-title">Private inwards — {periodLabel}: {fmtMT(total)}</div>
+        <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
       <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Log receipt</button>
     </div>
@@ -1589,6 +1616,10 @@ function Dispatch(){
   const [showDF,setShowDF]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
+  const [month,setMonth]=useState(new Date().getMonth()+1);
+  const [year,setYear]=useState(new Date().getFullYear());
+  const {start:periodStart,end:periodEnd}=monthRange(month,year);
+  const periodLabel=`${MONTH_NAMES[month-1]} ${year}`;
   const blankD={date:today,invoice_no:'',delivery_order_no:'',work_order_id:'',scheme:'',product_id:'',batch_no:'',depot_name:'',district:'KNR',qty_bags:'',vehicle_no:'',notes:''};
   const [dForm,setDForm]=useState(blankD);
   const [depots,setDepots]=useState([]);
@@ -1598,7 +1629,7 @@ function Dispatch(){
   const load=useCallback(async()=>{
     setLoading(true);
     const [{data:d},{data:w},{data:fp},{data:wm},{data:dep},{data:woa}]=await Promise.all([
-      sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+      sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',periodStart).lte('date',periodEnd).order('date',{ascending:false}),
       sb.from('work_orders').select('*').order('work_order_date',{ascending:false}),
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).eq('available_for_supplyco_dispatch',true).order('product_name'),
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true).limit(1),
@@ -1607,7 +1638,7 @@ function Dispatch(){
     ]);
     setDispatches(d||[]); setWorkOrders(w||[]); setFinishedProducts(fp||[]); setWheatMaterial((wm&&wm[0])||null);
     setDepots(dep||[]); setWoAllotments(woa||[]); setLoading(false);
-  },[]);
+  },[periodStart,periodEnd]);
   useEffect(()=>{load();},[load]);
 
   const schemeOptions=(wheatMaterial?.scheme_list?wheatMaterial.scheme_list.split(',').map(s=>s.trim()):['NPS','PHH','AAY']).filter(s=>s.toLowerCase()!=='private');
@@ -1652,6 +1683,7 @@ function Dispatch(){
       <div className="page-header" style={{marginBottom:0}}>
         <div className="page-label">Supplyco Operations</div>
         <div className="page-title">Dispatch & work orders</div>
+        <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
       <div style={{display:'flex',gap:8}}>
         <button className="btn btn-green" onClick={()=>setShowDF(v=>!v)}>+ Log dispatch</button>
@@ -1690,11 +1722,11 @@ function Dispatch(){
       </FormCard>
     )}
 
-    <div className="section-label">This month's dispatch log</div>
+    <div className="section-label">{periodLabel} dispatch log</div>
     <TableWrap><table>
       <thead><tr><th>Date</th><th>Invoice</th><th>Scheme</th><th>Product</th><th>Depot</th><th>District</th><th>Bags</th><th></th></tr></thead>
       <tbody>
-        {dispatches.length===0&&<tr><td colSpan={8}><Empty msg="No dispatches this month."/></td></tr>}
+        {dispatches.length===0&&<tr><td colSpan={8}><Empty msg={`No dispatches in ${periodLabel}.`}/></td></tr>}
         {dispatches.map(d=>(<tr key={d.id}>
           <td className="mono dim">{d.date}</td>
           <td><strong>{d.invoice_no}</strong></td>
@@ -1722,6 +1754,10 @@ function PrivateDispatch(){
   const [depots,setDepots]=useState([]);
   const [depotAllotments,setDepotAllotments]=useState({});
   const [loading,setLoading]=useState(true);
+  const [month,setMonth]=useState(new Date().getMonth()+1);
+  const [year,setYear]=useState(new Date().getFullYear());
+  const {start:periodStart,end:periodEnd}=monthRange(month,year);
+  const periodLabel=`${MONTH_NAMES[month-1]} ${year}`;
   const blank={date:today,party_name:'',product_id:'',qty:'',vehicle_no:'',invoice_no:'',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
@@ -1729,11 +1765,11 @@ function PrivateDispatch(){
   const load=useCallback(async()=>{
     setLoading(true);
     const [{data:e},{data:p}]=await Promise.all([
-      sb.from('private_dispatches').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+      sb.from('private_dispatches').select('*, product:product_id(*)').gte('date',periodStart).lte('date',periodEnd).order('date',{ascending:false}),
       sb.from('product_master').select('*').eq('is_active',true).eq('available_for_private_dispatch',true).order('product_name'),
     ]);
     setEntries(e||[]); setProducts(p||[]); setLoading(false);
-  },[]);
+  },[periodStart,periodEnd]);
   useEffect(()=>{load();},[load]);
 
   const selectedProduct=products.find(p=>p.id===form.product_id);
@@ -1790,7 +1826,8 @@ function PrivateDispatch(){
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
       <div className="page-header" style={{marginBottom:0}}>
         <div className="page-label">Sales</div>
-        <div className="page-title">Private dispatch — this month: {fmt(totalBags)} bags, {fmtMT(totalKg)}</div>
+        <div className="page-title">Private dispatch — {periodLabel}: {fmt(totalBags)} bags, {fmtMT(totalKg)}</div>
+        <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
       <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ Log dispatch</button>
     </div>
@@ -1817,7 +1854,7 @@ function PrivateDispatch(){
     <TableWrap><table>
       <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Qty</th><th>Vehicle</th><th></th></tr></thead>
       <tbody>
-        {entries.length===0&&<tr><td colSpan={6}><Empty msg="No private dispatches this month."/></td></tr>}
+        {entries.length===0&&<tr><td colSpan={6}><Empty msg={`No private dispatches in ${periodLabel}.`}/></td></tr>}
         {entries.map(e=>(<tr key={e.id}>
           <td className="mono dim">{e.date}</td>
           <td><strong>{e.party_name}</strong></td>
