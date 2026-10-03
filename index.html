@@ -89,6 +89,10 @@
   .login-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:40px;width:360px;}
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;}
   .mobile-bar{display:none;}
+  .user-chip{display:flex;align-items:center;gap:10px;padding:8px 10px;margin:12px 10px 4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;}
+  .user-avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#D97706,#F59E0B);color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .user-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .user-role{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);}
   .task-badge{margin-left:auto;min-width:22px;height:20px;padding:0 7px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;overflow:hidden;flex-shrink:0;color:#fff;}
   .task-badge.compact{margin-left:6px;}
   .tb-clear{background:linear-gradient(135deg,#10B981,#059669);animation:tbPulse 2.4s ease-out infinite;}
@@ -2324,7 +2328,7 @@ function ActivityLog(){
 // ══════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════
-function Dashboard(){
+function Dashboard({name}){
   const [products,setProducts]=useState([]);
   const [currentStock,setCurrentStock]=useState([]);
   const [prod,setProd]=useState([]);
@@ -2364,7 +2368,8 @@ function Dashboard(){
   return(<div className="page">
     <div className="page-header">
       <div className="page-label">Mill Operations · {today}</div>
-      <div className="page-title">Good day — here's your mill</div>
+      <div className="page-title">{(()=>{const h=new Date().getHours();return h<12?'Good morning':h<17?'Good afternoon':'Good evening';})()}{name?`, ${name}`:''} 👋</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginTop:2}}>Here's your mill today.</div>
     </div>
 
     <div className="stat-grid">
@@ -3437,6 +3442,8 @@ function MyTasks({employeeId,onCount}){
   </div>);
 }
 
+const titleCase=(s)=>String(s||'').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
+
 function TaskBadge({n,compact}){
   const cls=n===0?'tb-clear':n===1?'tb-one':n<=4?'tb-few':n<=9?'tb-many':'tb-crit';
   const label=n===0?'✓':n>=10?`⚠ ${n}`:String(n);
@@ -3464,6 +3471,13 @@ function App(){
   },[user?.email]);
 
   const [myOpenCount,setMyOpenCount]=useState(null);
+  const [myName,setMyName]=useState('');
+  useEffect(()=>{
+    if(!access||!access.employee_id){ setMyName(''); return; }
+    let cancelled=false;
+    sb.from(EMP_TABLE).select('*').eq('id',access.employee_id).maybeSingle().then(({data})=>{ if(!cancelled) setMyName(data?empName(data):''); });
+    return ()=>{cancelled=true;};
+  },[access?.employee_id]);
   useEffect(()=>{
     if(!access||!access.employee_id){ setMyOpenCount(null); return; }
     let cancelled=false;
@@ -3492,12 +3506,14 @@ function App(){
     <button className="btn btn-ghost" onClick={()=>sb.auth.signOut()}>Sign out</button>
   </div></div>);
   const isViewer=access.role==='viewer';
+  const displayName=titleCase(myName||(user.email||'').split('@')[0].replace(/[._-]+/g,' '));
+  const firstName=displayName.split(' ')[0];
   const activeTab=isViewer?'my-tasks':tab;
   const navItems=isViewer?MY_WORK_NAV:[...MY_WORK_NAV,...NAV];
   const myTasksView=<MyTasks employeeId={access.employee_id} onCount={setMyOpenCount}/>;
 
   const VIEWS={
-    'dashboard':<Dashboard/>,
+    'dashboard':<Dashboard name={firstName}/>,
     'production':<Production/>,
     'lifting-orders':<LiftingOrders/>,
     'returns':<Returns/>,
@@ -3524,7 +3540,7 @@ function App(){
       <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰{myOpenCount>0&&<TaskBadge n={myOpenCount} compact/>}</button>
       <div>
         <div style={{fontFamily:'var(--mono)',fontSize:11,fontWeight:700,letterSpacing:'.15em',color:'var(--amber)'}}>PRFM</div>
-        <div style={{fontSize:12,color:'var(--muted)'}}>{(navItems.find(n=>n.id===activeTab)||{}).label||'Mill Operations'}</div>
+        <div style={{fontSize:12,color:'var(--muted)'}}>{(navItems.find(n=>n.id===activeTab)||{}).label||'Mill Operations'} · {firstName}</div>
       </div>
     </div>
     <div className={`drawer-overlay${menuOpen?' open':''}`} onClick={()=>setMenuOpen(false)}/>
@@ -3532,6 +3548,13 @@ function App(){
       <div className="sidebar-logo">
         <div className="mill-name">PRFM</div>
         <div className="mill-sub">Mill Operations</div>
+      </div>
+      <div className="user-chip">
+        <div className="user-avatar">{(displayName||'?').charAt(0).toUpperCase()}</div>
+        <div style={{minWidth:0}}>
+          <div className="user-name" title={user.email}>{displayName}</div>
+          <div className="user-role">{access.role}</div>
+        </div>
       </div>
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
