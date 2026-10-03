@@ -2834,7 +2834,7 @@ function JobCards(){
   const [doneForm,setDoneForm]=useState({notes:'',actual_cost:'',keep:false});
   const [doneFiles,setDoneFiles]=useState([]);
   const [viewerUrl,setViewerUrl]=useState(null);
-  const blank={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to:'',deadline:'',est_cost:''};
+  const blank={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to:'',deadline:'',est_cost:'',require_cost:false,require_notes:false,require_photo:false};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -2874,7 +2874,7 @@ function JobCards(){
 
   const startEdit=(j)=>{
     setEditingId(j.id);
-    setForm({title:j.title||'',description:j.description||'',category:j.category||'Other',priority:j.priority||'Medium',location:j.location||'',assigned_to:j.assigned_to||'',deadline:j.deadline||'',est_cost:j.est_cost??''});
+    setForm({title:j.title||'',description:j.description||'',category:j.category||'Other',priority:j.priority||'Medium',location:j.location||'',assigned_to:j.assigned_to||'',deadline:j.deadline||'',est_cost:j.est_cost??'',require_cost:!!j.require_cost,require_notes:!!j.require_notes,require_photo:!!j.require_photo});
     setNewFiles([]); setFileKey(k=>k+1); setShowForm(true);
     window.scrollTo?.(0,0);
   };
@@ -2883,7 +2883,7 @@ function JobCards(){
     if(!form.title.trim()) return alert('Job title is required.');
     setSaving(true);
     const {data:{user}}=await sb.auth.getUser();
-    const payload={title:form.title.trim(),description:form.description,category:form.category,priority:form.priority,location:form.location,assigned_to:form.assigned_to,deadline:form.deadline||null,est_cost:form.est_cost===''?null:Number(form.est_cost)};
+    const payload={title:form.title.trim(),description:form.description,category:form.category,priority:form.priority,location:form.location,assigned_to:form.assigned_to,deadline:form.deadline||null,est_cost:form.est_cost===''?null:Number(form.est_cost),require_cost:!!form.require_cost,require_notes:!!form.require_notes,require_photo:!!form.require_photo};
     let jobId=editingId;
     if(editingId){
       const {error}=await sb.from('job_cards').update(payload).eq('id',editingId);
@@ -2910,6 +2910,11 @@ function JobCards(){
   const openDone=(j)=>{ setDoneJob(j); setDoneForm({notes:j.completion_notes||'',actual_cost:j.actual_cost??'',keep:false}); setDoneFiles([]); };
 
   const confirmDone=async()=>{
+    const missing=[];
+    if(doneJob.require_cost&&doneForm.actual_cost==='') missing.push('actual cost');
+    if(doneJob.require_notes&&!String(doneForm.notes||'').trim()) missing.push('completion notes');
+    if(doneJob.require_photo&&doneFiles.length===0&&!(photos[doneJob.id]||[]).some(p=>p.stage==='after')) missing.push('at least one after-completion photo');
+    if(missing.length) return alert('Required before marking done: '+missing.join(', ')+'.');
     setSaving(true);
     const {data:{user}}=await sb.auth.getUser();
     const {error}=await sb.from('job_cards').update({
@@ -3022,6 +3027,24 @@ function JobCards(){
           </Field>
         </div>
         <div style={{marginTop:12}}>
+          <Field label="Required before marking done">
+            <div style={{display:'flex',gap:18,flexWrap:'wrap',fontSize:13}}>
+              <label style={{display:'flex',alignItems:'center',gap:6}}>
+                <input type="checkbox" checked={form.require_cost&&form.require_notes&&form.require_photo} onChange={e=>setForm(p=>({...p,require_cost:e.target.checked,require_notes:e.target.checked,require_photo:e.target.checked}))}/>
+                <strong>All</strong>
+              </label>
+              <label style={{display:'flex',alignItems:'center',gap:6}}>
+                <input type="checkbox" checked={form.require_cost} onChange={e=>f('require_cost',e.target.checked)}/> Actual cost
+              </label>
+              <label style={{display:'flex',alignItems:'center',gap:6}}>
+                <input type="checkbox" checked={form.require_notes} onChange={e=>f('require_notes',e.target.checked)}/> Completion notes
+              </label>
+              <label style={{display:'flex',alignItems:'center',gap:6}}>
+                <input type="checkbox" checked={form.require_photo} onChange={e=>f('require_photo',e.target.checked)}/> After photo
+              </label>
+            </div>
+          </Field>
+          <div style={{height:12}}/>
           <Field label="Photos (optional)">
             <input key={fileKey} type="file" accept="image/*" multiple className="form-input" onChange={e=>setNewFiles(Array.from(e.target.files||[]))}/>
           </Field>
@@ -3083,6 +3106,7 @@ function JobCards(){
           {j.location&&<span>📍 {j.location}</span>}
           {j.assigned_to&&<span>👤 {j.assigned_to}</span>}
           {j.est_cost!=null&&<span>Est. ₹{fmt(j.est_cost)}</span>}
+          {!isDone&&(j.require_cost||j.require_notes||j.require_photo)&&<span style={{color:'var(--blue)'}}>🔒 Needs: {[j.require_cost&&'cost',j.require_notes&&'notes',j.require_photo&&'photo'].filter(Boolean).join(', ')}</span>}
           {isDone&&j.actual_cost!=null&&<span>Actual ₹{fmt(j.actual_cost)}</span>}
           <span>Created {j.created_at?.slice(0,10)}{j.created_by?` by ${j.created_by}`:''}</span>
         </div>
@@ -3115,9 +3139,9 @@ function JobCards(){
           <div className="section-label">Mark job as done</div>
           <div style={{fontSize:14,marginBottom:14}}><strong>{doneJob.title}</strong></div>
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
-            <Field label="Completion notes"><textarea className="form-input" rows={3} value={doneForm.notes} onChange={e=>setDoneForm(p=>({...p,notes:e.target.value}))} placeholder="What was done, parts used, follow-ups…"/></Field>
-            <Field label="Actual cost (₹)"><input type="number" className="form-input" value={doneForm.actual_cost} onChange={e=>setDoneForm(p=>({...p,actual_cost:e.target.value}))}/></Field>
-            <Field label="After-completion photos (optional)"><input type="file" accept="image/*" multiple className="form-input" onChange={e=>setDoneFiles(Array.from(e.target.files||[]))}/></Field>
+            <Field label={doneJob.require_notes?'Completion notes ★':'Completion notes'}><textarea className="form-input" rows={3} value={doneForm.notes} onChange={e=>setDoneForm(p=>({...p,notes:e.target.value}))} placeholder="What was done, parts used, follow-ups…"/></Field>
+            <Field label={doneJob.require_cost?'Actual cost (₹) ★':'Actual cost (₹)'}><input type="number" className="form-input" value={doneForm.actual_cost} onChange={e=>setDoneForm(p=>({...p,actual_cost:e.target.value}))}/></Field>
+            <Field label={doneJob.require_photo?'After-completion photos ★':'After-completion photos (optional)'}><input type="file" accept="image/*" multiple className="form-input" onChange={e=>setDoneFiles(Array.from(e.target.files||[]))}/></Field>
             <label style={{display:'flex',alignItems:'flex-start',gap:8,fontSize:13}}>
               <input type="checkbox" checked={doneForm.keep} onChange={e=>setDoneForm(p=>({...p,keep:e.target.checked}))} style={{marginTop:3}}/>
               <span>Keep photos permanently (otherwise they are deleted {PHOTO_RETENTION_DAYS} days after completion)</span>
