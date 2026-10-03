@@ -3215,11 +3215,234 @@ function JobCards(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// MY TASKS (employee view)
+// ══════════════════════════════════════════════════════════
+const MY_WORK_NAV=[{section:'My Work'},{id:'my-tasks',label:'My Tasks',icon:'✅'}];
+
+const jobDeadlineLabel=(j)=>{
+  if(!j.deadline) return null;
+  const d=daysUntil(j.deadline);
+  if(j.status==='Done') return {text:`Deadline ${j.deadline}`,col:'var(--muted)'};
+  if(d<0) return {text:`Overdue by ${-d} day${-d===1?'':'s'} (${j.deadline})`,col:'var(--red)'};
+  if(d===0) return {text:'Due today',col:'var(--amber)'};
+  if(d<=3) return {text:`Due in ${d} day${d===1?'':'s'} (${j.deadline})`,col:'var(--amber)'};
+  return {text:`Due ${j.deadline}`,col:'var(--muted)'};
+};
+
+async function uploadJobPhotos(jobId,files,stage){
+  for(const file of files){
+    try{
+      const blob=await compressImage(file);
+      const path=`${jobId}/${stage}-${Date.now()}-${Math.random().toString(36).slice(2,8)}.jpg`;
+      const {error}=await sb.storage.from('job-photos').upload(path,blob,{contentType:'image/jpeg'});
+      if(error){ alert('Photo upload failed: '+error.message); continue; }
+      await sb.from('job_card_photos').insert({job_id:jobId,storage_path:path,stage});
+    }catch(e){ alert('Photo skipped: '+e.message); }
+  }
+}
+
+function MyTasks({employeeId}){
+  const [jobs,setJobs]=useState([]);
+  const [photos,setPhotos]=useState({});
+  const [loading,setLoading]=useState(true);
+  const [loadError,setLoadError]=useState('');
+  const [who,setWho]=useState(null);
+  const [filter,setFilter]=useState('Open');
+  const [doneJob,setDoneJob]=useState(null);
+  const [doneForm,setDoneForm]=useState({notes:'',actual_cost:''});
+  const [doneFiles,setDoneFiles]=useState([]);
+  const [saving,setSaving]=useState(false);
+  const [viewerUrl,setViewerUrl]=useState(null);
+
+  const load=useCallback(async()=>{
+    if(!employeeId){ setLoading(false); return; }
+    setLoading(true); setLoadError('');
+    const {data:j,error}=await sb.from('job_cards').select('*').eq('assigned_to_id',String(employeeId)).order('created_at',{ascending:false});
+    if(error){ setLoadError(error.message); setLoading(false); return; }
+    const ids=(j||[]).map(x=>x.id);
+    let ph=[];
+    if(ids.length){
+      const {data}=await sb.from('job_card_photos').select('*').in('job_id',ids).order('created_at');
+      ph=data||[];
+    }
+    const paths=ph.map(p=>p.storage_path);
+    const urlMap={};
+    if(paths.length){
+      const {data:signed}=await sb.storage.from('job-photos').createSignedUrls(paths,3600);
+      (signed||[]).forEach(s=>{ if(s.signedUrl) urlMap[s.path]=s.signedUrl; });
+    }
+    const byJob={};
+    ph.forEach(p=>{ (byJob[p.job_id]=byJob[p.job_id]||[]).push({...p,url:urlMap[p.storage_path]}); });
+    setJobs(j||[]); setPhotos(byJob); setLoading(false);
+  },[employeeId]);
+  useEffect(()=>{load();},[load]);
+
+  useEffect(()=>{
+    if(!employeeId) return;
+    sb.from(EMP_TABLE).select('name,emp_code').eq('id',employeeId).maybeSingle().then(({data})=>setWho(data||null));
+  },[employeeId]);
+
+  const startJob=async(j)=>{
+    const {error}=await sb.from('job_cards').update({status:'In Progress'}).eq('id',j.id).eq('assigned_to_id',String(employeeId));
+    if(error) return alert(error.message);
+    logActivity('My Tasks','update',`Started — ${j.title}`);
+    load();
+  };
+
+  const openDone=(j)=>{ setDoneJob(j); setDoneForm({notes:'',actual_cost:''}); setDoneFiles([]); };
+
+  const confirmDone=async()=>{
+    const missing=[];
+    if(doneJob.require_cost&&doneForm.actual_cost==='') missing.push('actual cost');
+    if(doneJob.require_notes&&!String(doneForm.notes||'').trim()) missing.push('completion notes');
+    if(doneJob.require_photo&&doneFiles.length===0&&!(photos[doneJob.id]||[]).some(p=>p.stage==='after')) missing.push('at least one after-completion photo');
+    if(missing.length) return alert('Required before marking done: '+missing.join(', ')+'.');
+    setSaving(true);
+    const {data:{user}}=await sb.auth.getUser();
+    const {error}=await sb.from('job_cards').update({
+      status:'Done', completed_at:new Date().toISOString(), completed_by:user?.email||null,
+      completion_notes:doneForm.notes, actual_cost:doneForm.actual_cost===''?null:Number(doneForm.actual_cost),
+      keep_photos:false, photos_deleted:false
+    }).eq('id',doneJob.id).eq('assigned_to_id',String(employeeId));
+    if(error){ alert(error.message); setSaving(false); return; }
+    if(doneFiles.length) await uploadJobPhotos(doneJob.id,doneFiles,'after');
+    logActivity('My Tasks','update',`Completed — ${doneJob.title}`);
+    setSaving(false); setDoneJob(null); setDoneFiles([]); load();
+  };
+
+  const renderPhotos=(list,label)=>list.length===0?null:(
+    <div style={{marginTop:10}}>
+      <div className="form-label" style={{marginBottom:4}}>{label}</div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        {list.map(p=>(
+          <img key={p.id} src={p.url} alt="" onClick={()=>p.url&&setViewerUrl(p.url)}
+            style={{width:76,height:76,objectFit:'cover',borderRadius:6,border:'1px solid var(--border)',cursor:'pointer',background:'var(--surface2)'}}/>
+        ))}
+      </div>
+    </div>
+  );
+
+  if(loading) return <Loading/>;
+
+  if(!employeeId) return(<div className="page"><div className="card" style={{maxWidth:480}}>
+    <div className="section-label">My tasks</div>
+    <div style={{fontSize:14}}>Your login is not linked to an employee profile yet. Please ask the Director to link it in the HR portal (Users tab).</div>
+  </div></div>);
+
+  const open=jobs.filter(j=>j.status!=='Done');
+  const overdue=open.filter(j=>j.deadline&&daysUntil(j.deadline)<0);
+  const visible=jobs.filter(j=>filter==='All'||(filter==='Open'?j.status!=='Done':j.status==='Done')).sort((a,b)=>{
+    if(a.status==='Done'&&b.status!=='Done') return 1;
+    if(a.status!=='Done'&&b.status==='Done') return -1;
+    if(a.status==='Done') return new Date(b.completed_at)-new Date(a.completed_at);
+    return (a.deadline||'9999-12-31').localeCompare(b.deadline||'9999-12-31');
+  });
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">My Work{who?` · ${who.name}${who.emp_code?` (${who.emp_code})`:''}`:''}</div>
+      <div className="page-title">My tasks</div>
+    </div>
+
+    <div className="stat-grid">
+      <StatCard label="Open tasks" value={open.length} col="var(--blue)"/>
+      <StatCard label="Overdue" value={overdue.length} col={overdue.length>0?'var(--red)':'var(--green)'}/>
+    </div>
+
+    {loadError&&<Alert type="red" icon="⚠" title="Could not load tasks" sub={loadError}/>}
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+      {['Open','Done','All'].map(s=><button key={s} className={`btn btn-sm ${filter===s?'btn-amber':'btn-ghost'}`} onClick={()=>setFilter(s)}>{s}</button>)}
+    </div>
+
+    {visible.length===0&&<div className="card"><Empty msg={filter==='Open'?'No open tasks assigned to you. 🎉':'No tasks to show.'}/></div>}
+
+    {visible.map(j=>{
+      const list=photos[j.id]||[];
+      const before=list.filter(p=>p.stage!=='after');
+      const after=list.filter(p=>p.stage==='after');
+      const dl=jobDeadlineLabel(j);
+      const isDone=j.status==='Done';
+      return(<div key={j.id} className="card" style={{marginBottom:14,borderLeft:`4px solid ${PRIORITY_COL[j.priority]||'var(--border2)'}`}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:200}}>
+            <div style={{fontSize:16,fontWeight:600}}>{j.title}</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+              <span className={`badge ${STATUS_BADGE[j.status]||'badge-muted'}`}>{j.status}</span>
+              <span className={`badge ${PRIORITY_BADGE[j.priority]||'badge-muted'}`}>{j.priority}</span>
+              <span className="badge badge-blue">{j.category}</span>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:6,alignItems:'flex-start'}}>
+            {j.status==='Pending'&&<button className="btn btn-amber btn-sm" onClick={()=>startJob(j)}>Start</button>}
+            {!isDone&&<button className="btn btn-green btn-sm" onClick={()=>openDone(j)}>Mark done</button>}
+          </div>
+        </div>
+
+        {j.description&&<div style={{fontSize:13,marginTop:10,whiteSpace:'pre-wrap'}}>{j.description}</div>}
+
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:10,fontSize:12,color:'var(--muted)'}}>
+          {dl&&<span style={{color:dl.col,fontWeight:500}}>⏰ {dl.text}</span>}
+          {j.location&&<span>📍 {j.location}</span>}
+          <span>Assigned {(j.assigned_at||j.created_at||'').slice(0,10)}</span>
+          {!isDone&&(j.require_cost||j.require_notes||j.require_photo)&&<span style={{color:'var(--blue)'}}>🔒 To finish you must add: {[j.require_cost&&'cost',j.require_notes&&'notes',j.require_photo&&'after photo'].filter(Boolean).join(', ')}</span>}
+        </div>
+
+        {renderPhotos(before,'Photos')}
+        {renderPhotos(after,'After completion')}
+
+        {isDone&&(<div style={{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)',fontSize:12}}>
+          <div style={{color:'var(--green)',fontWeight:500}}>✓ Completed {j.completed_at?.slice(0,10)}</div>
+          {j.completion_notes&&<div style={{marginTop:4,fontSize:13,whiteSpace:'pre-wrap'}}>{j.completion_notes}</div>}
+        </div>)}
+      </div>);
+    })}
+
+    {doneJob&&(
+      <div className="modal-overlay">
+        <div className="card" style={{maxWidth:480,width:'100%',maxHeight:'90vh',overflowY:'auto'}}>
+          <div className="section-label">Mark task as done</div>
+          <div style={{fontSize:14,marginBottom:14}}><strong>{doneJob.title}</strong></div>
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            <Field label={doneJob.require_notes?'Completion notes ★':'Completion notes'}><textarea className="form-input" rows={3} value={doneForm.notes} onChange={e=>setDoneForm(p=>({...p,notes:e.target.value}))} placeholder="What was done…"/></Field>
+            <Field label={doneJob.require_cost?'Cost (₹) ★':'Cost (₹) — if any'}><input type="number" className="form-input" value={doneForm.actual_cost} onChange={e=>setDoneForm(p=>({...p,actual_cost:e.target.value}))}/></Field>
+            <Field label={doneJob.require_photo?'After-completion photos ★':'After-completion photos (optional)'}><input type="file" accept="image/*" multiple className="form-input" onChange={e=>setDoneFiles(Array.from(e.target.files||[]))}/></Field>
+          </div>
+          <div className="form-actions">
+            <button className="btn btn-green" onClick={confirmDone} disabled={saving}>{saving?'Saving…':'Confirm done'}</button>
+            <button className="btn btn-ghost" onClick={()=>setDoneJob(null)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {viewerUrl&&(
+      <div className="modal-overlay" onClick={()=>setViewerUrl(null)} style={{cursor:'zoom-out'}}>
+        <img src={viewerUrl} alt="" style={{maxWidth:'100%',maxHeight:'92vh',borderRadius:8}}/>
+      </div>
+    )}
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
   const [authLoading,setAuthLoading]=useState(true);
   const [menuOpen,setMenuOpen]=useState(false);
+  const [access,setAccess]=useState(null);
+  useEffect(()=>{
+    if(!user){ setAccess(null); return; }
+    let cancelled=false;
+    (async()=>{
+      const {data:users,error}=await sb.from('app_users').select('*');
+      if(cancelled) return;
+      if(error){ setAccess({error:error.message}); return; }
+      const me=(users||[]).find(u=>(u.email||'').toLowerCase()===(user.email||'').toLowerCase());
+      setAccess({role:me?me.role:'pending',employee_id:me?.employee_id??null});
+    })();
+    return ()=>{cancelled=true;};
+  },[user?.email]);
 
   useEffect(()=>{
     sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setAuthLoading(false);});
@@ -3228,6 +3451,18 @@ function App(){
 
   if(authLoading) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'var(--muted)'}}>loading…</div>;
   if(!user) return <Login onLogin={setUser}/>;
+
+  if(!access) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'var(--muted)'}}>checking access…</div>;
+  if(access.error||access.role==='pending') return(<div className="login-wrap"><div className="login-card">
+    <div style={{fontFamily:'var(--mono)',fontSize:11,letterSpacing:'.15em',color:'var(--amber)',marginBottom:4}}>PRFM</div>
+    <div style={{fontSize:18,fontWeight:600,marginBottom:8}}>{access.error?'Could not verify access':'Account under review'}</div>
+    <div style={{fontSize:13,color:'var(--muted)',marginBottom:20}}>{access.error?access.error:'Your account is waiting for Director approval in the HR portal.'}</div>
+    <button className="btn btn-ghost" onClick={()=>sb.auth.signOut()}>Sign out</button>
+  </div></div>);
+  const isViewer=access.role==='viewer';
+  const activeTab=isViewer?'my-tasks':tab;
+  const navItems=isViewer?MY_WORK_NAV:[...MY_WORK_NAV,...NAV];
+  const myTasksView=<MyTasks employeeId={access.employee_id}/>;
 
   const VIEWS={
     'dashboard':<Dashboard/>,
@@ -3249,6 +3484,7 @@ function App(){
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
     'job-cards':<JobCards/>,
+    'my-tasks':myTasksView,
   };
 
   return(<div className="app">
@@ -3256,7 +3492,7 @@ function App(){
       <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰</button>
       <div>
         <div style={{fontFamily:'var(--mono)',fontSize:11,fontWeight:700,letterSpacing:'.15em',color:'var(--amber)'}}>PRFM</div>
-        <div style={{fontSize:12,color:'var(--muted)'}}>{(NAV.find(n=>n.id===tab)||{}).label||'Mill Operations'}</div>
+        <div style={{fontSize:12,color:'var(--muted)'}}>{(navItems.find(n=>n.id===activeTab)||{}).label||'Mill Operations'}</div>
       </div>
     </div>
     <div className={`drawer-overlay${menuOpen?' open':''}`} onClick={()=>setMenuOpen(false)}/>
@@ -3265,9 +3501,9 @@ function App(){
         <div className="mill-name">PRFM</div>
         <div className="mill-sub">Mill Operations</div>
       </div>
-      {NAV.map((item,i)=>{
+      {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
-        return(<button key={item.id} className={`nav-btn${tab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
+        return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
           <span className="icon">{item.icon}</span>{item.label}
         </button>);
       })}
@@ -3276,7 +3512,7 @@ function App(){
         <button className="btn btn-ghost btn-sm" style={{width:'100%'}} onClick={()=>sb.auth.signOut()}>Sign out</button>
       </div>
     </div>
-    <div className="main">{VIEWS[tab]||<Dashboard/>}</div>
+    <div className="main">{VIEWS[activeTab]||<Dashboard/>}</div>
   </div>);
 }
 
