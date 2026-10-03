@@ -88,7 +88,18 @@
   .login-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;}
   .login-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:40px;width:360px;}
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;}
-  @media(max-width:700px){ .sidebar{display:none;} .two-col{grid-template-columns:1fr;} .page{padding:16px 14px 40px;} }
+  .mobile-bar{display:none;}
+  .drawer-overlay{display:none;}
+  @media(max-width:700px){
+    .app{flex-direction:column;height:100vh;height:100dvh;}
+    .main{min-height:0;}
+    .mobile-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;}
+    .sidebar{position:fixed;top:0;left:0;bottom:0;z-index:1500;width:260px;transform:translateX(-100%);transition:transform .2s;box-shadow:2px 0 12px rgba(0,0,0,.15);}
+    .sidebar.open{transform:translateX(0);}
+    .drawer-overlay.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1400;}
+    .two-col{grid-template-columns:1fr;}
+    .page{padding:16px 14px 40px;}
+  }
 </style>
 </head>
 <body>
@@ -3132,6 +3143,7 @@ function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
   const [authLoading,setAuthLoading]=useState(true);
+  const [menuOpen,setMenuOpen]=useState(false);
 
   useEffect(()=>{
     sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setAuthLoading(false);});
@@ -3164,14 +3176,22 @@ function App(){
   };
 
   return(<div className="app">
-    <div className="sidebar">
+    <div className="mobile-bar">
+      <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰</button>
+      <div>
+        <div style={{fontFamily:'var(--mono)',fontSize:11,fontWeight:700,letterSpacing:'.15em',color:'var(--amber)'}}>PRFM</div>
+        <div style={{fontSize:12,color:'var(--muted)'}}>{(NAV.find(n=>n.id===tab)||{}).label||'Mill Operations'}</div>
+      </div>
+    </div>
+    <div className={`drawer-overlay${menuOpen?' open':''}`} onClick={()=>setMenuOpen(false)}/>
+    <div className={`sidebar${menuOpen?' open':''}`}>
       <div className="sidebar-logo">
         <div className="mill-name">PRFM</div>
         <div className="mill-sub">Mill Operations</div>
       </div>
       {NAV.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
-        return(<button key={item.id} className={`nav-btn${tab===item.id?' active':''}`} onClick={()=>setTab(item.id)}>
+        return(<button key={item.id} className={`nav-btn${tab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
           <span className="icon">{item.icon}</span>{item.label}
         </button>);
       })}
