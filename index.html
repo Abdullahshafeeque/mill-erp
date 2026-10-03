@@ -2818,6 +2818,14 @@ async function runJobPhotoCleanup(jobList){
   }
 }
 
+const EMP_TABLE='employees';
+const empName=(e)=>e.name||e.full_name||e.employee_name||'(unnamed)';
+const empIsActive=(e)=>{
+  if(e.is_active===false||e.active===false) return false;
+  const s=String(e.status||'').toLowerCase();
+  return !['left','inactive','resigned','terminated','exited'].includes(s);
+};
+
 function JobCards(){
   const [jobs,setJobs]=useState([]);
   const [photos,setPhotos]=useState({});
@@ -2834,12 +2842,16 @@ function JobCards(){
   const [doneForm,setDoneForm]=useState({notes:'',actual_cost:'',keep:false});
   const [doneFiles,setDoneFiles]=useState([]);
   const [viewerUrl,setViewerUrl]=useState(null);
-  const blank={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to:'',deadline:'',est_cost:'',require_cost:false,require_notes:false,require_photo:false};
+  const [employees,setEmployees]=useState([]);
+  const [empError,setEmpError]=useState('');
+  const blank={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to:'',deadline:'',est_cost:'',require_cost:false,require_notes:false,require_photo:false,assigned_to_id:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
   const load=useCallback(async()=>{
     setLoading(true);
+    const {data:emps,error:empErr}=await sb.from(EMP_TABLE).select('*').range(0,4999);
+    setEmployees(emps||[]); setEmpError(empErr?empErr.message:'');
     const {data:j0}=await sb.from('job_cards').select('*');
     await runJobPhotoCleanup(j0||[]);
     const [{data:j},{data:ph}]=await Promise.all([
@@ -2874,7 +2886,7 @@ function JobCards(){
 
   const startEdit=(j)=>{
     setEditingId(j.id);
-    setForm({title:j.title||'',description:j.description||'',category:j.category||'Other',priority:j.priority||'Medium',location:j.location||'',assigned_to:j.assigned_to||'',deadline:j.deadline||'',est_cost:j.est_cost??'',require_cost:!!j.require_cost,require_notes:!!j.require_notes,require_photo:!!j.require_photo});
+    setForm({title:j.title||'',description:j.description||'',category:j.category||'Other',priority:j.priority||'Medium',location:j.location||'',assigned_to:j.assigned_to||'',assigned_to_id:j.assigned_to_id?String(j.assigned_to_id):(j.assigned_to?'__other__':''),deadline:j.deadline||'',est_cost:j.est_cost??'',require_cost:!!j.require_cost,require_notes:!!j.require_notes,require_photo:!!j.require_photo});
     setNewFiles([]); setFileKey(k=>k+1); setShowForm(true);
     window.scrollTo?.(0,0);
   };
@@ -2883,8 +2895,12 @@ function JobCards(){
     if(!form.title.trim()) return alert('Job title is required.');
     setSaving(true);
     const {data:{user}}=await sb.auth.getUser();
-    const payload={title:form.title.trim(),description:form.description,category:form.category,priority:form.priority,location:form.location,assigned_to:form.assigned_to,deadline:form.deadline||null,est_cost:form.est_cost===''?null:Number(form.est_cost),require_cost:!!form.require_cost,require_notes:!!form.require_notes,require_photo:!!form.require_photo};
+    const payload={title:form.title.trim(),description:form.description,category:form.category,priority:form.priority,location:form.location,assigned_to:form.assigned_to,assigned_to_id:(form.assigned_to_id&&form.assigned_to_id!=='__other__')?form.assigned_to_id:null,deadline:form.deadline||null,est_cost:form.est_cost===''?null:Number(form.est_cost),require_cost:!!form.require_cost,require_notes:!!form.require_notes,require_photo:!!form.require_photo};
     let jobId=editingId;
+    const orig=editingId?jobs.find(x=>x.id===editingId):null;
+    const newKey=payload.assigned_to_id||payload.assigned_to||'';
+    const oldKey=orig?(orig.assigned_to_id?String(orig.assigned_to_id):(orig.assigned_to||'')):'';
+    if(newKey&&newKey!==oldKey) payload.assigned_at=new Date().toISOString();
     if(editingId){
       const {error}=await sb.from('job_cards').update(payload).eq('id',editingId);
       if(error){alert(error.message);setSaving(false);return;}
@@ -2953,6 +2969,15 @@ function JobCards(){
 
   if(loading) return <Loading/>;
 
+  const activeEmps=employees.filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b)));
+  const recentIds=(()=>{
+    const seen=[];
+    [...jobs].filter(j=>j.assigned_to_id)
+      .sort((a,b)=>new Date(b.assigned_at||b.created_at)-new Date(a.assigned_at||a.created_at))
+      .forEach(j=>{ const id=String(j.assigned_to_id); if(!seen.includes(id)) seen.push(id); });
+    return seen.filter(id=>activeEmps.some(e=>String(e.id)===id)).slice(0,5);
+  })();
+  const empProblem=empError?('Could not load employees: '+empError):(employees.length===0?`No employees found in table "${EMP_TABLE}".`:'');
   const open=jobs.filter(j=>j.status!=='Done');
   const overdue=open.filter(j=>j.deadline&&daysUntil(j.deadline)<0);
   const dueSoon=open.filter(j=>j.deadline&&daysUntil(j.deadline)>=0&&daysUntil(j.deadline)<=3);
@@ -3018,7 +3043,32 @@ function JobCards(){
           <Field label="Priority"><select className="form-input" value={form.priority} onChange={e=>f('priority',e.target.value)}>{JOB_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select></Field>
           <Field label="Deadline"><input type="date" className="form-input" value={form.deadline} onChange={e=>f('deadline',e.target.value)}/></Field>
           <Field label="Location / section"><input className="form-input" value={form.location} onChange={e=>f('location',e.target.value)} placeholder="e.g. Packing hall, Godown 2"/></Field>
-          <Field label="Assigned to"><input className="form-input" value={form.assigned_to} onChange={e=>f('assigned_to',e.target.value)} placeholder="Person or contractor"/></Field>
+          <Field label="Assigned to">
+            <select className="form-input" value={form.assigned_to_id} onChange={e=>{
+              const v=e.target.value;
+              if(v===''||v==='__other__'){
+                setForm(p=>({...p,assigned_to_id:v,assigned_to:v==='__other__'?p.assigned_to:''}));
+              } else {
+                const emp=employees.find(x=>String(x.id)===v);
+                setForm(p=>({...p,assigned_to_id:v,assigned_to:emp?empName(emp):p.assigned_to}));
+              }
+            }}>
+              <option value="">-- Unassigned --</option>
+              {form.assigned_to_id&&form.assigned_to_id!=='__other__'&&!activeEmps.some(e=>String(e.id)===form.assigned_to_id)&&
+                <option value={form.assigned_to_id}>{form.assigned_to} (inactive)</option>}
+              {recentIds.length>0&&(
+                <optgroup label="★ Recently assigned">
+                  {recentIds.map(id=>{const e=activeEmps.find(x=>String(x.id)===id); return <option key={'r'+id} value={id}>{empName(e)}</option>;})}
+                </optgroup>
+              )}
+              <optgroup label="All employees">
+                {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empName(e)}</option>)}
+              </optgroup>
+              <option value="__other__">Someone else (type name)…</option>
+            </select>
+            {form.assigned_to_id==='__other__'&&<input className="form-input" style={{marginTop:6}} value={form.assigned_to} onChange={e=>f('assigned_to',e.target.value)} placeholder="Name of person or contractor"/>}
+            {empProblem&&<div style={{fontSize:11,color:'var(--red)',marginTop:4}}>{empProblem}</div>}
+          </Field>
           <Field label="Estimated cost (₹)"><input type="number" className="form-input" value={form.est_cost} onChange={e=>f('est_cost',e.target.value)}/></Field>
         </div>
         <div style={{marginTop:12}}>
@@ -3104,7 +3154,7 @@ function JobCards(){
         <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:10,fontSize:12,color:'var(--muted)'}}>
           {dl&&<span style={{color:dl.col,fontWeight:500}}>⏰ {dl.text}</span>}
           {j.location&&<span>📍 {j.location}</span>}
-          {j.assigned_to&&<span>👤 {j.assigned_to}</span>}
+          {(j.assigned_to||j.assigned_to_id)&&<span>👤 {(()=>{const em=j.assigned_to_id?employees.find(x=>String(x.id)===String(j.assigned_to_id)):null;return em?empName(em):j.assigned_to;})()}</span>}
           {j.est_cost!=null&&<span>Est. ₹{fmt(j.est_cost)}</span>}
           {!isDone&&(j.require_cost||j.require_notes||j.require_photo)&&<span style={{color:'var(--blue)'}}>🔒 Needs: {[j.require_cost&&'cost',j.require_notes&&'notes',j.require_photo&&'photo'].filter(Boolean).join(', ')}</span>}
           {isDone&&j.actual_cost!=null&&<span>Actual ₹{fmt(j.actual_cost)}</span>}
