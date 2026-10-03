@@ -89,6 +89,17 @@
   .login-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:40px;width:360px;}
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;}
   .mobile-bar{display:none;}
+  .task-badge{margin-left:auto;min-width:22px;height:20px;padding:0 7px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;line-height:1;position:relative;overflow:hidden;flex-shrink:0;color:#fff;}
+  .task-badge.compact{margin-left:6px;}
+  .tb-clear{background:linear-gradient(135deg,#10B981,#059669);animation:tbPulse 2.4s ease-out infinite;}
+  .tb-clear::after{content:'';position:absolute;top:0;left:-60%;width:40%;height:100%;background:linear-gradient(120deg,transparent,rgba(255,255,255,.8),transparent);transform:skewX(-20deg);animation:tbShine 2.6s ease-in-out infinite;}
+  .tb-one{background:#2563EB;}
+  .tb-few{background:#F59E0B;color:#1F2937;}
+  .tb-many{background:#EA580C;}
+  .tb-crit{background:#DC2626;animation:tbWarn 1s ease-in-out infinite;}
+  @keyframes tbShine{0%{left:-60%}55%,100%{left:130%}}
+  @keyframes tbPulse{0%{box-shadow:0 0 0 0 rgba(16,185,129,.55)}70%{box-shadow:0 0 0 7px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
+  @keyframes tbWarn{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.6);transform:scale(1)}50%{box-shadow:0 0 0 6px rgba(220,38,38,0);transform:scale(1.12)}}
   .drawer-overlay{display:none;}
   @media(max-width:700px){
     .app{flex-direction:column;height:100vh;height:100dvh;}
@@ -3242,7 +3253,7 @@ async function uploadJobPhotos(jobId,files,stage){
   }
 }
 
-function MyTasks({employeeId}){
+function MyTasks({employeeId,onCount}){
   const [jobs,setJobs]=useState([]);
   const [photos,setPhotos]=useState({});
   const [loading,setLoading]=useState(true);
@@ -3260,6 +3271,7 @@ function MyTasks({employeeId}){
     setLoading(true); setLoadError('');
     const {data:j,error}=await sb.from('job_cards').select('*').eq('assigned_to_id',String(employeeId)).order('created_at',{ascending:false});
     if(error){ setLoadError(error.message); setLoading(false); return; }
+    if(onCount) onCount((j||[]).filter(x=>x.status!=='Done').length);
     const ids=(j||[]).map(x=>x.id);
     let ph=[];
     if(ids.length){
@@ -3425,6 +3437,13 @@ function MyTasks({employeeId}){
   </div>);
 }
 
+function TaskBadge({n,compact}){
+  const cls=n===0?'tb-clear':n===1?'tb-one':n<=4?'tb-few':n<=9?'tb-many':'tb-crit';
+  const label=n===0?'✓':n>=10?`⚠ ${n}`:String(n);
+  const tip=n===0?'No pending tasks':`${n} pending task${n===1?'':'s'}`;
+  return <span className={`task-badge ${cls}${compact?' compact':''}`} title={tip}>{label}</span>;
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -3444,6 +3463,19 @@ function App(){
     return ()=>{cancelled=true;};
   },[user?.email]);
 
+  const [myOpenCount,setMyOpenCount]=useState(null);
+  useEffect(()=>{
+    if(!access||!access.employee_id){ setMyOpenCount(null); return; }
+    let cancelled=false;
+    const fetchCount=async()=>{
+      const {count,error}=await sb.from('job_cards').select('id',{count:'exact',head:true}).eq('assigned_to_id',String(access.employee_id)).neq('status','Done');
+      if(!cancelled&&!error) setMyOpenCount(count||0);
+    };
+    fetchCount();
+    const t=setInterval(fetchCount,60000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.employee_id]);
+
   useEffect(()=>{
     sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setAuthLoading(false);});
     sb.auth.onAuthStateChange((_,session)=>setUser(session?.user??null));
@@ -3462,7 +3494,7 @@ function App(){
   const isViewer=access.role==='viewer';
   const activeTab=isViewer?'my-tasks':tab;
   const navItems=isViewer?MY_WORK_NAV:[...MY_WORK_NAV,...NAV];
-  const myTasksView=<MyTasks employeeId={access.employee_id}/>;
+  const myTasksView=<MyTasks employeeId={access.employee_id} onCount={setMyOpenCount}/>;
 
   const VIEWS={
     'dashboard':<Dashboard/>,
@@ -3489,7 +3521,7 @@ function App(){
 
   return(<div className="app">
     <div className="mobile-bar">
-      <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰</button>
+      <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰{myOpenCount>0&&<TaskBadge n={myOpenCount} compact/>}</button>
       <div>
         <div style={{fontFamily:'var(--mono)',fontSize:11,fontWeight:700,letterSpacing:'.15em',color:'var(--amber)'}}>PRFM</div>
         <div style={{fontSize:12,color:'var(--muted)'}}>{(navItems.find(n=>n.id===activeTab)||{}).label||'Mill Operations'}</div>
@@ -3504,7 +3536,7 @@ function App(){
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
         return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
-          <span className="icon">{item.icon}</span>{item.label}
+          <span className="icon">{item.icon}</span>{item.label}{item.id==='my-tasks'&&myOpenCount!==null&&<TaskBadge n={myOpenCount}/>}
         </button>);
       })}
       <div className="sidebar-footer">
