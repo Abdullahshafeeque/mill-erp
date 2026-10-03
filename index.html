@@ -2820,6 +2820,8 @@ async function runJobPhotoCleanup(jobList){
 
 const EMP_TABLE='employees';
 const empName=(e)=>e.name||e.full_name||e.employee_name||'(unnamed)';
+const empCode=(e)=>e.emp_code||e.employee_code||e.code||e.emp_no||e.employee_no||e.employee_id||'';
+const empLabel=(e)=>empCode(e)?`${empName(e)} (${empCode(e)})`:empName(e);
 const empIsActive=(e)=>{
   if(e.is_active===false||e.active===false) return false;
   const s=String(e.status||'').toLowerCase();
@@ -3058,11 +3060,11 @@ function JobCards(){
                 <option value={form.assigned_to_id}>{form.assigned_to} (inactive)</option>}
               {recentIds.length>0&&(
                 <optgroup label="★ Recently assigned">
-                  {recentIds.map(id=>{const e=activeEmps.find(x=>String(x.id)===id); return <option key={'r'+id} value={id}>{empName(e)}</option>;})}
+                  {recentIds.map(id=>{const e=activeEmps.find(x=>String(x.id)===id); return <option key={'r'+id} value={id}>{empLabel(e)}</option>;})}
                 </optgroup>
               )}
               <optgroup label="All employees">
-                {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empName(e)}</option>)}
+                {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
               </optgroup>
               <option value="__other__">Someone else (type name)…</option>
             </select>
@@ -3154,7 +3156,7 @@ function JobCards(){
         <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:10,fontSize:12,color:'var(--muted)'}}>
           {dl&&<span style={{color:dl.col,fontWeight:500}}>⏰ {dl.text}</span>}
           {j.location&&<span>📍 {j.location}</span>}
-          {(j.assigned_to||j.assigned_to_id)&&<span>👤 {(()=>{const em=j.assigned_to_id?employees.find(x=>String(x.id)===String(j.assigned_to_id)):null;return em?empName(em):j.assigned_to;})()}</span>}
+          {(j.assigned_to||j.assigned_to_id)&&<span>👤 {(()=>{const em=j.assigned_to_id?employees.find(x=>String(x.id)===String(j.assigned_to_id)):null;return em?empLabel(em):j.assigned_to;})()}</span>}
           {j.est_cost!=null&&<span>Est. ₹{fmt(j.est_cost)}</span>}
           {!isDone&&(j.require_cost||j.require_notes||j.require_photo)&&<span style={{color:'var(--blue)'}}>🔒 Needs: {[j.require_cost&&'cost',j.require_notes&&'notes',j.require_photo&&'photo'].filter(Boolean).join(', ')}</span>}
           {isDone&&j.actual_cost!=null&&<span>Actual ₹{fmt(j.actual_cost)}</span>}
