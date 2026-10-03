@@ -153,6 +153,7 @@ const NAV = [
 { id:'fci-inwards', label:'FCI Inwards', icon:'🌾' },
   { id:'private-inwards', label:'Private Inwards', icon:'🌿' },
   { id:'reconciliation', label:'Reconciliation', icon:'📊' },
+  { id:'job-cards', label:'Job Cards', icon:'🛠️' },
   { section:'Inventory' },
   { id:'all-stock', label:'All Stock', icon:'📦' },
   { id:'store', label:'Store & Materials', icon:'🧰' },
@@ -2756,6 +2757,377 @@ function WorkOrderTracker(){
 // ══════════════════════════════════════════════════════════
 // APP ROOT
 // ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// JOB CARDS
+// ══════════════════════════════════════════════════════════
+const JOB_CATEGORIES=['Maintenance','Electrical','Mechanical','Civil / Building','Purchase / Procurement','Compliance / Documents','Vehicle','Cleaning / Housekeeping','Other'];
+const JOB_PRIORITIES=['Low','Medium','High','Urgent'];
+const PHOTO_RETENTION_DAYS=30;
+const PRIORITY_COL={Urgent:'var(--red)',High:'var(--amber)',Medium:'var(--blue)',Low:'var(--dim)'};
+const PRIORITY_BADGE={Urgent:'badge-red',High:'badge-amber',Medium:'badge-blue',Low:'badge-muted'};
+const STATUS_BADGE={Pending:'badge-muted','In Progress':'badge-amber',Done:'badge-green'};
+
+const daysUntil=(dateStr)=>{
+  if(!dateStr) return null;
+  const [y,m,d]=dateStr.split('-').map(Number);
+  const t=new Date(y,m-1,d);
+  const n=new Date(); n.setHours(0,0,0,0);
+  return Math.round((t-n)/86400000);
+};
+const photoDaysLeft=(job)=>Math.ceil((new Date(job.completed_at).getTime()+PHOTO_RETENTION_DAYS*86400000-Date.now())/86400000);
+
+const compressImage=(file,maxDim=1280,quality=0.7)=>new Promise((resolve,reject)=>{
+  const img=new Image();
+  const url=URL.createObjectURL(file);
+  img.onload=()=>{
+    const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
+    const c=document.createElement('canvas');
+    c.width=Math.round(img.width*scale); c.height=Math.round(img.height*scale);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    c.toBlob(b=>{URL.revokeObjectURL(url); b?resolve(b):reject(new Error('Compression failed'));},'image/jpeg',quality);
+  };
+  img.onerror=()=>{URL.revokeObjectURL(url); reject(new Error('Could not read image'));};
+  img.src=url;
+});
+
+// Deletes photos of done jobs older than 30 days (unless flagged keep). Runs whenever the Job Cards page opens.
+async function runJobPhotoCleanup(jobList){
+  const cutoff=Date.now()-PHOTO_RETENTION_DAYS*86400000;
+  const expired=jobList.filter(j=>j.status==='Done'&&!j.keep_photos&&!j.photos_deleted&&j.completed_at&&new Date(j.completed_at).getTime()<cutoff);
+  for(const j of expired){
+    const {data:ph}=await sb.from('job_card_photos').select('*').eq('job_id',j.id);
+    const paths=(ph||[]).map(p=>p.storage_path);
+    if(paths.length){
+      const {error}=await sb.storage.from('job-photos').remove(paths);
+      if(error){ console.error('Photo cleanup failed:',error.message); continue; }
+      await sb.from('job_card_photos').delete().eq('job_id',j.id);
+    }
+    await sb.from('job_cards').update({photos_deleted:true}).eq('id',j.id);
+    logActivity('Job Cards','update',`Photos auto-deleted after ${PHOTO_RETENTION_DAYS} days — ${j.title}`);
+  }
+}
+
+function JobCards(){
+  const [jobs,setJobs]=useState([]);
+  const [photos,setPhotos]=useState({});
+  const [loading,setLoading]=useState(true);
+  const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const [newFiles,setNewFiles]=useState([]);
+  const [fileKey,setFileKey]=useState(0);
+  const [statusFilter,setStatusFilter]=useState('Open');
+  const [priorityFilter,setPriorityFilter]=useState('All');
+  const [search,setSearch]=useState('');
+  const [doneJob,setDoneJob]=useState(null);
+  const [doneForm,setDoneForm]=useState({notes:'',actual_cost:'',keep:false});
+  const [doneFiles,setDoneFiles]=useState([]);
+  const [viewerUrl,setViewerUrl]=useState(null);
+  const blank={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to:'',deadline:'',est_cost:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const {data:j0}=await sb.from('job_cards').select('*');
+    await runJobPhotoCleanup(j0||[]);
+    const [{data:j},{data:ph}]=await Promise.all([
+      sb.from('job_cards').select('*').order('created_at',{ascending:false}),
+      sb.from('job_card_photos').select('*').order('created_at'),
+    ]);
+    const paths=(ph||[]).map(p=>p.storage_path);
+    const urlMap={};
+    if(paths.length){
+      const {data:signed}=await sb.storage.from('job-photos').createSignedUrls(paths,3600);
+      (signed||[]).forEach(s=>{ if(s.signedUrl) urlMap[s.path]=s.signedUrl; });
+    }
+    const byJob={};
+    (ph||[]).forEach(p=>{ (byJob[p.job_id]=byJob[p.job_id]||[]).push({...p,url:urlMap[p.storage_path]}); });
+    setJobs(j||[]); setPhotos(byJob); setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const uploadPhotos=async(jobId,files,stage)=>{
+    for(const file of files){
+      try{
+        const blob=await compressImage(file);
+        const path=`${jobId}/${stage}-${Date.now()}-${Math.random().toString(36).slice(2,8)}.jpg`;
+        const {error}=await sb.storage.from('job-photos').upload(path,blob,{contentType:'image/jpeg'});
+        if(error){ alert('Photo upload failed: '+error.message); continue; }
+        await sb.from('job_card_photos').insert({job_id:jobId,storage_path:path,stage});
+      }catch(e){ alert('Photo skipped: '+e.message); }
+    }
+  };
+
+  const resetForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); setNewFiles([]); setFileKey(k=>k+1); };
+
+  const startEdit=(j)=>{
+    setEditingId(j.id);
+    setForm({title:j.title||'',description:j.description||'',category:j.category||'Other',priority:j.priority||'Medium',location:j.location||'',assigned_to:j.assigned_to||'',deadline:j.deadline||'',est_cost:j.est_cost??''});
+    setNewFiles([]); setFileKey(k=>k+1); setShowForm(true);
+    window.scrollTo?.(0,0);
+  };
+
+  const saveJob=async()=>{
+    if(!form.title.trim()) return alert('Job title is required.');
+    setSaving(true);
+    const {data:{user}}=await sb.auth.getUser();
+    const payload={title:form.title.trim(),description:form.description,category:form.category,priority:form.priority,location:form.location,assigned_to:form.assigned_to,deadline:form.deadline||null,est_cost:form.est_cost===''?null:Number(form.est_cost)};
+    let jobId=editingId;
+    if(editingId){
+      const {error}=await sb.from('job_cards').update(payload).eq('id',editingId);
+      if(error){alert(error.message);setSaving(false);return;}
+      logActivity('Job Cards','update',`Edited job — ${payload.title}`);
+    } else {
+      const {data,error}=await sb.from('job_cards').insert({...payload,status:'Pending',created_by:user?.email||null}).select().single();
+      if(error){alert(error.message);setSaving(false);return;}
+      jobId=data.id;
+      logActivity('Job Cards','create',`New job — ${payload.title} (${payload.priority})`);
+    }
+    if(newFiles.length) await uploadPhotos(jobId,newFiles,'before');
+    setSaving(false); resetForm(); load();
+  };
+
+  const setStatus=async(j,status)=>{
+    const upd=status==='Pending'?{status,completed_at:null,completed_by:null}:{status};
+    const {error}=await sb.from('job_cards').update(upd).eq('id',j.id);
+    if(error) return alert(error.message);
+    logActivity('Job Cards','update',`${j.title} → ${status}`);
+    load();
+  };
+
+  const openDone=(j)=>{ setDoneJob(j); setDoneForm({notes:j.completion_notes||'',actual_cost:j.actual_cost??'',keep:false}); setDoneFiles([]); };
+
+  const confirmDone=async()=>{
+    setSaving(true);
+    const {data:{user}}=await sb.auth.getUser();
+    const {error}=await sb.from('job_cards').update({
+      status:'Done', completed_at:new Date().toISOString(), completed_by:user?.email||null,
+      completion_notes:doneForm.notes, actual_cost:doneForm.actual_cost===''?null:Number(doneForm.actual_cost),
+      keep_photos:!!doneForm.keep, photos_deleted:false
+    }).eq('id',doneJob.id);
+    if(error){alert(error.message);setSaving(false);return;}
+    if(doneFiles.length) await uploadPhotos(doneJob.id,doneFiles,'after');
+    logActivity('Job Cards','update',`Completed — ${doneJob.title}`);
+    setSaving(false); setDoneJob(null); setDoneFiles([]); load();
+  };
+
+  const toggleKeep=async(j)=>{
+    await sb.from('job_cards').update({keep_photos:!j.keep_photos}).eq('id',j.id);
+    logActivity('Job Cards','update',`${j.title} — photos ${!j.keep_photos?'flagged to keep':'released for auto-delete'}`);
+    load();
+  };
+
+  const deletePhoto=async(p)=>{
+    if(!confirm('Delete this photo?')) return;
+    await sb.storage.from('job-photos').remove([p.storage_path]);
+    await sb.from('job_card_photos').delete().eq('id',p.id);
+    load();
+  };
+
+  const deleteJob=async(j)=>{
+    if(!confirm(`Delete job "${j.title}" and all its photos? Cannot be undone.`)) return;
+    const paths=(photos[j.id]||[]).map(p=>p.storage_path);
+    if(paths.length) await sb.storage.from('job-photos').remove(paths);
+    const {error}=await sb.from('job_cards').delete().eq('id',j.id);
+    if(error) return alert('Could not delete: '+error.message);
+    logActivity('Job Cards','delete',`Deleted job — ${j.title}`);
+    load();
+  };
+
+  if(loading) return <Loading/>;
+
+  const open=jobs.filter(j=>j.status!=='Done');
+  const overdue=open.filter(j=>j.deadline&&daysUntil(j.deadline)<0);
+  const dueSoon=open.filter(j=>j.deadline&&daysUntil(j.deadline)>=0&&daysUntil(j.deadline)<=3);
+  const doneThisMonth=jobs.filter(j=>j.status==='Done'&&j.completed_at&&j.completed_at.slice(0,7)===today.slice(0,7));
+
+  const q=search.trim().toLowerCase();
+  const visible=jobs.filter(j=>{
+    if(statusFilter==='Open'&&j.status==='Done') return false;
+    if(statusFilter!=='Open'&&statusFilter!=='All'&&j.status!==statusFilter) return false;
+    if(priorityFilter!=='All'&&j.priority!==priorityFilter) return false;
+    if(q&&!`${j.title} ${j.description||''} ${j.location||''} ${j.assigned_to||''}`.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a,b)=>{
+    if(a.status==='Done'&&b.status!=='Done') return 1;
+    if(a.status!=='Done'&&b.status==='Done') return -1;
+    if(a.status==='Done') return new Date(b.completed_at)-new Date(a.completed_at);
+    return (a.deadline||'9999-12-31').localeCompare(b.deadline||'9999-12-31');
+  });
+
+  const deadlineLabel=(j)=>{
+    if(!j.deadline) return null;
+    const d=daysUntil(j.deadline);
+    if(j.status==='Done') return {text:`Deadline ${j.deadline}`,col:'var(--muted)'};
+    if(d<0) return {text:`Overdue by ${-d} day${-d===1?'':'s'} (${j.deadline})`,col:'var(--red)'};
+    if(d===0) return {text:`Due today`,col:'var(--amber)'};
+    if(d<=3) return {text:`Due in ${d} day${d===1?'':'s'} (${j.deadline})`,col:'var(--amber)'};
+    return {text:`Due ${j.deadline}`,col:'var(--muted)'};
+  };
+
+  const PhotoStrip=({list,label})=>list.length===0?null:(
+    <div style={{marginTop:10}}>
+      <div className="form-label" style={{marginBottom:4}}>{label}</div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        {list.map(p=>(
+          <img key={p.id} src={p.url} alt="" onClick={()=>p.url&&setViewerUrl(p.url)}
+            style={{width:76,height:76,objectFit:'cover',borderRadius:6,border:'1px solid var(--border)',cursor:'pointer',background:'var(--surface2)'}}/>
+        ))}
+      </div>
+    </div>
+  );
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Mill Operations</div>
+        <div className="page-title">Job cards</div>
+      </div>
+      <button className="btn btn-amber" onClick={()=>{ if(showForm) resetForm(); else {setEditingId(null);setForm(blank);setNewFiles([]);setShowForm(true);} }}>+ New job</button>
+    </div>
+
+    <div className="stat-grid">
+      <StatCard label="Open jobs" value={open.length} col="var(--blue)"/>
+      <StatCard label="Overdue" value={overdue.length} col={overdue.length>0?'var(--red)':'var(--green)'}/>
+      <StatCard label="Due in 3 days" value={dueSoon.length} col={dueSoon.length>0?'var(--amber)':'var(--green)'}/>
+      <StatCard label="Done this month" value={doneThisMonth.length} col="var(--green)"/>
+    </div>
+
+    {showForm&&(
+      <FormCard title={editingId?'Edit job':'New job card'} col="var(--amber)" onSave={saveJob} onCancel={resetForm} saving={saving}>
+        <div className="form-grid">
+          <Field label="Job title ★"><input className="form-input" value={form.title} onChange={e=>f('title',e.target.value)} placeholder="e.g. Replace roller mill belt"/></Field>
+          <Field label="Category"><select className="form-input" value={form.category} onChange={e=>f('category',e.target.value)}>{JOB_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+          <Field label="Priority"><select className="form-input" value={form.priority} onChange={e=>f('priority',e.target.value)}>{JOB_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select></Field>
+          <Field label="Deadline"><input type="date" className="form-input" value={form.deadline} onChange={e=>f('deadline',e.target.value)}/></Field>
+          <Field label="Location / section"><input className="form-input" value={form.location} onChange={e=>f('location',e.target.value)} placeholder="e.g. Packing hall, Godown 2"/></Field>
+          <Field label="Assigned to"><input className="form-input" value={form.assigned_to} onChange={e=>f('assigned_to',e.target.value)} placeholder="Person or contractor"/></Field>
+          <Field label="Estimated cost (₹)"><input type="number" className="form-input" value={form.est_cost} onChange={e=>f('est_cost',e.target.value)}/></Field>
+        </div>
+        <div style={{marginTop:12}}>
+          <Field label="Description / instructions">
+            <textarea className="form-input" rows={3} value={form.description} onChange={e=>f('description',e.target.value)} placeholder="What exactly needs to be done?"/>
+          </Field>
+        </div>
+        <div style={{marginTop:12}}>
+          <Field label="Photos (optional)">
+            <input key={fileKey} type="file" accept="image/*" multiple className="form-input" onChange={e=>setNewFiles(Array.from(e.target.files||[]))}/>
+          </Field>
+          {newFiles.length>0&&<div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>{newFiles.length} photo{newFiles.length===1?'':'s'} selected — will be compressed and uploaded on save.</div>}
+          {editingId&&(photos[editingId]||[]).length>0&&(
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10}}>
+              {(photos[editingId]||[]).map(p=>(
+                <div key={p.id} style={{position:'relative'}}>
+                  <img src={p.url} alt="" style={{width:76,height:76,objectFit:'cover',borderRadius:6,border:'1px solid var(--border)'}}/>
+                  <button className="btn btn-red btn-sm" style={{position:'absolute',top:-6,right:-6,padding:'0 6px'}} onClick={()=>deletePhoto(p)}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </FormCard>
+    )}
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:12}}>
+      {['Open','Pending','In Progress','Done','All'].map(s=><button key={s} className={`btn btn-sm ${statusFilter===s?'btn-amber':'btn-ghost'}`} onClick={()=>setStatusFilter(s)}>{s}</button>)}
+      <select style={{width:130}} value={priorityFilter} onChange={e=>setPriorityFilter(e.target.value)}>
+        <option value="All">All priorities</option>{JOB_PRIORITIES.map(p=><option key={p}>{p}</option>)}
+      </select>
+      <input style={{width:200}} placeholder="Search jobs…" value={search} onChange={e=>setSearch(e.target.value)}/>
+    </div>
+
+    {visible.length===0&&<div className="card"><Empty msg="No jobs match this view."/></div>}
+
+    {visible.map(j=>{
+      const list=photos[j.id]||[];
+      const before=list.filter(p=>p.stage!=='after');
+      const after=list.filter(p=>p.stage==='after');
+      const dl=deadlineLabel(j);
+      const isDone=j.status==='Done';
+      const daysLeft=isDone&&j.completed_at?photoDaysLeft(j):null;
+      return(<div key={j.id} className="card" style={{marginBottom:14,borderLeft:`4px solid ${PRIORITY_COL[j.priority]||'var(--border2)'}`,opacity:isDone?0.92:1}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:220}}>
+            <div style={{fontSize:16,fontWeight:600}}>{j.title}</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+              <span className={`badge ${STATUS_BADGE[j.status]||'badge-muted'}`}>{j.status}</span>
+              <span className={`badge ${PRIORITY_BADGE[j.priority]||'badge-muted'}`}>{j.priority}</span>
+              <span className="badge badge-blue">{j.category}</span>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'flex-start'}}>
+            {j.status==='Pending'&&<button className="btn btn-amber btn-sm" onClick={()=>setStatus(j,'In Progress')}>Start</button>}
+            {!isDone&&<button className="btn btn-green btn-sm" onClick={()=>openDone(j)}>Mark done</button>}
+            {isDone&&<button className="btn btn-ghost btn-sm" onClick={()=>setStatus(j,'Pending')}>Reopen</button>}
+            <button className="btn btn-blue btn-sm" onClick={()=>startEdit(j)}>Edit</button>
+            <button className="btn btn-red btn-sm" onClick={()=>deleteJob(j)}>✕</button>
+          </div>
+        </div>
+
+        {j.description&&<div style={{fontSize:13,marginTop:10,whiteSpace:'pre-wrap'}}>{j.description}</div>}
+
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:10,fontSize:12,color:'var(--muted)'}}>
+          {dl&&<span style={{color:dl.col,fontWeight:500}}>⏰ {dl.text}</span>}
+          {j.location&&<span>📍 {j.location}</span>}
+          {j.assigned_to&&<span>👤 {j.assigned_to}</span>}
+          {j.est_cost!=null&&<span>Est. ₹{fmt(j.est_cost)}</span>}
+          {isDone&&j.actual_cost!=null&&<span>Actual ₹{fmt(j.actual_cost)}</span>}
+          <span>Created {j.created_at?.slice(0,10)}{j.created_by?` by ${j.created_by}`:''}</span>
+        </div>
+
+        <PhotoStrip list={before} label="Photos"/>
+        <PhotoStrip list={after} label="After completion"/>
+
+        {isDone&&(<div style={{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)',fontSize:12}}>
+          <div style={{color:'var(--green)',fontWeight:500}}>✓ Completed {j.completed_at?.slice(0,10)}{j.completed_by?` by ${j.completed_by}`:''}</div>
+          {j.completion_notes&&<div style={{marginTop:4,fontSize:13,whiteSpace:'pre-wrap'}}>{j.completion_notes}</div>}
+          <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginTop:8}}>
+            {j.photos_deleted?(
+              <span className="dim">Photos were auto-deleted after {PHOTO_RETENTION_DAYS} days.</span>
+            ):list.length===0?(
+              <span className="dim">No photos on this job.</span>
+            ):j.keep_photos?(
+              <span style={{color:'var(--blue)'}}>📌 Photos kept permanently</span>
+            ):(
+              <span style={{color:daysLeft<=5?'var(--red)':'var(--muted)'}}>Photos auto-delete in {Math.max(0,daysLeft)} day{daysLeft===1?'':'s'}</span>
+            )}
+            {!j.photos_deleted&&list.length>0&&<button className="btn btn-ghost btn-sm" onClick={()=>toggleKeep(j)}>{j.keep_photos?'Release (allow auto-delete)':'Keep photos permanently'}</button>}
+          </div>
+        </div>)}
+      </div>);
+    })}
+
+    {doneJob&&(
+      <div className="modal-overlay">
+        <div className="card" style={{maxWidth:480,width:'100%',maxHeight:'90vh',overflowY:'auto'}}>
+          <div className="section-label">Mark job as done</div>
+          <div style={{fontSize:14,marginBottom:14}}><strong>{doneJob.title}</strong></div>
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            <Field label="Completion notes"><textarea className="form-input" rows={3} value={doneForm.notes} onChange={e=>setDoneForm(p=>({...p,notes:e.target.value}))} placeholder="What was done, parts used, follow-ups…"/></Field>
+            <Field label="Actual cost (₹)"><input type="number" className="form-input" value={doneForm.actual_cost} onChange={e=>setDoneForm(p=>({...p,actual_cost:e.target.value}))}/></Field>
+            <Field label="After-completion photos (optional)"><input type="file" accept="image/*" multiple className="form-input" onChange={e=>setDoneFiles(Array.from(e.target.files||[]))}/></Field>
+            <label style={{display:'flex',alignItems:'flex-start',gap:8,fontSize:13}}>
+              <input type="checkbox" checked={doneForm.keep} onChange={e=>setDoneForm(p=>({...p,keep:e.target.checked}))} style={{marginTop:3}}/>
+              <span>Keep photos permanently (otherwise they are deleted {PHOTO_RETENTION_DAYS} days after completion)</span>
+            </label>
+          </div>
+          <div className="form-actions">
+            <button className="btn btn-green" onClick={confirmDone} disabled={saving}>{saving?'Saving…':'Confirm done'}</button>
+            <button className="btn btn-ghost" onClick={()=>setDoneJob(null)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {viewerUrl&&(
+      <div className="modal-overlay" onClick={()=>setViewerUrl(null)} style={{cursor:'zoom-out'}}>
+        <img src={viewerUrl} alt="" style={{maxWidth:'100%',maxHeight:'92vh',borderRadius:8}}/>
+      </div>
+    )}
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -2788,6 +3160,7 @@ function App(){
     'depot-settings':<DepotSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
+    'job-cards':<JobCards/>,
   };
 
   return(<div className="app">
