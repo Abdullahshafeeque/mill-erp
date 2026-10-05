@@ -5187,7 +5187,8 @@ function RTable({head,rows,foot,empty}){
 function YieldReport({data,from,to}){
   const y=data.y,T=y.T;
   const recovery=T.grain>0?T.finishedCov/T.grain*100:null;
-  const loss=T.grain>0?(T.grain-T.finishedCov-T.bypCov)/T.grain*100:null;
+  const lossRaw=T.grain>0?(T.grain-T.finishedCov-T.bypCov)/T.grain*100:null;
+  const loss=lossRaw!==null&&Math.abs(lossRaw)<0.005?0:lossRaw;
   const adjNet=data.adj.reduce((s,l)=>s+Number(l.diff),0);
   const adjPct=T.grain>0?(-adjNet)/T.grain*100:null;
   const rec=(o)=>o.grain>0?o.finishedCov/o.grain*100:null;
@@ -5364,7 +5365,7 @@ function Reports(){
     setLoading(true); setErr(''); setData(null);
     (async()=>{
       try{
-        const out={};
+        const out={tab};
         if(tab==='dispatch'){
           const [sd,pd]=await Promise.all([
             fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
@@ -5421,9 +5422,9 @@ function Reports(){
 
     {err&&<Alert type="red" icon="⚠" title="Could not build this report" sub={err}/>}
     {loading&&<Loading/>}
-    {!loading&&data&&tab==='yield'&&<YieldReport data={data} from={from} to={to}/>}
-    {!loading&&data&&tab==='wheat'&&<WheatReport data={data} from={from} to={to}/>}
-    {!loading&&data&&tab==='dispatch'&&<DispatchReport data={data} from={from} to={to}/>}
+    {!loading&&data&&data.tab===tab&&tab==='yield'&&<YieldReport data={data} from={from} to={to}/>}
+    {!loading&&data&&data.tab===tab&&tab==='wheat'&&<WheatReport data={data} from={from} to={to}/>}
+    {!loading&&data&&data.tab===tab&&tab==='dispatch'&&<DispatchReport data={data} from={from} to={to}/>}
   </div>);
 }
 
