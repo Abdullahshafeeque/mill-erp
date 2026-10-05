@@ -881,6 +881,7 @@ function Production(){
     if(isFrozen(date)) return alert(`${date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
     const isLatest=loggedDatesSorted()[0]===date;
     if(!isLatest) return alert('Only the most recent unfrozen day can be deleted. To correct an earlier day, use Edit instead.');
+    if(adjustments.some(a=>a.date===date)) return alert('A stock-count adjustment is dated '+date+'. Reverse that count in Stock Count first, then delete this day.');
     if(!confirm(`Delete the production log for ${date}? Stock and recipe effects will be reversed.`)) return;
     setSaving(true);
     // Reverse this day's own stock effect back to its opening (safe: it's the latest day).
@@ -3971,9 +3972,20 @@ async function adjustStockRow(l,delta){
 // Finished-goods counts must not be dated before the last logged production day,
 // otherwise the daily production chain would no longer match the corrected stock.
 async function finishedDateProblem(countDate,lines){
-  if(!lines.some(l=>l.item_type==='finished'&&Number(l.diff)!==0)) return '';
+  if(!lines.some(l=>l.item_type!=='store'&&Number(l.diff)!==0)) return '';
   const {data:lastRow}=await sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle();
-  if(lastRow&&countDate<lastRow.date) return `Production is logged up to ${lastRow.date}, which is after the count date (${countDate}). A finished-goods count must be dated on or after ${lastRow.date}.`;
+  if(lastRow&&countDate!==lastRow.date) return countDate>lastRow.date
+    ? `Production is logged only up to ${lastRow.date}. Enter production (or "No production") for every day up to ${countDate} first, otherwise stock would be counted twice when you enter it.`
+    : `Production is already logged up to ${lastRow.date}, which is after the count date (${countDate}). Reject this count and submit a fresh one dated ${lastRow.date}.`;
+  const finIds=lines.filter(l=>l.item_type==='finished'&&Number(l.diff)!==0).map(l=>l.item_id);
+  if(finIds.length){
+    const [{data:a},{data:b},{data:c}]=await Promise.all([
+      sb.from('supplyco_dispatches').select('product_id').in('product_id',finIds).gt('date',countDate).limit(1),
+      sb.from('private_dispatches').select('product_id').in('product_id',finIds).gt('date',countDate).limit(1),
+      sb.from('product_returns').select('product_id').in('product_id',finIds).gt('date',countDate).limit(1),
+    ]);
+    if((a&&a.length)||(b&&b.length)||(c&&c.length)) return `Dispatches or returns are already entered after ${countDate}. Enter production for those days first, then count on the latest logged day.`;
+  }
   return '';
 }
 
@@ -4007,6 +4019,7 @@ function StockCount({role,userEmail,onPending}){
   const [month,setMonth]=useState(new Date().getMonth()+1);
   const [year,setYear]=useState(new Date().getFullYear());
   const [report,setReport]=useState(null);
+  const [lastProd,setLastProd]=useState(undefined);
 
   const loadAll=useCallback(async()=>{
     setLoading(true);
@@ -4015,6 +4028,8 @@ function StockCount({role,userEmail,onPending}){
       sb.from('product_master').select('category').eq('is_active',true),
       sb.from('stock_counts').select('*').order('submitted_at',{ascending:false}).limit(100),
     ]);
+    const {data:lp}=await sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle();
+    setLastProd(lp?lp.date:null);
     const t=st?Number(st.value):1;
     const tt=isNaN(t)?1:t;
     setThreshold(tt); setThresholdInput(String(tt));
@@ -4175,6 +4190,8 @@ function StockCount({role,userEmail,onPending}){
   if(loading) return <Loading/>;
 
   const pendingN=counts.filter(c=>c.status==='Pending').length;
+  const chainCat=!!category&&category!=='Store & Materials';
+  const prodBehind=chainCat&&!!lastProd&&lastProd<today;
   const enteredRows=book.filter(r=>{const e=entries[r.key]; return e&&e.counted!==''&&e.counted!==undefined;});
   const diffRows=enteredRows.filter(r=>r3(Number(entries[r.key].counted)-r.book)!==0);
   const overRows=diffRows.filter(r=>variancePct(r.book,r3(Number(entries[r.key].counted)-r.book))>threshold);
@@ -4215,16 +4232,21 @@ function StockCount({role,userEmail,onPending}){
       <div className="card" style={{marginBottom:16}}>
         <div className="form-grid">
           <Field label="Category">
-            <select className="form-input" value={category} onChange={e=>{setCategory(e.target.value);setBook([]);setEntries({});}}>
+            <select className="form-input" value={category} onChange={e=>{const v=e.target.value;setCategory(v);setBook([]);setEntries({});setCountDate(v&&v!=='Store & Materials'&&lastProd?lastProd:today);}}>
               <option value="">-- Select category --</option>
               {categories.map(c=><option key={c}>{c}</option>)}
             </select>
           </Field>
-          <Field label="Count date"><input type="date" className="form-input" value={countDate} max={today} onChange={e=>setCountDate(e.target.value)}/></Field>
+          <Field label="Count date"><input type="date" className="form-input" value={countDate} max={today} disabled={chainCat&&!!lastProd} style={chainCat&&lastProd?{opacity:0.7}:{}} onChange={e=>setCountDate(e.target.value)}/></Field>
           <div className="form-field" style={{justifyContent:'flex-end'}}>
-            <button className="btn btn-blue" onClick={startCount} disabled={saving||!category}>Load book stock</button>
+            <button className="btn btn-blue" onClick={startCount} disabled={saving||!category||prodBehind}>Load book stock</button>
           </div>
         </div>
+        {chainCat&&(
+          <div style={{marginTop:12,padding:'10px 12px',borderRadius:6,fontSize:12,background:prodBehind?'color-mix(in srgb, var(--red) 10%, transparent)':'color-mix(in srgb, var(--green) 10%, transparent)',border:`1px solid ${prodBehind?'color-mix(in srgb, var(--red) 30%, transparent)':'color-mix(in srgb, var(--green) 30%, transparent)'}`}}>
+            {!lastProd?'No production has been logged yet, so you can count on any date.':prodBehind?`Production is logged only up to ${lastProd}, but today is ${today}. Enter production (or "No production") for the missing days first. Otherwise this count would include stock that production has not recorded yet, and it would be counted twice when you enter it.`:`✓ Production is logged up to ${lastProd}. The count date is fixed to that day.`}
+          </div>
+        )}
         <div className="dim" style={{fontSize:12,marginTop:10}}>Before counting, make sure dispatches, returns and inwards up to the count date are already entered. If a difference is really a missed entry, fix that entry instead of adjusting.</div>
       </div>
 
