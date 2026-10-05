@@ -680,6 +680,8 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
       </table>
     </TableWrap>
 
+    <PackingRules/>
+
     {confirmProd&&(
       <div className="modal-overlay">
         <div className="card" style={{maxWidth:480,width:'100%'}}>
@@ -720,6 +722,9 @@ function Production(){
   const [supplycoDisp,setSupplycoDisp]=useState([]);
   const [privateDisp,setPrivateDisp]=useState([]);
   const [adjustments,setAdjustments]=useState([]);
+  const [packRules,setPackRules]=useState([]);
+  const [packItems,setPackItems]=useState([]);
+  const [packStart,setPackStart]=useState('');
   const [returns,setReturns]=useState([]);
 
   const salesFor=(date,productId)=>{
@@ -736,7 +741,7 @@ function Production(){
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:fp},{data:ap},{data:lg},{data:sd},{data:pd},{data:rt},{data:adj}]=await Promise.all([
+    const [{data:fp},{data:ap},{data:lg},{data:sd},{data:pd},{data:rt},{data:adj},{data:prl},{data:psi}]=await Promise.all([
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
       sb.from('product_master').select('*'),
       sb.from('daily_production_log').select('*, product:product_id(*)').order('date',{ascending:false}),
@@ -744,10 +749,13 @@ function Production(){
       sb.from('private_dispatches').select('date,product_id,qty_bags'),
       sb.from('product_returns').select('date,product_id,qty_bags'),
       sb.from('stock_count_lines').select('item_id,diff,count:count_id(count_date)').eq('item_type','finished').eq('applied',true).eq('reversed',false),
+      sb.from('product_packing_rules').select('*'),
+      sb.from('store_stock').select('id,item_name,unit,qty'),
     ]);
     setFinishedProducts((fp||[]).filter(p=>p.include_in_production_log!==false)); setAllProducts(ap||[]); setLogs(lg||[]);
     setSupplycoDisp(sd||[]); setPrivateDisp(pd||[]); setReturns(rt||[]);
     setAdjustments((adj||[]).filter(a=>a.count).map(a=>({date:a.count.count_date,product_id:a.item_id,qty:Number(a.diff)})));
+    setPackRules(prl||[]); setPackItems(psi||[]); setPackStart((await cashSetting('packing_start_date'))||'');
     setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -873,6 +881,7 @@ function Production(){
         const bagSize=packSizeOf(p);
         if(bagSize>0) await applyRecipe(p, Number(r.production_bags)*bagSize, -1);
       }
+      await syncPackingUsage(r.date,p,0);
       await sb.from('daily_production_log').delete().eq('id',r.id);
     }
   };
@@ -961,6 +970,11 @@ function Production(){
           if(bagSize>0) await applyRecipe(p, productionBags*bagSize, 1);
         }
       }
+      for(const p of finishedProducts){
+        const r=rows[p.id];
+        if(!r||r.production==='') continue;
+        await syncPackingUsage(entryDate,p,Number(r.production));
+      }
       logActivity('Production','create',`Daily log submitted for ${entryDate}`);
       setEntryDate(null); setRows({}); setSaving(false);
       load();
@@ -1033,6 +1047,10 @@ function Production(){
       else await sb.from('current_stock').insert({product_id:p.id,qty_bags:runningClosingBags});
     }
 
+    for(const p of finishedProducts){
+      const r=rows[p.id];
+      await syncPackingUsage(entryDate,p,(!r||r.production==='')?0:Number(r.production));
+    }
     logActivity('Production','update',`Daily log for ${entryDate} edited; later days recalculated`);
     setEntryDate(null); setRows({}); setEditingOriginal(null); setSaving(false);
     load();
@@ -1069,6 +1087,28 @@ function Production(){
     {entryDate && (
       <div className="card" style={{marginBottom:24,borderLeft:'3px solid var(--green)'}}>
         <div className="section-label" style={{marginBottom:16}}>Entry for {entryDate}</div>
+        {(()=>{
+          if(editingOriginal||!packStart||entryDate<packStart) return null;
+          const need={};
+          finishedProducts.forEach(p=>{
+            const r=rows[p.id]; const bags=r&&r.production!==''?Number(r.production):0;
+            if(!bags) return;
+            packRules.filter(x=>String(x.product_id)===String(p.id)).forEach(x=>{
+              need[x.store_item_id]=(need[x.store_item_id]||0)+bags*Number(x.qty_per_unit)*(x.basis==='packet'?(Number(p.packets_per_bag)||1):1);
+            });
+          });
+          const list=Object.entries(need).map(([id,q])=>({s:packItems.find(i=>String(i.id)===String(id)),q:Math.round(q*1000)/1000}));
+          if(list.length===0) return null;
+          return <div style={{marginBottom:12,padding:'8px 12px',background:'color-mix(in srgb, var(--blue) 8%, transparent)',border:'1px solid color-mix(in srgb, var(--blue) 25%, transparent)',borderRadius:6,fontSize:12}}>
+            <strong>📦 Will be deducted from Store:</strong>
+            {list.map((x,i)=>{
+              const after=x.s?Math.round((Number(x.s.qty)-x.q)*1000)/1000:null;
+              return <div key={i} style={{marginTop:2,color:after!==null&&after<0?'var(--red)':'inherit'}}>
+                {x.s?x.s.item_name:'(missing item)'}: −{x.q} {x.s?x.s.unit:''}{after!==null&&<> → left {after}{after<0?' ⚠ not enough in stock':''}</>}
+              </div>;
+            })}
+          </div>;
+        })()}
         {(()=>{const list=finishedProducts.map(p=>({p,a:adjFor(entryDate,p.id)})).filter(x=>x.a!==0); return list.length>0&&<div style={{marginBottom:12,padding:'8px 12px',background:'color-mix(in srgb, var(--purple) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--purple) 25%, transparent)',borderRadius:6,fontSize:12}}>📋 Stock-count adjustments dated {entryDate} are already included in closing: {list.map(x=>`${x.p.product_name} ${x.a>0?'+':''}${fmt(x.a)}`).join(', ')}</div>;})()}
         <TableWrap><table>
           <thead><tr><th>Product</th><th>Opening (bags)</th><th>Sales (bags)</th><th>Returns (bags)</th><th>Production (bags)</th><th>Closing (bags)</th></tr></thead>
@@ -1135,6 +1175,189 @@ function Production(){
         </table></TableWrap>
       </div>);
     })}
+  </div>);
+}
+
+// ══════════════════════════════════════════════════════════
+// PACKING & CONSUMABLES (auto-deducted by production)
+// ══════════════════════════════════════════════════════════
+async function syncPackingUsage(date,product,bags){
+  try{
+    const start=await cashSetting('packing_start_date');
+    if(!start||date<start) return;
+    const pid=String(product.id);
+    const [{data:rules,error:e1},{data:used,error:e2}]=await Promise.all([
+      sb.from('product_packing_rules').select('*').eq('product_id',pid),
+      sb.from('production_material_usage').select('*').eq('log_date',date).eq('product_id',pid),
+    ]);
+    if(e1||e2) throw new Error((e1||e2).message);
+    const perBag=Number(product.packets_per_bag)||1;
+    const want={}, have={};
+    (rules||[]).forEach(r=>{
+      const mult=r.basis==='packet'?perBag:1;
+      want[r.store_item_id]=r3((want[r.store_item_id]||0)+Number(bags)*Number(r.qty_per_unit)*mult);
+    });
+    (used||[]).forEach(u=>{ have[u.store_item_id]=r3((have[u.store_item_id]||0)+Number(u.qty)); });
+    const errs=[];
+    for(const id of new Set([...Object.keys(want),...Object.keys(have)])){
+      const w=want[id]||0, h=have[id]||0;
+      const delta=r3(w-h);
+      if(delta===0) continue;
+      const {data:s}=await sb.from('store_stock').select('*').eq('id',id).maybeSingle();
+      if(!s){ errs.push(`store item ${id} not found`); continue; }
+      const {error:ue}=await sb.from('store_stock').update({qty:r3(Number(s.qty)-delta),updated_at:new Date().toISOString()}).eq('id',s.id);
+      if(ue){ errs.push(`${s.item_name}: ${ue.message}`); continue; }
+      await sb.from('store_transactions').insert({item_id:s.id,date,txn_type:delta>0?'Used / Issued':'Received',qty:Math.abs(delta),notes:`Auto — production ${date}: ${product.product_name}${delta<0?' (reversal)':''}`});
+      const {error:re}=w===0
+        ?await sb.from('production_material_usage').delete().eq('log_date',date).eq('product_id',pid).eq('store_item_id',id)
+        :await sb.from('production_material_usage').upsert({log_date:date,product_id:pid,store_item_id:id,qty:w},{onConflict:'log_date,product_id,store_item_id'});
+      if(re) errs.push(`${s.item_name}: stock changed but the usage record failed (${re.message})`);
+    }
+    if(errs.length) alert(`Packing materials could not be fully updated for ${product.product_name} (${date}):\n${errs.join('\n')}\n\nPlease check Store & Materials.`);
+  }catch(e){
+    alert(`Packing materials were not updated for ${product.product_name} (${date}): ${e.message}\n\nPlease check Store & Materials.`);
+  }
+}
+
+async function packingActive(){ return !!(await cashSetting('packing_start_date')); }
+
+function PackingRules(){
+  const [products,setProducts]=useState([]);
+  const [items,setItems]=useState([]);
+  const [rules,setRules]=useState([]);
+  const [startDate,setStartDate]=useState('');
+  const [startInput,setStartInput]=useState('');
+  const [loading,setLoading]=useState(true);
+  const [editingId,setEditingId]=useState(null);
+  const [editLines,setEditLines]=useState([]);
+  const [saving,setSaving]=useState(false);
+
+  const load=useCallback(async()=>{
+    const [{data:p},{data:s},{data:r},sd,{data:lp}]=await Promise.all([
+      sb.from('product_master').select('*').eq('is_active',true).eq('is_raw_material',false).order('product_name'),
+      sb.from('store_stock').select('*').order('item_name'),
+      sb.from('product_packing_rules').select('*'),
+      cashSetting('packing_start_date'),
+      sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle(),
+    ]);
+    setProducts((p||[]).filter(x=>x.include_in_production_log!==false)); setItems(s||[]); setRules(r||[]);
+    setStartDate(sd||''); setStartInput(sd||(lp?cashAddDays(lp.date,1):today));
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const saveStart=async()=>{
+    if(!startInput) return alert('Pick a start date.');
+    if(startDate&&startDate!==startInput&&!confirm('Changing the start date does not adjust production that is already entered. Continue?')) return;
+    const {error}=await sb.from('erp_settings').upsert({key:'packing_start_date',value:startInput},{onConflict:'key'});
+    if(error) return alert(error.message);
+    logActivity('Packing Rules','update',`Auto-deduction starts from ${startInput}`);
+    setStartDate(startInput);
+  };
+
+  const itemName=(id)=>{ const s=items.find(x=>String(x.id)===String(id)); return s?s.item_name:'(missing item)'; };
+  const itemUnit=(id)=>{ const s=items.find(x=>String(x.id)===String(id)); return s?s.unit:''; };
+  const canPacket=(p)=>p.packing_type!=='loose'&&Number(p.packets_per_bag)>0;
+
+  const startEdit=(prod)=>{
+    setEditingId(prod.id);
+    const ex=rules.filter(r=>String(r.product_id)===String(prod.id));
+    setEditLines(ex.length?ex.map(r=>({store_item_id:String(r.store_item_id),qty_per_unit:String(r.qty_per_unit),basis:r.basis||'bag'})):[{store_item_id:'',qty_per_unit:'',basis:'bag'}]);
+  };
+  const updateLine=(i,k,v)=>setEditLines(p=>p.map((l,idx)=>idx===i?{...l,[k]:v}:l));
+
+  const saveRules=async(prod)=>{
+    const lines=editLines.filter(l=>l.store_item_id||l.qty_per_unit);
+    for(const l of lines){
+      if(!l.store_item_id||!(Number(l.qty_per_unit)>0)) return alert('Every line needs a store item and a quantity above 0.');
+    }
+    const keys=lines.map(l=>l.store_item_id+'|'+l.basis);
+    if(new Set(keys).size!==keys.length) return alert('The same item is listed twice with the same basis. Combine them into one line.');
+    setSaving(true);
+    const {error:de}=await sb.from('product_packing_rules').delete().eq('product_id',String(prod.id));
+    if(de){ alert(de.message); setSaving(false); return; }
+    if(lines.length){
+      const {error}=await sb.from('product_packing_rules').insert(lines.map(l=>({product_id:String(prod.id),store_item_id:l.store_item_id,qty_per_unit:Number(l.qty_per_unit),basis:l.basis})));
+      if(error){ alert('The old rules were cleared but the new ones could not be saved: '+error.message+'. Please enter them again.'); setSaving(false); load(); return; }
+    }
+    logActivity('Packing Rules','update',`${prod.product_name} — ${lines.length} rule${lines.length===1?'':'s'}`);
+    setSaving(false); setEditingId(null); setEditLines([]); load();
+  };
+
+  if(loading) return <Loading/>;
+
+  return(<div style={{marginTop:36}}>
+    <div className="page-header" style={{marginBottom:12}}>
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Packing &amp; consumables per bag</div>
+    </div>
+    <div style={{marginBottom:16,padding:'10px 16px',background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
+      Items from Store &amp; Materials that each bag (or packet) uses up. They are deducted automatically when production is entered. Editing or deleting a production day adjusts them back.
+    </div>
+
+    <div className="card" style={{maxWidth:560,marginBottom:16,borderLeft:`3px solid ${startDate?'var(--green)':'var(--amber)'}`}}>
+      <div className="section-label" style={{marginBottom:8}}>Start deducting from</div>
+      <div style={{fontSize:12,color:'var(--muted)',marginBottom:10}}>
+        Production before this date is never touched. Set it to the <strong>next production day you will enter</strong>, after your Store stock matches the physical count.{!startDate&&' Until a date is saved, nothing is deducted.'}
+      </div>
+      <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+        <Field label="Start date"><input type="date" className="form-input" style={{width:180}} value={startInput} onChange={e=>setStartInput(e.target.value)}/></Field>
+        <button className="btn btn-amber" onClick={saveStart}>{startDate?'Update':'Start auto-deduction'}</button>
+        {startDate&&<span style={{fontSize:12,color:'var(--green)'}}>Active from {startDate}</span>}
+      </div>
+    </div>
+
+    {items.length===0&&<Alert type="amber" icon="⚠" title="No items in Store & Materials yet" sub="Add your packing materials there first, then come back to set the rules."/>}
+
+    <TableWrap>
+      <table>
+        <thead><tr><th>Product</th><th>Uses (per bag / per packet)</th><th>Edit</th></tr></thead>
+        <tbody>
+          {products.length===0&&<tr><td colSpan={3}><Empty msg="No finished products in the production log."/></td></tr>}
+          {products.map(prod=>{
+            const isE=editingId===prod.id;
+            const pr=rules.filter(r=>String(r.product_id)===String(prod.id));
+            return(<tr key={prod.id}>
+              <td><strong>{prod.product_name}</strong>{canPacket(prod)&&<div className="dim" style={{fontSize:11}}>{prod.packets_per_bag} packets per bag</div>}</td>
+              <td>
+                {isE?(
+                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                    {editLines.map((l,i)=>(
+                      <div key={i} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                        <select className="form-input" style={{width:210}} value={l.store_item_id} onChange={e=>updateLine(i,'store_item_id',e.target.value)}>
+                          <option value="">-- Store item --</option>
+                          {items.map(s=><option key={s.id} value={String(s.id)}>{s.item_name} ({s.unit})</option>)}
+                        </select>
+                        <input type="number" step="0.0001" min="0" className="form-input" style={{width:110}} placeholder="Qty" value={l.qty_per_unit} onChange={e=>updateLine(i,'qty_per_unit',e.target.value)}/>
+                        <select className="form-input" style={{width:120}} value={l.basis} onChange={e=>updateLine(i,'basis',e.target.value)}>
+                          <option value="bag">per bag</option>
+                          {canPacket(prod)&&<option value="packet">per packet</option>}
+                        </select>
+                        <button className="btn btn-red btn-sm" onClick={()=>setEditLines(p=>p.filter((_,idx)=>idx!==i))}>✕</button>
+                      </div>
+                    ))}
+                    <div style={{display:'flex',gap:8}}>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>setEditLines(p=>[...p,{store_item_id:'',qty_per_unit:'',basis:'bag'}])}>+ Item</button>
+                      <button className="btn btn-green btn-sm" onClick={()=>saveRules(prod)} disabled={saving}>{saving?'Saving…':'Save'}</button>
+                    </div>
+                    <div style={{fontSize:11,color:'var(--muted)'}}>Applies to production entered from now on. Days already entered keep what was deducted.</div>
+                  </div>
+                ):(
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {pr.length===0&&<span className="dim">No rules — nothing is deducted</span>}
+                    {pr.map(r=><span key={r.id} className="badge badge-blue">{itemName(r.store_item_id)} · {Number(r.qty_per_unit)} {itemUnit(r.store_item_id)} / {r.basis}</span>)}
+                  </div>
+                )}
+              </td>
+              <td>
+                {!isE&&<button className="btn btn-ghost btn-sm" onClick={()=>startEdit(prod)}>Edit</button>}
+                {isE&&<button className="btn btn-ghost btn-sm" onClick={()=>{setEditingId(null);setEditLines([]);}}>Cancel</button>}
+              </td>
+            </tr>);
+          })}
+        </tbody>
+      </table>
+    </TableWrap>
   </div>);
 }
 
@@ -2067,7 +2290,7 @@ function Store(){
       <tbody>
         {filtered.length===0&&<tr><td colSpan={5}><Empty/></td></tr>}
         {filtered.map(item=>{
-          const st=item.qty===0?'Out':item.min_qty>0&&item.qty<=item.min_qty?'Low':'OK';
+          const st=item.qty<=0?'Out':item.min_qty>0&&item.qty<=item.min_qty?'Low':'OK';
           const col=st==='Out'?'var(--red)':st==='Low'?'var(--amber)':'var(--green)';
           return(<tr key={item.id}>
             <td><strong>{item.item_name}</strong></td>
@@ -3972,7 +4195,8 @@ async function adjustStockRow(l,delta){
 // Finished-goods counts must not be dated before the last logged production day,
 // otherwise the daily production chain would no longer match the corrected stock.
 async function finishedDateProblem(countDate,lines){
-  if(!lines.some(l=>l.item_type!=='store'&&Number(l.diff)!==0)) return '';
+  const packOn=await packingActive();
+  if(!lines.some(l=>(l.item_type!=='store'||packOn)&&Number(l.diff)!==0)) return '';
   const {data:lastRow}=await sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle();
   if(lastRow&&countDate!==lastRow.date) return countDate>lastRow.date
     ? `Production is logged only up to ${lastRow.date}. Enter production (or "No production") for every day up to ${countDate} first, otherwise stock would be counted twice when you enter it.`
@@ -4020,6 +4244,7 @@ function StockCount({role,userEmail,onPending}){
   const [year,setYear]=useState(new Date().getFullYear());
   const [report,setReport]=useState(null);
   const [lastProd,setLastProd]=useState(undefined);
+  const [packOn,setPackOn]=useState(false);
 
   const loadAll=useCallback(async()=>{
     setLoading(true);
@@ -4030,6 +4255,7 @@ function StockCount({role,userEmail,onPending}){
     ]);
     const {data:lp}=await sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle();
     setLastProd(lp?lp.date:null);
+    setPackOn(await packingActive());
     const t=st?Number(st.value):1;
     const tt=isNaN(t)?1:t;
     setThreshold(tt); setThresholdInput(String(tt));
@@ -4190,7 +4416,7 @@ function StockCount({role,userEmail,onPending}){
   if(loading) return <Loading/>;
 
   const pendingN=counts.filter(c=>c.status==='Pending').length;
-  const chainCat=!!category&&category!=='Store & Materials';
+  const chainCat=!!category&&(category!=='Store & Materials'||packOn);
   const prodBehind=chainCat&&!!lastProd&&lastProd<today;
   const enteredRows=book.filter(r=>{const e=entries[r.key]; return e&&e.counted!==''&&e.counted!==undefined;});
   const diffRows=enteredRows.filter(r=>r3(Number(entries[r.key].counted)-r.book)!==0);
@@ -4232,7 +4458,7 @@ function StockCount({role,userEmail,onPending}){
       <div className="card" style={{marginBottom:16}}>
         <div className="form-grid">
           <Field label="Category">
-            <select className="form-input" value={category} onChange={e=>{const v=e.target.value;setCategory(v);setBook([]);setEntries({});setCountDate(v&&v!=='Store & Materials'&&lastProd?lastProd:today);}}>
+            <select className="form-input" value={category} onChange={e=>{const v=e.target.value;setCategory(v);setBook([]);setEntries({});setCountDate(v&&(v!=='Store & Materials'||packOn)&&lastProd?lastProd:today);}}>
               <option value="">-- Select category --</option>
               {categories.map(c=><option key={c}>{c}</option>)}
             </select>
