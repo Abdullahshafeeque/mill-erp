@@ -2197,15 +2197,19 @@ async function cashRebuildAll(){
   return null;
 }
 
-function Ledger(){
+function Ledger({role,userEmail}){
+  const isDirector=role==='director';
+  const SEALED='var(--purple)';
   const LEDGER_TYPES=['Sales Receipt','Wheat Purchase','Packing Material Purchase','Salary / Wages','Fuel / Transport','Repairs & Maintenance','Electricity','Supplyco Payment Received','Supplier Payment','Daily Expenses','Loan / Advance','Other Income','Other Expense'];
   const incomeTypes=['Sales Receipt','Supplyco Payment Received','Other Income','Loan / Advance'];
+  const expenseTypes=LEDGER_TYPES.filter(t=>!incomeTypes.includes(t));
   const [entries,setEntries]=useState([]);
   const [days,setDays]=useState([]);
   const [baseOpen,setBaseOpen]=useState(0);
   const [freezeDate,setFreezeDate]=useState('');
   const [selDate,setSelDate]=useState(today);
   const [showForm,setShowForm]=useState(false);
+  const [formSide,setFormSide]=useState('in');
   const [editingId,setEditingId]=useState(null);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
@@ -2213,6 +2217,16 @@ function Ledger(){
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const isFrozenDate=(d)=>!!freezeDate&&d<=freezeDate;
+
+  // Returns a reason string if the date cannot be changed, or '' if it can.
+  const lockReason=(d)=>{
+    if(isFrozenDate(d)) return `${d} is on or before the freeze date (${freezeDate}) and cannot be changed.`;
+    const own=days.find(x=>x.date===d);
+    if(own&&own.submitted) return `${d} has been submitted and is locked. Only a Director can reopen it.`;
+    const later=days.find(x=>x.date>d&&x.submitted);
+    if(later) return `${later.date} has already been submitted, so ${d} cannot be changed. A Director must reopen ${later.date} first.`;
+    return '';
+  };
 
   const load=useCallback(async(d)=>{
     const [{data:e},dd,fr,base]=await Promise.all([
@@ -2233,19 +2247,24 @@ function Ledger(){
   },[]);
   useEffect(()=>{load(selDate);},[selDate,load]);
 
+  const startAdd=(side)=>{
+    setEditingId(null); setFormSide(side);
+    setForm({...blank,date:selDate,txn_type:side==='in'?incomeTypes[0]:expenseTypes[0]});
+    setShowForm(true);
+  };
   const startEdit=(e)=>{
-    setEditingId(e.id);
+    setEditingId(e.id); setFormSide(e.direction==='in'?'in':'out');
     setForm({date:e.date,txn_type:e.txn_type,amount:e.amount,party_name:e.party_name||'',description:e.description||'',payment_mode:e.payment_mode||'Cash',reference_no:e.reference_no||''});
     setShowForm(true);
-    window.scrollTo?.(0,0);
   };
   const closeForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); };
 
   const save=async()=>{
     if(!form.amount||Number(form.amount)<=0) return alert('Enter amount.');
-    if(isFrozenDate(form.date)) return alert(`${form.date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
+    const m1=lockReason(form.date);
+    if(m1) return alert(m1);
     const orig=editingId?entries.find(x=>x.id===editingId):null;
-    if(orig&&isFrozenDate(orig.date)) return alert(`${orig.date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
+    if(orig){ const m2=lockReason(orig.date); if(m2) return alert(m2); }
     setSaving(true);
     const isIn=incomeTypes.includes(form.txn_type);
     const row={...form,amount:Number(form.amount),direction:isIn?'in':'out'};
@@ -2269,7 +2288,8 @@ function Ledger(){
   };
 
   const del=async(e)=>{
-    if(isFrozenDate(e.date)) return alert(`${e.date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
+    const m=lockReason(e.date);
+    if(m) return alert(m);
     if(!confirm('Delete this entry? Later days will be recalculated.')) return;
     setSaving(true);
     const {error}=await sb.from('daily_ledger').delete().eq('id',e.id);
@@ -2281,10 +2301,39 @@ function Ledger(){
     await load(selDate);
   };
 
+  const submitDay=async()=>{
+    if(entries.length===0) return alert('Nothing to submit — this day has no entries.');
+    if(outOfSync) return alert('Balances for this day are out of sync. Rebuild them in Cash Book Settings before submitting.');
+    const m=lockReason(selDate);
+    if(m) return alert(m);
+    if(!confirm(`Submit the cash book for ${selDate}?\n\nClosing balance: ₹${fmt(closing,2)}\n\nAfter submitting, nothing on this day can be changed unless a Director reopens it.`)) return;
+    setSaving(true);
+    const {error}=await sb.from('cash_book_days').update({submitted:true,submitted_by:userEmail||null,submitted_at:new Date().toISOString()}).eq('date',selDate);
+    if(error){alert(error.message);setSaving(false);return;}
+    logActivity('Ledger','update',`Cash book for ${selDate} submitted and locked (closing ₹${fmt(closing,2)})`);
+    setSaving(false);
+    await load(selDate);
+  };
+
+  const reopenDay=async()=>{
+    if(!isDirector) return alert('Only a Director can reopen a submitted day.');
+    if(isFrozenDate(selDate)) return alert(`${selDate} is on or before the freeze date (${freezeDate}). Clear the freeze date in Cash Book Settings first.`);
+    if(!confirm(`Reopen the cash book for ${selDate}? Entries on this day can be changed again until it is re-submitted.`)) return;
+    setSaving(true);
+    const {error}=await sb.from('cash_book_days').update({submitted:false,submitted_by:null,submitted_at:null}).eq('date',selDate);
+    if(error){alert(error.message);setSaving(false);return;}
+    logActivity('Ledger','update',`Cash book for ${selDate} reopened by ${userEmail||'Director'}`);
+    setSaving(false);
+    await load(selDate);
+  };
+
   if(loading) return <Loading/>;
 
   const frozen=isFrozenDate(selDate);
   const dayRow=days.find(d=>d.date===selDate);
+  const submitted=!!(dayRow&&dayRow.submitted);
+  const lockMsg=lockReason(selDate);
+  const locked=!!lockMsg;
   const prior=days.filter(d=>d.date<selDate).pop();
   const opening=dayRow?Number(dayRow.opening_balance):(prior?Number(prior.closing_balance):baseOpen);
   const inEntries=entries.filter(e=>e.direction==='in');
@@ -2299,23 +2348,33 @@ function Ledger(){
   const leftTotal=oPos+sumIn+cNeg;
   const rightTotal=sumOut+oNeg+cPos;
 
+  // Submitted days use a purple "sealed" theme so they stand out from open days.
+  const cIn=submitted?SEALED:'var(--green)';
+  const cOut=submitted?SEALED:'var(--red)';
+  const tint=submitted?{background:'color-mix(in srgb, var(--purple) 6%, var(--surface))',borderColor:'color-mix(in srgb, var(--purple) 40%, var(--border))'}:undefined;
+
   const renderEntry=(e)=>(<tr key={e.id}>
     <td>
       <strong>{e.txn_type}</strong>
       <div className="dim" style={{fontSize:11}}>{[e.party_name,e.description,e.reference_no?('Ref '+e.reference_no):'',e.payment_mode].filter(Boolean).join(' · ')}</div>
     </td>
     <td className="mono" style={{textAlign:'right',fontWeight:600}}>{fmt(e.amount,2)}</td>
-    <td style={{whiteSpace:'nowrap'}}>{!frozen&&(<>
+    <td style={{whiteSpace:'nowrap'}}>{!locked&&(<>
       <button className="btn btn-blue btn-sm" onClick={()=>startEdit(e)} disabled={saving}>✎</button>{' '}
       <button className="btn btn-red btn-sm" onClick={()=>del(e)} disabled={saving}>✕</button>
     </>)}</td>
   </tr>);
-  const balRow=(label,amt)=>(<tr key={label} style={{background:'var(--surface2)'}}>
+  const addRow=(side)=>locked?null:(<tr key={'add-'+side}>
+    <td colSpan={3}>
+      <button className={`btn btn-sm ${side==='in'?'btn-green':'btn-red'}`} style={{width:'100%'}} onClick={()=>startAdd(side)} disabled={saving}>{side==='in'?'+ Add receipt':'+ Add payment'}</button>
+    </td>
+  </tr>);
+  const balRow=(label,amt)=>(<tr key={label} style={{background:submitted?'color-mix(in srgb, var(--purple) 12%, transparent)':'var(--surface2)'}}>
     <td><em>{label}</em></td>
     <td className="mono" style={{textAlign:'right'}}>{fmt(amt,2)}</td>
     <td></td>
   </tr>);
-  const totalRow=(amt)=>(<tr style={{borderTop:'2px solid var(--text)'}}>
+  const totalRow=(amt)=>(<tr style={{borderTop:`2px solid ${submitted?SEALED:'var(--text)'}`}}>
     <td><strong>TOTAL</strong></td>
     <td className="mono" style={{textAlign:'right',fontWeight:700}}>{fmt(amt,2)}</td>
     <td></td>
@@ -2324,11 +2383,15 @@ function Ledger(){
   return(<div className="page">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
       <div className="page-header" style={{marginBottom:0}}>
-        <div className="page-label">Finance</div>
-        <div className="page-title">Daily cash book</div>
+        <div className="page-label" style={submitted?{color:SEALED}:undefined}>Finance</div>
+        <div className="page-title" style={submitted?{color:SEALED}:undefined}>Daily cash book</div>
         <div style={{fontSize:13,color:'var(--muted)',marginTop:2}}>{cashDayLabel(selDate)}</div>
       </div>
-      <button className="btn btn-green" disabled={frozen} onClick={()=>{ if(showForm) closeForm(); else { setEditingId(null); setForm({...blank,date:selDate}); setShowForm(true); } }}>+ New entry</button>
+      {submitted
+        ?<span className="badge" style={{background:'color-mix(in srgb, var(--purple) 18%, transparent)',color:SEALED}}>🔒 Submitted</span>
+        :frozen
+          ?<span className="badge badge-muted">🔒 Frozen</span>
+          :<span className="badge badge-amber">Open</span>}
     </div>
 
     <div className="card" style={{marginBottom:16,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
@@ -2336,65 +2399,82 @@ function Ledger(){
       <input type="date" value={selDate} max={today} style={{width:160}} onChange={e=>{ if(e.target.value) setSelDate(e.target.value); }}/>
       <button className="btn btn-ghost btn-sm" disabled={selDate>=today} onClick={()=>setSelDate(cashAddDays(selDate,1))}>Next day ▶</button>
       <button className="btn btn-ghost btn-sm" disabled={selDate===today} onClick={()=>setSelDate(today)}>Today</button>
-      {frozen&&<span className="badge badge-muted">🔒 Frozen</span>}
     </div>
 
+    {submitted&&(
+      <div className="alert" style={{background:'color-mix(in srgb, var(--purple) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--purple) 30%, transparent)',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+          <span style={{fontSize:15}}>🔒</span>
+          <div>
+            <div className="alert-title" style={{color:SEALED}}>Day submitted — locked</div>
+            <div className="alert-sub">Submitted by {dayRow.submitted_by||'—'}{dayRow.submitted_at?` on ${new Date(dayRow.submitted_at).toLocaleString('en-IN')}`:''}. No changes can be made{isDirector?'':'; only a Director can reopen it'}{frozen?'. This date is also behind the freeze date':''}.</div>
+          </div>
+        </div>
+        {isDirector&&!frozen&&<button className="btn btn-sm" style={{background:'color-mix(in srgb, var(--purple) 15%, transparent)',color:SEALED,borderColor:'color-mix(in srgb, var(--purple) 30%, transparent)'}} onClick={reopenDay} disabled={saving}>Reopen day (Director)</button>}
+      </div>
+    )}
+    {locked&&!submitted&&<Alert type="amber" icon="🔒" title="This day is locked" sub={lockMsg}/>}
     {outOfSync&&<Alert type="red" icon="⚠" title="Balances for this day are out of sync" sub="Open Settings → Cash Book Settings and click “Rebuild balances”."/>}
 
     <div className="stat-grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))'}}>
-      <StatCard label="Opening balance" value={'₹'+fmt(opening,2)} col="var(--blue)"/>
-      <StatCard label="Receipts" value={'₹'+fmt(sumIn,2)} col="var(--green)"/>
-      <StatCard label="Payments" value={'₹'+fmt(sumOut,2)} col="var(--red)"/>
-      <StatCard label="Closing balance" value={'₹'+fmt(closing,2)} col={closing>=0?'var(--amber)':'var(--red)'}/>
+      <StatCard label="Opening balance" value={'₹'+fmt(opening,2)} col={submitted?SEALED:'var(--blue)'}/>
+      <StatCard label="Receipts" value={'₹'+fmt(sumIn,2)} col={cIn}/>
+      <StatCard label="Payments" value={'₹'+fmt(sumOut,2)} col={cOut}/>
+      <StatCard label="Closing balance" value={'₹'+fmt(closing,2)} col={submitted?SEALED:(closing>=0?'var(--amber)':'var(--red)')}/>
     </div>
 
     {showForm&&(
-      <FormCard title={editingId?'Edit cash book entry':'New cash book entry'} col="var(--green)" onSave={save} onCancel={closeForm} saving={saving}>
-        <div className="form-grid">
-          <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
-          <Field label="Transaction type">
-            <select className="form-input" value={form.txn_type} onChange={e=>f('txn_type',e.target.value)}>
-              <optgroup label="— Money In">{incomeTypes.map(t=><option key={t}>{t}</option>)}</optgroup>
-              <optgroup label="— Money Out">{LEDGER_TYPES.filter(t=>!incomeTypes.includes(t)).map(t=><option key={t}>{t}</option>)}</optgroup>
-            </select>
-          </Field>
-          <Field label="Amount (₹) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.amount} onChange={e=>f('amount',e.target.value)}/></Field>
-          <Field label="Party name"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
-          <Field label="Description"><input className="form-input" value={form.description} onChange={e=>f('description',e.target.value)}/></Field>
-          <Field label="Payment mode">
-            <select className="form-input" value={form.payment_mode} onChange={e=>f('payment_mode',e.target.value)}>
-              <option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>UPI</option><option>Other</option>
-            </select>
-          </Field>
-          <Field label="Reference no."><input className="form-input" value={form.reference_no} onChange={e=>f('reference_no',e.target.value)}/></Field>
+      <div className="modal-overlay">
+        <div style={{maxWidth:640,width:'100%',maxHeight:'92vh',overflowY:'auto'}}>
+          <FormCard title={editingId?(formSide==='in'?'Edit receipt':'Edit payment'):(formSide==='in'?'New receipt':'New payment')} col={formSide==='in'?'var(--green)':'var(--red)'} onSave={save} onCancel={closeForm} saving={saving}>
+            <div className="form-grid">
+              <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
+              <Field label="Transaction type">
+                <select className="form-input" value={form.txn_type} onChange={e=>f('txn_type',e.target.value)}>
+                  {(formSide==='in'?incomeTypes:expenseTypes).map(t=><option key={t}>{t}</option>)}
+                </select>
+              </Field>
+              <Field label="Amount (₹) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.amount} onChange={e=>f('amount',e.target.value)}/></Field>
+              <Field label="Party name"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
+              <Field label="Description"><input className="form-input" value={form.description} onChange={e=>f('description',e.target.value)}/></Field>
+              <Field label="Payment mode">
+                <select className="form-input" value={form.payment_mode} onChange={e=>f('payment_mode',e.target.value)}>
+                  <option>Cash</option><option>Bank Transfer</option><option>Cheque</option><option>UPI</option><option>Other</option>
+                </select>
+              </Field>
+              <Field label="Reference no."><input className="form-input" value={form.reference_no} onChange={e=>f('reference_no',e.target.value)}/></Field>
+            </div>
+          </FormCard>
         </div>
-      </FormCard>
+      </div>
     )}
 
     <div className="two-col" style={{alignItems:'start'}}>
-      <div className="table-wrap">
+      <div className="table-wrap" style={tint}>
         <table>
           <thead>
-            <tr><th colSpan={3} style={{color:'var(--green)'}}>Receipts (Dr)</th></tr>
+            <tr><th colSpan={3} style={{color:cIn}}>Receipts (Dr)</th></tr>
             <tr><th>Particulars</th><th style={{textAlign:'right'}}>Amount ₹</th><th></th></tr>
           </thead>
           <tbody>
             {oNeg===0&&balRow('To Opening Balance b/d',oPos)}
             {inEntries.map(renderEntry)}
+            {addRow('in')}
             {cNeg>0&&balRow('To Closing Deficit c/d',cNeg)}
             {totalRow(leftTotal)}
           </tbody>
         </table>
       </div>
-      <div className="table-wrap">
+      <div className="table-wrap" style={tint}>
         <table>
           <thead>
-            <tr><th colSpan={3} style={{color:'var(--red)'}}>Payments (Cr)</th></tr>
+            <tr><th colSpan={3} style={{color:cOut}}>Payments (Cr)</th></tr>
             <tr><th>Particulars</th><th style={{textAlign:'right'}}>Amount ₹</th><th></th></tr>
           </thead>
           <tbody>
             {oNeg>0&&balRow('By Opening Deficit b/d',oNeg)}
             {outEntries.map(renderEntry)}
+            {addRow('out')}
             {cNeg===0&&balRow('By Closing Balance c/d',cPos)}
             {totalRow(rightTotal)}
           </tbody>
@@ -2402,6 +2482,15 @@ function Ledger(){
       </div>
     </div>
     {entries.length===0&&<div style={{marginTop:12,fontSize:12,color:'var(--muted)'}}>No entries on this day. The balance simply carries forward.</div>}
+
+    {!locked&&(
+      <div className="card" style={{marginTop:20,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap',borderLeft:'3px solid var(--amber)'}}>
+        <div style={{fontSize:13,color:'var(--muted)',maxWidth:560}}>
+          When all entries for this day are made, submit it. A submitted day cannot be changed — only a Director can reopen it.
+        </div>
+        <button className="btn btn-amber" onClick={submitDay} disabled={saving||entries.length===0}>Submit day</button>
+      </div>
+    )}
   </div>);
 }
 
@@ -2426,7 +2515,8 @@ function CashBookSettings(){
   const flash=(t)=>{ setMsg(t); setTimeout(()=>setMsg(''),3000); };
 
   const saveOpening=async()=>{
-    if(freezeDate) return alert('Clear the freeze date first — changing the opening balance recalculates every day.');
+    const {count:subN}=await sb.from('cash_book_days').select('date',{count:'exact',head:true}).eq('submitted',true);
+    if((subN||0)>0) return alert('Some days are submitted. A Director must reopen them before the opening balance can be changed.');
     const n=Number(opening);
     if(opening===''||isNaN(n)) return alert('Enter a valid opening balance.');
     setBusy(true);
@@ -4296,7 +4386,7 @@ function App(){
     'reconciliation':<Reconciliation/>,
     'all-stock':<AllStock/>,
     'store':<Store/>,
-    'ledger':<Ledger/>,
+    'ledger':<Ledger role={access.role} userEmail={user.email}/>,
     'product-master':<ProductMaster/>,
     'production-settings':<ProductionSettings/>,
         'cashbook-settings':<CashBookSettings/>,
