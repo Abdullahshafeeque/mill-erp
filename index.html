@@ -2679,7 +2679,7 @@ function Reconciliation(){
     const endDt=new Date(year,month,0);
     const end=`${year}-${ms}-${String(endDt.getDate()).padStart(2,'0')}`;
     const [{data:prod},{data:disp},{data:wheat}]=await Promise.all([
-      sb.from('production_log').select('*, product:product_id(*)').gte('date',start).lte('date',end),
+      sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',start).lte('date',end),
       sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',start).lte('date',end),
       sb.from('fci_inwards').select('*, material:material_id(*)').gte('date',start).lte('date',end),
     ]);
@@ -2687,7 +2687,7 @@ function Reconciliation(){
     const schemes=Array.from(new Set([...(prod||[]).map(p=>schemeFromName(p.product?.product_name)),...(disp||[]).map(d=>d.scheme)].filter(Boolean)));
     const bySchemeStats=schemes.map(scheme=>{
       const prodRows=(prod||[]).filter(p=>schemeFromName(p.product?.product_name)===scheme);
-      const prodBags=prodRows.reduce((s,r)=>s+Number(r.qty_produced),0);
+      const prodBags=prodRows.reduce((s,r)=>s+Number(r.production_bags),0);
       const dispRows=(disp||[]).filter(d=>d.scheme===scheme);
       const dispBags=dispRows.reduce((s,r)=>s+Number(r.qty_bags),0);
       const productName=prodRows[0]?.product?.product_name||dispRows[0]?.product?.product_name||scheme;
@@ -2796,7 +2796,7 @@ function Dashboard({name}){
     Promise.all([
       sb.from('product_master').select('*').eq('is_active',true),
       sb.from('current_stock').select('*'),
-      sb.from('production_log').select('*, product:product_id(*)').gte('date',monthStart),
+      sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',monthStart),
       sb.from('supplyco_dispatches').select('*').gte('date',monthStart),
       sb.from('daily_ledger').select('*').gte('date',monthStart),
       sb.from('store_stock').select('*'),
@@ -2809,7 +2809,7 @@ function Dashboard({name}){
 
   if(loading) return <Loading/>;
 
-  const prodMT=prod.reduce((s,r)=>s+(Number(r.qty_produced)*packSizeOf(r.product)),0)/1000;
+  const prodMT=prod.reduce((s,r)=>s+(Number(r.production_bags)*packSizeOf(r.product)),0)/1000;
   const dispBags=disp.reduce((s,r)=>s+Number(r.qty_bags),0);
   const cashIn=ledger.filter(r=>r.direction==='in').reduce((s,r)=>s+Number(r.amount),0);
   const cashOut=ledger.filter(r=>r.direction!=='in').reduce((s,r)=>s+Number(r.amount),0);
