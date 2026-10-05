@@ -187,6 +187,8 @@ const NAV = [
   { id:'stock-count', label:'Stock Count', icon:'⚖️' },
   { section:'Finance' },
   { id:'ledger', label:'Daily Cash Book', icon:'₹' },
+  { section:'Reports' },
+  { id:'reports', label:'Reports', icon:'📈' },
   { section:'Settings' },
   { id:'product-master', label:'Product Master', icon:'⚙️' },
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
@@ -5068,6 +5070,363 @@ function Licenses({role,userEmail,onChanged}){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// REPORTS
+// ══════════════════════════════════════════════════════════
+const downloadCSV=(name,head,rows)=>{
+  const esc=(v)=>{ const s=String(v===null||v===undefined?'':v); return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; };
+  const csv=[head,...rows].map(r=>r.map(esc).join(',')).join('\r\n');
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+
+// Supabase returns at most 1000 rows per request, so read in pages.
+async function fetchAllRows(build){
+  let all=[],from=0;
+  for(;;){
+    const {data,error}=await build(from,from+999);
+    if(error) throw new Error(error.message);
+    all=all.concat(data||[]);
+    if(!data||data.length<1000) break;
+    from+=1000;
+  }
+  return all;
+}
+const repMust=(res)=>{ if(res.error) throw new Error(res.error.message); return res.data||[]; };
+const repMt=(kg)=>(Number(kg||0)/1000).toLocaleString('en-IN',{minimumFractionDigits:3,maximumFractionDigits:3});
+const repSMt=(kg)=>{ const n=Number(kg||0); return (n>0?'+':'')+repMt(n); };
+const repPct=(n)=>(n===null||n===undefined||isNaN(n))?'—':n.toFixed(2)+'%';
+
+const reportPresets=()=>{
+  const now=new Date();
+  let pm=now.getMonth(), py=now.getFullYear();
+  if(pm===0){ pm=12; py-=1; }
+  const lm=monthRange(pm,py);
+  const [ty,tm]=today.split('-').map(Number);
+  return [
+    {label:'This month',from:`${today.slice(0,7)}-01`,to:today},
+    {label:'Last month',from:lm.start,to:lm.end},
+    {label:'Financial year to date',from:`${tm>=4?ty:ty-1}-04-01`,to:today},
+  ];
+};
+
+// Wheat differences found at approved, applied stock counts in the period.
+async function fetchWheatAdjustments(from,to){
+  const {data:cs,error}=await sb.from('stock_counts').select('id,count_date').eq('status','Approved').gte('count_date',from).lte('count_date',to);
+  if(error) throw new Error(error.message);
+  const ids=(cs||[]).map(c=>c.id);
+  if(!ids.length) return [];
+  const {data,error:e2}=await sb.from('stock_count_lines').select('*').in('count_id',ids).eq('item_type','scheme').eq('reversed',false);
+  if(e2) throw new Error(e2.message);
+  return (data||[]).filter(l=>l.applied&&Number(l.diff)!==0);
+}
+
+// Everything is worked out from daily_production_log x the recipes currently saved.
+function computeYield(logs,recipes,lines,products){
+  const prodById={}; products.forEach(p=>{prodById[String(p.id)]=p;});
+  const recipeOf={}; recipes.forEach(r=>{recipeOf[String(r.product_id)]=r;});
+  const linesOf={}; lines.forEach(l=>{(linesOf[l.recipe_id]=linesOf[l.recipe_id]||[]).push(l);});
+  const T={grain:0,finished:0,finishedCov:0,byp:0,bypCov:0};
+  const schemes={},prods={},dates={},bypMap={},otherMap={};
+  const noRecipe=new Set(),noSize=new Set();
+  const slot=(m,k,init)=>{ if(!m[k]) m[k]=init(); return m[k]; };
+  const mk=()=>({grain:0,finished:0,finishedCov:0,byp:0,bypCov:0});
+  logs.forEach(r=>{
+    const bags=Number(r.production_bags)||0;
+    if(bags===0) return;
+    const p=r.product||prodById[String(r.product_id)];
+    if(!p) return;
+    const size=packSizeOf(p);
+    if(size<=0){ noSize.add(p.product_name); return; }
+    const kg=bags*size;
+    const rec=recipeOf[String(p.id)];
+    const ls=rec?(linesOf[rec.id]||[]):[];
+    const baseScheme=schemeFromName(p.product_name)||'Private';
+    let grain=0,byp=0;
+    const grainBy={};
+    ls.forEach(l=>{
+      const mat=prodById[String(l.material_id)];
+      const q=kg*Number(l.qty_per_unit);
+      if(l.line_type==='consumes'){
+        if(mat&&mat.is_raw_material&&mat.has_schemes){ grain+=q; const k=l.scheme||baseScheme; grainBy[k]=(grainBy[k]||0)+q; }
+        else { const k=mat?mat.product_name:'(missing item)'; otherMap[k]=(otherMap[k]||0)+q; }
+      } else {
+        byp+=q; const k=mat?mat.product_name:'(missing item)'; bypMap[k]=(bypMap[k]||0)+q;
+      }
+    });
+    if(grain===0) noRecipe.add(p.product_name);
+    const cov=grain>0;
+    T.grain+=grain; T.finished+=kg; T.byp+=byp;
+    if(cov){ T.finishedCov+=kg; T.bypCov+=byp; }
+    const sS=slot(schemes,baseScheme,mk);
+    sS.finished+=kg; sS.byp+=byp; if(cov){ sS.finishedCov+=kg; sS.bypCov+=byp; }
+    Object.keys(grainBy).forEach(k=>{ slot(schemes,k,mk).grain+=grainBy[k]; });
+    const d=slot(dates,r.date,mk);
+    d.grain+=grain; d.finished+=kg; d.byp+=byp; if(cov){ d.finishedCov+=kg; d.bypCov+=byp; }
+    const pp=slot(prods,String(p.id),()=>({name:p.product_name,bags:0,kg:0,grain:0,byp:0}));
+    pp.bags+=bags; pp.kg+=kg; pp.grain+=grain; pp.byp+=byp;
+  });
+  return {T,schemes,prods:Object.values(prods).sort((a,b)=>b.kg-a.kg),dates:Object.keys(dates).sort().map(k=>({date:k,...dates[k]})),byp:bypMap,other:otherMap,noRecipe:Array.from(noRecipe).sort(),noSize:Array.from(noSize).sort()};
+}
+
+function RTable({head,rows,foot,empty}){
+  const al=(i)=>i>0?{textAlign:'right'}:undefined;
+  return(<TableWrap><table>
+    <thead><tr>{head.map((h,i)=><th key={i} style={al(i)}>{h}</th>)}</tr></thead>
+    <tbody>
+      {rows.length===0&&<tr><td colSpan={head.length}><Empty msg={empty||'No data in this period.'}/></td></tr>}
+      {rows.map((r,ri)=>(<tr key={ri}>{r.map((c,i)=><td key={i} className={i>0?'mono':undefined} style={al(i)}>{c}</td>)}</tr>))}
+    </tbody>
+    {foot&&rows.length>0&&<tfoot><tr style={{borderTop:'2px solid var(--border2)',fontWeight:700}}>{foot.map((c,i)=><td key={i} className={i>0?'mono':undefined} style={al(i)}>{c}</td>)}</tr></tfoot>}
+  </table></TableWrap>);
+}
+
+function YieldReport({data,from,to}){
+  const y=data.y,T=y.T;
+  const recovery=T.grain>0?T.finishedCov/T.grain*100:null;
+  const loss=T.grain>0?(T.grain-T.finishedCov-T.bypCov)/T.grain*100:null;
+  const adjNet=data.adj.reduce((s,l)=>s+Number(l.diff),0);
+  const adjPct=T.grain>0?(-adjNet)/T.grain*100:null;
+  const rec=(o)=>o.grain>0?o.finishedCov/o.grain*100:null;
+
+  const schemeRows=Object.keys(y.schemes).sort().map(k=>{ const s=y.schemes[k]; return [<strong>{k}</strong>,repMt(s.grain),repMt(s.finished),repMt(s.byp),repPct(rec(s))]; });
+  const prodRows=y.prods.map(p=>[<strong>{p.name}</strong>,fmt(p.bags),repMt(p.kg),repMt(p.grain),repPct(p.grain>0?p.kg/p.grain*100:null)]);
+  const dayRows=y.dates.map(d=>[d.date,repMt(d.grain),repMt(d.finished),repMt(d.byp),repPct(rec(d))]);
+  const bypRows=Object.entries(y.byp).sort((a,b)=>b[1]-a[1]).map(([k,v])=>[k,repMt(v)]);
+  const otherRows=Object.entries(y.other).sort((a,b)=>b[1]-a[1]).map(([k,v])=>[k,repMt(v)]);
+
+  const csvDaily=()=>downloadCSV(`milling_yield_${from}_to_${to}.csv`,['Date','Wheat used (kg)','Finished goods (kg)','By-products (kg)','Recovery %'],
+    y.dates.map(d=>[d.date,r3(d.grain),r3(d.finished),r3(d.byp),d.grain>0?(d.finishedCov/d.grain*100).toFixed(2):'']));
+
+  return(<>
+    <div className="stat-grid">
+      <StatCard label="Wheat used" value={repMt(T.grain)+' MT'} sub="from recipes" col="var(--amber)"/>
+      <StatCard label="Finished goods" value={repMt(T.finished)+' MT'} col="var(--green)"/>
+      <StatCard label="By-products" value={repMt(T.byp)+' MT'} sub="from recipes" col="var(--blue)"/>
+      <StatCard label="Recovery" value={repPct(recovery)} sub="finished ÷ wheat used" col="var(--green)"/>
+      <StatCard label="Process loss" value={repPct(loss)} sub="implied by recipes" col="var(--red)"/>
+    </div>
+
+    <div className="card" style={{marginBottom:20,borderLeft:'3px solid var(--purple)'}}>
+      <div className="section-label">Physical check — what stock counts actually found</div>
+      {data.adj.length===0?(
+        <div style={{fontSize:13}}>No wheat differences were applied through approved stock counts in this period, so there is no measured figure yet. Count wheat regularly (Stock Count → Raw Material) to see real shrinkage here.</div>
+      ):(<>
+        <div style={{fontSize:22,fontWeight:600,color:adjNet<0?'var(--red)':'var(--green)'}}>{repSMt(adjNet)} MT</div>
+        <div style={{fontSize:13,marginTop:4}}>{adjNet<0?'Net wheat shortage':'Net wheat excess'} found at counts{adjPct!==null?` — ${Math.abs(adjPct).toFixed(2)}% of the wheat used`:''} · {data.adj.length} adjustment line{data.adj.length===1?'':'s'}.</div>
+      </>)}
+    </div>
+
+    {(y.noRecipe.length>0||y.noSize.length>0)&&(<div className="card" style={{marginBottom:20,borderLeft:'3px solid var(--amber)'}}>
+      <div className="section-label">Check these</div>
+      {y.noRecipe.length>0&&<div style={{fontSize:13,marginBottom:6}}>⚠ No wheat recipe set, so these are left out of recovery % (their wheat use is not counted): <strong>{y.noRecipe.join(', ')}</strong>. Set them in Product Recipes.</div>}
+      {y.noSize.length>0&&<div style={{fontSize:13}}>⚠ No pack size set, so these are not counted at all: <strong>{y.noSize.join(', ')}</strong>.</div>}
+    </div>)}
+
+    <div className="section-label">By scheme (MT)</div>
+    <RTable head={['Scheme','Wheat used','Finished','By-products','Recovery']} rows={schemeRows} foot={['Total',repMt(T.grain),repMt(T.finished),repMt(T.byp),repPct(recovery)]}/>
+
+    <div className="section-label" style={{marginTop:24}}>By product</div>
+    <RTable head={['Product','Bags','Finished (MT)','Wheat used (MT)','Recovery']} rows={prodRows}/>
+
+    <div className="two-col" style={{marginTop:24,alignItems:'start'}}>
+      <div>
+        <div className="section-label">By-products produced (MT)</div>
+        <RTable head={['By-product','MT']} rows={bypRows} empty="No by-product lines in your recipes."/>
+      </div>
+      <div>
+        <div className="section-label">Other materials consumed (MT)</div>
+        <RTable head={['Material','MT']} rows={otherRows} empty="None."/>
+      </div>
+    </div>
+
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',margin:'24px 0 12px',flexWrap:'wrap',gap:8}}>
+      <div className="section-label" style={{marginBottom:0}}>By day (MT)</div>
+      <button className="btn btn-ghost btn-sm" onClick={csvDaily} disabled={dayRows.length===0}>⬇ Download CSV</button>
+    </div>
+    <RTable head={['Date','Wheat used','Finished','By-products','Recovery']} rows={dayRows}/>
+
+    <div className="dim" style={{fontSize:12,marginTop:16,maxWidth:760}}>
+      How this is worked out: bags produced × pack size gives the finished kg; wheat used and by-products come from the Product Recipes saved today, applied to the whole period. These are standards, not weighed figures. Recipe lines with a "use up first" fallback are counted against the main material.
+    </div>
+  </>);
+}
+
+function WheatReport({data,from,to}){
+  const y=data.y;
+  const prodById={}; data.products.forEach(p=>{prodById[String(p.id)]=p;});
+  const isWheat=(id)=>{ const p=prodById[String(id)]; return !!(p&&p.is_raw_material&&p.has_schemes); };
+  const inw={},sold={},adj={},stock={},used={};
+  const add=(m,k,v)=>{ m[k]=(m[k]||0)+Number(v||0); };
+  data.fci.forEach(r=>add(inw,r.scheme||'—',r.received_kg));
+  data.pin.forEach(r=>{ if(isWheat(r.material_id)) add(inw,'Private',r.qty_kg); });
+  data.pdisp.forEach(r=>{ if(isWheat(r.product_id)) add(sold,'Private',r.qty_kg); });
+  data.adj.forEach(l=>add(adj,l.scheme||'—',l.diff));
+  data.stock.forEach(s=>add(stock,s.scheme,s.qty_kg));
+  Object.keys(y.schemes).forEach(k=>{ if(y.schemes[k].grain>0) used[k]=y.schemes[k].grain; });
+  const keys=Array.from(new Set([...Object.keys(inw),...Object.keys(sold),...Object.keys(adj),...Object.keys(used),...Object.keys(stock)])).sort();
+  const atToday=to===today;
+  const net=(k)=>(inw[k]||0)-(used[k]||0)-(sold[k]||0)+(adj[k]||0);
+  const tot=(m)=>keys.reduce((s,k)=>s+(m[k]||0),0);
+  const totNet=keys.reduce((s,k)=>s+net(k),0);
+
+  const rows=keys.map(k=>[<strong>{k}</strong>,repMt(inw[k]),repMt(used[k]),repMt(sold[k]),repSMt(adj[k]),repSMt(net(k)),repMt(stock[k]),atToday?repMt((stock[k]||0)-net(k)):'—']);
+  const csv=()=>downloadCSV(`wheat_movement_${from}_to_${to}.csv`,['Scheme','Inwards (kg)','Used in production (kg)','Private sales (kg)','Count adjustments (kg)','Net movement (kg)','Current stock (kg)'],
+    keys.map(k=>[k,r3(inw[k]||0),r3(used[k]||0),r3(sold[k]||0),r3(adj[k]||0),r3(net(k)),r3(stock[k]||0)]));
+
+  return(<>
+    <div className="stat-grid">
+      <StatCard label="Inwards" value={repMt(tot(inw))+' MT'} col="var(--green)"/>
+      <StatCard label="Used in production" value={repMt(tot(used))+' MT'} sub="from recipes" col="var(--amber)"/>
+      <StatCard label="Private sales" value={repMt(tot(sold))+' MT'} col="var(--blue)"/>
+      <StatCard label="Net movement" value={repSMt(totNet)+' MT'} col={totNet<0?'var(--red)':'var(--green)'}/>
+    </div>
+
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
+      <div className="section-label" style={{marginBottom:0}}>Wheat by scheme (MT)</div>
+      <button className="btn btn-ghost btn-sm" onClick={csv} disabled={keys.length===0}>⬇ Download CSV</button>
+    </div>
+    <RTable head={['Scheme','Inwards','Used in production','Private sales','Count adj.','Net movement','Current stock','Opening (derived)']} rows={rows}
+      foot={['Total',repMt(tot(inw)),repMt(tot(used)),repMt(tot(sold)),repSMt(tot(adj)),repSMt(totNet),repMt(tot(stock)),atToday?repMt(tot(stock)-totNet):'—']}/>
+
+    <div className="dim" style={{fontSize:12,marginTop:16,maxWidth:760}}>
+      Net movement = inwards − used in production − private sales + stock-count adjustments. "Used in production" comes from recipes. "Opening (derived)" is current stock minus the net movement, and is only shown when the period ends today.
+    </div>
+  </>);
+}
+
+function DispatchReport({data,from,to}){
+  const bySch={},byDist={},byDep={},pProd={},pParty={};
+  const inv=new Set();
+  let sBags=0,sKg=0,pKg=0;
+  const slot=(m,k)=>{ if(!m[k]) m[k]={bags:0,kg:0,n:0}; return m[k]; };
+  data.sd.forEach(r=>{
+    const bags=Number(r.qty_bags)||0;
+    const kg=bags*packSizeOf(r.product);
+    sBags+=bags; sKg+=kg; if(r.invoice_no) inv.add(r.invoice_no);
+    [[bySch,r.scheme||'—'],[byDist,r.district||'—'],[byDep,r.depot_name||'—']].forEach(([m,k])=>{ const o=slot(m,k); o.bags+=bags; o.kg+=kg; o.n++; });
+  });
+  data.pd.forEach(r=>{
+    const p=r.product; const raw=!!(p&&p.is_raw_material);
+    const bags=raw?0:(Number(r.qty_bags)||0);
+    const kg=raw?(Number(r.qty_kg)||0):bags*packSizeOf(p);
+    pKg+=kg;
+    [[pProd,p?p.product_name:'(unknown)'],[pParty,r.party_name||'—']].forEach(([m,k])=>{ const o=slot(m,k); o.bags+=bags; o.kg+=kg; o.n++; });
+  });
+  const sorted=(m)=>Object.entries(m).sort((a,b)=>b[1].kg-a[1].kg||b[1].bags-a[1].bags);
+  const sRows=(m)=>sorted(m).map(([k,o])=>[<strong>{k}</strong>,fmt(o.n),fmt(o.bags),repMt(o.kg)]);
+  const csv=()=>downloadCSV(`dispatch_by_depot_${from}_to_${to}.csv`,['Depot','Dispatch lines','Bags','Weight (kg)'],sorted(byDep).map(([k,o])=>[k,o.n,o.bags,r3(o.kg)]));
+
+  return(<>
+    <div className="stat-grid">
+      <StatCard label="Supplyco bags" value={fmt(sBags)} col="var(--green)"/>
+      <StatCard label="Supplyco weight" value={repMt(sKg)+' MT'} col="var(--green)"/>
+      <StatCard label="Invoices" value={fmt(inv.size)} sub="distinct invoice numbers" col="var(--amber)"/>
+      <StatCard label="Private dispatch" value={repMt(pKg)+' MT'} col="var(--blue)"/>
+    </div>
+
+    <div className="section-label">Supplyco — by scheme</div>
+    <RTable head={['Scheme','Lines','Bags','MT']} rows={sRows(bySch)} foot={['Total',fmt(data.sd.length),fmt(sBags),repMt(sKg)]}/>
+
+    <div className="section-label" style={{marginTop:24}}>Supplyco — by district</div>
+    <RTable head={['District','Lines','Bags','MT']} rows={sRows(byDist)}/>
+
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',margin:'24px 0 12px',flexWrap:'wrap',gap:8}}>
+      <div className="section-label" style={{marginBottom:0}}>Supplyco — by depot</div>
+      <button className="btn btn-ghost btn-sm" onClick={csv} disabled={Object.keys(byDep).length===0}>⬇ Download CSV</button>
+    </div>
+    <RTable head={['Depot','Lines','Bags','MT']} rows={sRows(byDep)}/>
+
+    <div className="section-label" style={{marginTop:24}}>Private dispatch — by product</div>
+    <RTable head={['Product','Lines','Bags','MT']} rows={sRows(pProd)} empty="No private dispatches in this period."/>
+
+    <div className="section-label" style={{marginTop:24}}>Private dispatch — by party</div>
+    <RTable head={['Party','Lines','Bags','MT']} rows={sRows(pParty)} empty="No private dispatches in this period."/>
+  </>);
+}
+
+function Reports(){
+  const presets=reportPresets();
+  const [tab,setTab]=useState('yield');
+  const [from,setFrom]=useState(presets[0].from);
+  const [to,setTo]=useState(presets[0].to);
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState('');
+
+  useEffect(()=>{
+    if(!from||!to) return;
+    if(from>to){ setData(null); setErr('The "From" date is after the "To" date.'); return; }
+    let cancelled=false;
+    setLoading(true); setErr(''); setData(null);
+    (async()=>{
+      try{
+        const out={};
+        if(tab==='dispatch'){
+          const [sd,pd]=await Promise.all([
+            fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+            fetchAllRows((a,b)=>sb.from('private_dispatches').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+          ]);
+          out.sd=sd; out.pd=pd;
+        } else {
+          const [logs,products,recipes,lines,adj]=await Promise.all([
+            fetchAllRows((a,b)=>sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+            sb.from('product_master').select('*').then(repMust),
+            sb.from('product_recipes').select('*').then(repMust),
+            sb.from('recipe_lines').select('*').then(repMust),
+            fetchWheatAdjustments(from,to),
+          ]);
+          out.y=computeYield(logs,recipes,lines,products);
+          out.adj=adj; out.products=products;
+          if(tab==='wheat'){
+            const [fci,pin,pdisp,stock]=await Promise.all([
+              fetchAllRows((a,b)=>sb.from('fci_inwards').select('id,date,scheme,received_kg').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+              fetchAllRows((a,b)=>sb.from('private_inwards').select('id,date,qty_kg,material_id').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+              fetchAllRows((a,b)=>sb.from('private_dispatches').select('id,date,qty_kg,product_id').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+              sb.from('raw_material_scheme_stock').select('*').then(repMust),
+            ]);
+            out.fci=fci; out.pin=pin; out.pdisp=pdisp; out.stock=stock;
+          }
+        }
+        if(!cancelled){ setData(out); setLoading(false); }
+      }catch(e){
+        if(!cancelled){ setErr(e.message||String(e)); setLoading(false); }
+      }
+    })();
+    return ()=>{cancelled=true;};
+  },[tab,from,to]);
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">Reports</div>
+      <div className="page-title">Reports</div>
+    </div>
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:16}}>
+      {[['yield','Milling yield'],['wheat','Wheat movement'],['dispatch','Dispatch summary']].map(([id,l])=>(
+        <button key={id} className={`btn btn-sm ${tab===id?'btn-amber':'btn-ghost'}`} onClick={()=>setTab(id)}>{l}</button>
+      ))}
+    </div>
+
+    <div className="card" style={{marginBottom:20,display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+      <Field label="From"><input type="date" className="form-input" style={{width:160}} max={today} value={from} onChange={e=>setFrom(e.target.value)}/></Field>
+      <Field label="To"><input type="date" className="form-input" style={{width:160}} max={today} value={to} onChange={e=>setTo(e.target.value)}/></Field>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        {presets.map(p=><button key={p.label} className="btn btn-ghost btn-sm" onClick={()=>{setFrom(p.from);setTo(p.to);}}>{p.label}</button>)}
+      </div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not build this report" sub={err}/>}
+    {loading&&<Loading/>}
+    {!loading&&data&&tab==='yield'&&<YieldReport data={data} from={from} to={to}/>}
+    {!loading&&data&&tab==='wheat'&&<WheatReport data={data} from={from} to={to}/>}
+    {!loading&&data&&tab==='dispatch'&&<DispatchReport data={data} from={from} to={to}/>}
+  </div>);
+}
+
 const titleCase=(s)=>String(s||'').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
 
 function TaskBadge({n,compact}){
@@ -5187,6 +5546,7 @@ function App(){
     'job-cards':<JobCards/>,
         'licenses':<Licenses role={access.role} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
     'my-tasks':myTasksView,
+    'reports':<Reports/>,
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
   };
 
