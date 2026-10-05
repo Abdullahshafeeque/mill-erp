@@ -189,6 +189,7 @@ const NAV = [
   { section:'Settings' },
   { id:'product-master', label:'Product Master', icon:'⚙️' },
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
+    { id:'cashbook-settings', label:'Cash Book Settings', icon:'🧾' },
   { id:'depot-settings', label:'Depots', icon:'🏢' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
@@ -2097,71 +2098,258 @@ function Store(){
 // ══════════════════════════════════════════════════════════
 // DAILY CASH BOOK
 // ══════════════════════════════════════════════════════════
+const cashR2=(n)=>Math.round((Number(n)||0)*100)/100;
+const cashAddDays=(dateStr,n)=>{
+  const [y,m,d]=dateStr.split('-').map(Number);
+  const dt=new Date(y,m-1,d);
+  dt.setDate(dt.getDate()+n);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+};
+const cashDayLabel=(dateStr)=>{
+  const [y,m,d]=dateStr.split('-').map(Number);
+  return new Date(y,m-1,d).toLocaleDateString('en-IN',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});
+};
+
+async function cashSetting(key){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',key).maybeSingle();
+  return data?data.value:null;
+}
+async function cashBaseOpening(){
+  const v=await cashSetting('cashbook_opening_balance');
+  const n=Number(v);
+  return isNaN(n)?0:n;
+}
+async function cashAllDays(){
+  let all=[],from=0;
+  for(;;){
+    const {data,error}=await sb.from('cash_book_days').select('*').order('date').range(from,from+999);
+    if(error) return {error:error.message,data:[]};
+    all=all.concat(data||[]);
+    if(!data||data.length<1000) break;
+    from+=1000;
+  }
+  return {data:all};
+}
+
+// Recalculate one day from its entries, then walk forward through every later day ONE BY ONE,
+// rewriting each day's stored opening and closing. Returns an error message, or null if all went well.
+async function cashRecalcFrom(date){
+  const {data:ents,error:e0}=await sb.from('daily_ledger').select('direction,amount').eq('date',date);
+  if(e0) return e0.message;
+  let tin=0,tout=0;
+  (ents||[]).forEach(e=>{ if(e.direction==='in') tin+=Number(e.amount); else tout+=Number(e.amount); });
+  const {data:prev,error:e1}=await sb.from('cash_book_days').select('closing_balance').lt('date',date).order('date',{ascending:false}).limit(1).maybeSingle();
+  if(e1) return e1.message;
+  let running=prev?Number(prev.closing_balance):await cashBaseOpening();
+
+  if((ents||[]).length===0){
+    const {error}=await sb.from('cash_book_days').delete().eq('date',date);
+    if(error) return error.message;
+  } else {
+    const closing=cashR2(running+tin-tout);
+    const {error}=await sb.from('cash_book_days').upsert({date,opening_balance:running,total_in:cashR2(tin),total_out:cashR2(tout),closing_balance:closing,updated_at:new Date().toISOString()},{onConflict:'date'});
+    if(error) return error.message;
+    running=closing;
+  }
+
+  let cursor=date;
+  for(;;){
+    const {data:next,error:e2}=await sb.from('cash_book_days').select('*').gt('date',cursor).order('date').limit(1).maybeSingle();
+    if(e2) return e2.message;
+    if(!next) break;
+    const closing=cashR2(running+Number(next.total_in)-Number(next.total_out));
+    const {error:e3}=await sb.from('cash_book_days').update({opening_balance:running,closing_balance:closing,updated_at:new Date().toISOString()}).eq('date',next.date);
+    if(e3) return e3.message;
+    running=closing;
+    cursor=next.date;
+  }
+  return null;
+}
+
+// Rebuild the whole chain from scratch out of daily_ledger. Used the first time, and when the opening balance changes.
+async function cashRebuildAll(){
+  const base=await cashBaseOpening();
+  let all=[],from=0;
+  for(;;){
+    const {data,error}=await sb.from('daily_ledger').select('date,direction,amount').order('date').order('id').range(from,from+999);
+    if(error) return error.message;
+    all=all.concat(data||[]);
+    if(!data||data.length<1000) break;
+    from+=1000;
+  }
+  const by={};
+  all.forEach(e=>{
+    const o=by[e.date]=by[e.date]||{in:0,out:0};
+    if(e.direction==='in') o.in+=Number(e.amount); else o.out+=Number(e.amount);
+  });
+  const existing=await cashAllDays();
+  for(const d of existing.data){
+    if(!by[d.date]) await sb.from('cash_book_days').delete().eq('date',d.date);
+  }
+  let running=base;
+  for(const date of Object.keys(by).sort()){
+    const o=by[date];
+    const closing=cashR2(running+o.in-o.out);
+    const {error}=await sb.from('cash_book_days').upsert({date,opening_balance:running,total_in:cashR2(o.in),total_out:cashR2(o.out),closing_balance:closing,updated_at:new Date().toISOString()},{onConflict:'date'});
+    if(error) return error.message;
+    running=closing;
+  }
+  return null;
+}
+
 function Ledger(){
   const LEDGER_TYPES=['Sales Receipt','Wheat Purchase','Packing Material Purchase','Salary / Wages','Fuel / Transport','Repairs & Maintenance','Electricity','Supplyco Payment Received','Supplier Payment','Daily Expenses','Loan / Advance','Other Income','Other Expense'];
   const incomeTypes=['Sales Receipt','Supplyco Payment Received','Other Income','Loan / Advance'];
   const [entries,setEntries]=useState([]);
+  const [days,setDays]=useState([]);
+  const [baseOpen,setBaseOpen]=useState(0);
+  const [freezeDate,setFreezeDate]=useState('');
+  const [selDate,setSelDate]=useState(today);
   const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const [filterDate,setFilterDate]=useState(today);
   const blank={date:today,txn_type:'Sales Receipt',amount:'',party_name:'',description:'',payment_mode:'Cash',reference_no:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const isFrozenDate=(d)=>!!freezeDate&&d<=freezeDate;
 
-  const load=useCallback(async()=>{
-    setLoading(true);
-    const {data}=await sb.from('daily_ledger').select('*').gte('date',monthStart).order('date',{ascending:false}).order('created_at',{ascending:false});
-    setEntries(data||[]); setLoading(false);
+  const load=useCallback(async(d)=>{
+    const [{data:e},dd,fr,base]=await Promise.all([
+      sb.from('daily_ledger').select('*').eq('date',d).order('created_at'),
+      cashAllDays(),
+      cashSetting('cashbook_freeze_date'),
+      cashBaseOpening(),
+    ]);
+    let daysData=dd.data;
+    if(daysData.length===0){
+      const {count}=await sb.from('daily_ledger').select('id',{count:'exact',head:true});
+      if((count||0)>0){
+        await cashRebuildAll();
+        daysData=(await cashAllDays()).data;
+      }
+    }
+    setEntries(e||[]); setDays(daysData); setFreezeDate(fr||''); setBaseOpen(base); setLoading(false);
   },[]);
-  useEffect(()=>{load();},[load]);
+  useEffect(()=>{load(selDate);},[selDate,load]);
+
+  const startEdit=(e)=>{
+    setEditingId(e.id);
+    setForm({date:e.date,txn_type:e.txn_type,amount:e.amount,party_name:e.party_name||'',description:e.description||'',payment_mode:e.payment_mode||'Cash',reference_no:e.reference_no||''});
+    setShowForm(true);
+    window.scrollTo?.(0,0);
+  };
+  const closeForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); };
 
   const save=async()=>{
     if(!form.amount||Number(form.amount)<=0) return alert('Enter amount.');
+    if(isFrozenDate(form.date)) return alert(`${form.date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
+    const orig=editingId?entries.find(x=>x.id===editingId):null;
+    if(orig&&isFrozenDate(orig.date)) return alert(`${orig.date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
     setSaving(true);
     const isIn=incomeTypes.includes(form.txn_type);
     const row={...form,amount:Number(form.amount),direction:isIn?'in':'out'};
-    const {data,error}=await sb.from('daily_ledger').insert(row).select().single();
-    if(error){alert(error.message);setSaving(false);return;}
-    setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('Ledger','create',`${form.txn_type} — ₹${form.amount}`);
+    if(editingId){
+      const {error}=await sb.from('daily_ledger').update(row).eq('id',editingId);
+      if(error){alert(error.message);setSaving(false);return;}
+    } else {
+      const {error}=await sb.from('daily_ledger').insert(row);
+      if(error){alert(error.message);setSaving(false);return;}
+    }
+    // Recalculate the affected day(s), earliest first; each one then cascades forward.
+    const dates=Array.from(new Set([form.date,orig?orig.date:form.date])).sort();
+    for(const d of dates){
+      const err=await cashRecalcFrom(d);
+      if(err){ alert('Entry saved, but balances could not be fully updated: '+err+'. Use "Rebuild balances" in Cash Book Settings.'); break; }
+    }
+    logActivity('Ledger',editingId?'update':'create',`${form.txn_type} — ₹${form.amount} on ${form.date}${editingId?' (edited; later days recalculated)':''}`);
+    const target=form.date;
+    closeForm(); setSaving(false);
+    if(target!==selDate) setSelDate(target); else await load(selDate);
   };
 
-  const del=async(id)=>{
-    if(!confirm('Delete this entry?')) return;
-    await sb.from('daily_ledger').delete().eq('id',id);
-    setEntries(p=>p.filter(x=>x.id!==id));
-    logActivity('Ledger','delete',`Entry deleted`);
+  const del=async(e)=>{
+    if(isFrozenDate(e.date)) return alert(`${e.date} is on or before the freeze date (${freezeDate}) and cannot be changed.`);
+    if(!confirm('Delete this entry? Later days will be recalculated.')) return;
+    setSaving(true);
+    const {error}=await sb.from('daily_ledger').delete().eq('id',e.id);
+    if(error){alert(error.message);setSaving(false);return;}
+    const err=await cashRecalcFrom(e.date);
+    if(err) alert('Entry deleted, but balances could not be fully updated: '+err+'. Use "Rebuild balances" in Cash Book Settings.');
+    logActivity('Ledger','delete',`${e.txn_type} — ₹${e.amount} on ${e.date} deleted; later days recalculated`);
+    setSaving(false);
+    await load(selDate);
   };
 
   if(loading) return <Loading/>;
 
-  const dayEntries=entries.filter(e=>e.date===filterDate);
-  const dayIn=dayEntries.filter(e=>e.direction==='in').reduce((s,e)=>s+Number(e.amount),0);
-  const dayOut=dayEntries.filter(e=>e.direction==='out').reduce((s,e)=>s+Number(e.amount),0);
-  const monthIn=entries.filter(e=>e.direction==='in').reduce((s,e)=>s+Number(e.amount),0);
-  const monthOut=entries.filter(e=>e.direction==='out').reduce((s,e)=>s+Number(e.amount),0);
+  const frozen=isFrozenDate(selDate);
+  const dayRow=days.find(d=>d.date===selDate);
+  const prior=days.filter(d=>d.date<selDate).pop();
+  const opening=dayRow?Number(dayRow.opening_balance):(prior?Number(prior.closing_balance):baseOpen);
+  const inEntries=entries.filter(e=>e.direction==='in');
+  const outEntries=entries.filter(e=>e.direction!=='in');
+  const sumIn=inEntries.reduce((s,e)=>s+Number(e.amount),0);
+  const sumOut=outEntries.reduce((s,e)=>s+Number(e.amount),0);
+  const closing=dayRow?Number(dayRow.closing_balance):opening;
+  const outOfSync=entries.length>0&&(!dayRow||Math.abs(cashR2(opening+sumIn-sumOut)-closing)>0.005);
+
+  const oPos=Math.max(opening,0), oNeg=Math.max(-opening,0);
+  const cPos=Math.max(closing,0), cNeg=Math.max(-closing,0);
+  const leftTotal=oPos+sumIn+cNeg;
+  const rightTotal=sumOut+oNeg+cPos;
+
+  const renderEntry=(e)=>(<tr key={e.id}>
+    <td>
+      <strong>{e.txn_type}</strong>
+      <div className="dim" style={{fontSize:11}}>{[e.party_name,e.description,e.reference_no?('Ref '+e.reference_no):'',e.payment_mode].filter(Boolean).join(' · ')}</div>
+    </td>
+    <td className="mono" style={{textAlign:'right',fontWeight:600}}>{fmt(e.amount,2)}</td>
+    <td style={{whiteSpace:'nowrap'}}>{!frozen&&(<>
+      <button className="btn btn-blue btn-sm" onClick={()=>startEdit(e)} disabled={saving}>✎</button>{' '}
+      <button className="btn btn-red btn-sm" onClick={()=>del(e)} disabled={saving}>✕</button>
+    </>)}</td>
+  </tr>);
+  const balRow=(label,amt)=>(<tr key={label} style={{background:'var(--surface2)'}}>
+    <td><em>{label}</em></td>
+    <td className="mono" style={{textAlign:'right'}}>{fmt(amt,2)}</td>
+    <td></td>
+  </tr>);
+  const totalRow=(amt)=>(<tr style={{borderTop:'2px solid var(--text)'}}>
+    <td><strong>TOTAL</strong></td>
+    <td className="mono" style={{textAlign:'right',fontWeight:700}}>{fmt(amt,2)}</td>
+    <td></td>
+  </tr>);
 
   return(<div className="page">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
       <div className="page-header" style={{marginBottom:0}}>
         <div className="page-label">Finance</div>
         <div className="page-title">Daily cash book</div>
+        <div style={{fontSize:13,color:'var(--muted)',marginTop:2}}>{cashDayLabel(selDate)}</div>
       </div>
-      <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ New entry</button>
+      <button className="btn btn-green" disabled={frozen} onClick={()=>{ if(showForm) closeForm(); else { setEditingId(null); setForm({...blank,date:selDate}); setShowForm(true); } }}>+ New entry</button>
     </div>
 
+    <div className="card" style={{marginBottom:16,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+      <button className="btn btn-ghost btn-sm" onClick={()=>setSelDate(cashAddDays(selDate,-1))}>◀ Previous day</button>
+      <input type="date" value={selDate} max={today} style={{width:160}} onChange={e=>{ if(e.target.value) setSelDate(e.target.value); }}/>
+      <button className="btn btn-ghost btn-sm" disabled={selDate>=today} onClick={()=>setSelDate(cashAddDays(selDate,1))}>Next day ▶</button>
+      <button className="btn btn-ghost btn-sm" disabled={selDate===today} onClick={()=>setSelDate(today)}>Today</button>
+      {frozen&&<span className="badge badge-muted">🔒 Frozen</span>}
+    </div>
+
+    {outOfSync&&<Alert type="red" icon="⚠" title="Balances for this day are out of sync" sub="Open Settings → Cash Book Settings and click “Rebuild balances”."/>}
+
     <div className="stat-grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))'}}>
-      <StatCard label="Today in" value={'₹'+fmt(dayIn)} col="var(--green)"/>
-      <StatCard label="Today out" value={'₹'+fmt(dayOut)} col="var(--red)"/>
-      <StatCard label="Today balance" value={'₹'+fmt(dayIn-dayOut)} col={dayIn-dayOut>=0?'var(--green)':'var(--red)'}/>
-      <StatCard label="Month in" value={'₹'+fmt(monthIn)} col="var(--blue)"/>
-      <StatCard label="Month out" value={'₹'+fmt(monthOut)} col="var(--amber)"/>
-      <StatCard label="Month balance" value={'₹'+fmt(monthIn-monthOut)} col={monthIn-monthOut>=0?'var(--green)':'var(--red)'}/>
+      <StatCard label="Opening balance" value={'₹'+fmt(opening,2)} col="var(--blue)"/>
+      <StatCard label="Receipts" value={'₹'+fmt(sumIn,2)} col="var(--green)"/>
+      <StatCard label="Payments" value={'₹'+fmt(sumOut,2)} col="var(--red)"/>
+      <StatCard label="Closing balance" value={'₹'+fmt(closing,2)} col={closing>=0?'var(--amber)':'var(--red)'}/>
     </div>
 
     {showForm&&(
-      <FormCard title="New cash book entry" col="var(--green)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+      <FormCard title={editingId?'Edit cash book entry':'New cash book entry'} col="var(--green)" onSave={save} onCancel={closeForm} saving={saving}>
         <div className="form-grid">
           <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
           <Field label="Transaction type">
@@ -2183,29 +2371,137 @@ function Ledger(){
       </FormCard>
     )}
 
-    <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16,flexWrap:'wrap'}}>
-      <div className="form-label">Filter by date:</div>
-      <input type="date" value={filterDate} max={today} onChange={e=>setFilterDate(e.target.value)} style={{width:160}}/>
+    <div className="two-col" style={{alignItems:'start'}}>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr><th colSpan={3} style={{color:'var(--green)'}}>Receipts (Dr)</th></tr>
+            <tr><th>Particulars</th><th style={{textAlign:'right'}}>Amount ₹</th><th></th></tr>
+          </thead>
+          <tbody>
+            {oNeg===0&&balRow('To Opening Balance b/d',oPos)}
+            {inEntries.map(renderEntry)}
+            {cNeg>0&&balRow('To Closing Deficit c/d',cNeg)}
+            {totalRow(leftTotal)}
+          </tbody>
+        </table>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr><th colSpan={3} style={{color:'var(--red)'}}>Payments (Cr)</th></tr>
+            <tr><th>Particulars</th><th style={{textAlign:'right'}}>Amount ₹</th><th></th></tr>
+          </thead>
+          <tbody>
+            {oNeg>0&&balRow('By Opening Deficit b/d',oNeg)}
+            {outEntries.map(renderEntry)}
+            {cNeg===0&&balRow('By Closing Balance c/d',cPos)}
+            {totalRow(rightTotal)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {entries.length===0&&<div style={{marginTop:12,fontSize:12,color:'var(--muted)'}}>No entries on this day. The balance simply carries forward.</div>}
+  </div>);
+}
+
+function CashBookSettings(){
+  const [opening,setOpening]=useState('');
+  const [freezeDate,setFreezeDate]=useState('');
+  const [loading,setLoading]=useState(true);
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState('');
+
+  useEffect(()=>{
+    (async()=>{
+      const [o,fz]=await Promise.all([cashSetting('cashbook_opening_balance'),cashSetting('cashbook_freeze_date')]);
+      setOpening(o??''); setFreezeDate(fz||''); setLoading(false);
+    })();
+  },[]);
+
+  const saveSetting=async(key,value)=>{
+    const {error}=await sb.from('erp_settings').upsert({key,value:String(value)},{onConflict:'key'});
+    return error?error.message:null;
+  };
+  const flash=(t)=>{ setMsg(t); setTimeout(()=>setMsg(''),3000); };
+
+  const saveOpening=async()=>{
+    if(freezeDate) return alert('Clear the freeze date first — changing the opening balance recalculates every day.');
+    const n=Number(opening);
+    if(opening===''||isNaN(n)) return alert('Enter a valid opening balance.');
+    setBusy(true);
+    const err=await saveSetting('cashbook_opening_balance',n);
+    if(err){ alert(err); setBusy(false); return; }
+    const rerr=await cashRebuildAll();
+    if(rerr) alert('Saved, but rebuilding balances failed: '+rerr);
+    logActivity('Settings','update',`Cash book opening balance set to ₹${n}; balances rebuilt`);
+    setBusy(false); flash('Saved and all days recalculated.');
+  };
+
+  const saveFreeze=async(value)=>{
+    setBusy(true);
+    const err=await saveSetting('cashbook_freeze_date',value);
+    if(err){ alert(err); setBusy(false); return; }
+    setFreezeDate(value);
+    logActivity('Settings','update',value?`Cash book frozen up to ${value}`:'Cash book freeze cleared');
+    setBusy(false); flash('Saved.');
+  };
+
+  const rebuild=async()=>{
+    if(freezeDate) return alert('Clear the freeze date first — a rebuild recalculates every day.');
+    if(!confirm('Recalculate every day of the cash book from its entries?')) return;
+    setBusy(true);
+    const err=await cashRebuildAll();
+    if(err) alert('Rebuild failed: '+err);
+    else logActivity('Settings','update','Cash book balances rebuilt');
+    setBusy(false); if(!err) flash('Balances rebuilt.');
+  };
+
+  if(loading) return <Loading/>;
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Cash book settings</div>
     </div>
 
-    <TableWrap><table>
-      <thead><tr><th>Date</th><th>Type</th><th>Flow</th><th>Amount</th><th>Party</th><th>Mode</th><th></th></tr></thead>
-      <tbody>
-        {dayEntries.length===0&&<tr><td colSpan={7}><Empty msg="No entries for this date."/></td></tr>}
-        {dayEntries.map(e=>{
-          const isIn=e.direction==='in';
-          return(<tr key={e.id}>
-            <td className="mono dim">{e.date}</td>
-            <td>{e.txn_type}</td>
-            <td><span className={`badge badge-${isIn?'green':'red'}`}>{isIn?'↑ IN':'↓ OUT'}</span></td>
-            <td><strong style={{color:isIn?'var(--green)':'var(--red)',fontFamily:'var(--mono)'}}>₹{fmt(e.amount)}</strong></td>
-            <td>{e.party_name||'—'}</td>
-            <td className="dim">{e.payment_mode}</td>
-            <td><button className="btn btn-red btn-sm" onClick={()=>del(e.id)}>✕</button></td>
-          </tr>);
-        })}
-      </tbody>
-    </table></TableWrap>
+    <div className="card" style={{maxWidth:500}}>
+      <div className="section-label" style={{marginBottom:12}}>Opening balance</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+        Cash in hand before the very first cash book entry. Saving this recalculates every day.
+      </div>
+      <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+        <Field label="Opening balance (₹)">
+          <input type="number" className="form-input" style={{width:180}} value={opening} onChange={e=>setOpening(e.target.value)}/>
+        </Field>
+        <button className="btn btn-amber" onClick={saveOpening} disabled={busy}>Save</button>
+      </div>
+    </div>
+
+    <div className="card" style={{maxWidth:500,marginTop:20,borderLeft:'3px solid var(--blue)'}}>
+      <div className="section-label" style={{marginBottom:12}}>Freeze past records</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+        Cash book entries on or before this date can no longer be added, edited or deleted. Set this once your books for a period are finalized (e.g. 31 March each year).
+      </div>
+      <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+        <Field label="Freeze up to and including">
+          <input type="date" className="form-input" style={{width:180}} value={freezeDate} max={today} onChange={e=>setFreezeDate(e.target.value)}/>
+        </Field>
+        <button className="btn btn-blue" onClick={()=>saveFreeze(freezeDate)} disabled={busy}>Save</button>
+        {freezeDate&&<button className="btn btn-ghost" onClick={()=>saveFreeze('')} disabled={busy}>Clear</button>}
+      </div>
+      {freezeDate&&<div style={{marginTop:10,fontSize:12,color:'var(--blue)'}}>Currently frozen: all days on or before {freezeDate}.</div>}
+    </div>
+
+    <div className="card" style={{maxWidth:500,marginTop:20}}>
+      <div className="section-label" style={{marginBottom:12}}>Rebuild balances</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+        Recalculates every day's opening and closing balance from the entries. Only needed if a day ever shows “out of sync”.
+      </div>
+      <button className="btn btn-ghost" onClick={rebuild} disabled={busy}>{busy?'Working…':'Rebuild balances'}</button>
+    </div>
+
+    {msg&&<div style={{marginTop:14,fontSize:12,color:'var(--green)'}}>{msg}</div>}
   </div>);
 }
 
@@ -4003,6 +4299,7 @@ function App(){
     'ledger':<Ledger/>,
     'product-master':<ProductMaster/>,
     'production-settings':<ProductionSettings/>,
+        'cashbook-settings':<CashBookSettings/>,
     'depot-settings':<DepotSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
