@@ -183,6 +183,7 @@ const NAV = [
   { section:'Inventory' },
   { id:'all-stock', label:'All Stock', icon:'📦' },
   { id:'store', label:'Store & Materials', icon:'🧰' },
+  { id:'stock-count', label:'Stock Count', icon:'⚖️' },
   { section:'Finance' },
   { id:'ledger', label:'Daily Cash Book', icon:'₹' },
   { section:'Settings' },
@@ -716,6 +717,7 @@ function Production(){
   const [editingOriginal,setEditingOriginal]=useState(null); // dayRows being edited, or null for a fresh entry
   const [supplycoDisp,setSupplycoDisp]=useState([]);
   const [privateDisp,setPrivateDisp]=useState([]);
+  const [adjustments,setAdjustments]=useState([]);
   const [returns,setReturns]=useState([]);
 
   const salesFor=(date,productId)=>{
@@ -723,24 +725,28 @@ function Production(){
     const p=privateDisp.filter(d=>d.date===date&&d.product_id===productId).reduce((s,d)=>s+Number(d.qty_bags),0);
     return s+p;
   };
+  const adjFor=(date,productId)=>adjustments.filter(a=>a.date===date&&String(a.product_id)===String(productId)).reduce((s,a)=>s+a.qty,0);
   const returnsFor=(date,productId)=>
     returns.filter(r=>r.date===date&&r.product_id===productId).reduce((s,r)=>s+Number(r.qty_bags),0);
   // True stock closing, always derived live — never trust a stored closing_bags value.
   const netClosing=(opening,production,date,productId)=>
-    Number(opening)+Number(production)-salesFor(date,productId)+returnsFor(date,productId);
+    Number(opening)+Number(production)-salesFor(date,productId)+returnsFor(date,productId)+adjFor(date,productId);
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:fp},{data:ap},{data:lg},{data:sd},{data:pd},{data:rt}]=await Promise.all([
+    const [{data:fp},{data:ap},{data:lg},{data:sd},{data:pd},{data:rt},{data:adj}]=await Promise.all([
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
       sb.from('product_master').select('*'),
       sb.from('daily_production_log').select('*, product:product_id(*)').order('date',{ascending:false}),
       sb.from('supplyco_dispatches').select('date,product_id,qty_bags'),
       sb.from('private_dispatches').select('date,product_id,qty_bags'),
       sb.from('product_returns').select('date,product_id,qty_bags'),
+      sb.from('stock_count_lines').select('item_id,diff,count:count_id(count_date)').eq('item_type','finished').eq('applied',true).eq('reversed',false),
     ]);
     setFinishedProducts((fp||[]).filter(p=>p.include_in_production_log!==false)); setAllProducts(ap||[]); setLogs(lg||[]);
-    setSupplycoDisp(sd||[]); setPrivateDisp(pd||[]); setReturns(rt||[]); setLoading(false);
+    setSupplycoDisp(sd||[]); setPrivateDisp(pd||[]); setReturns(rt||[]);
+    setAdjustments((adj||[]).filter(a=>a.count).map(a=>({date:a.count.count_date,product_id:a.item_id,qty:Number(a.diff)})));
+    setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
@@ -782,7 +788,7 @@ function Production(){
       const r=prev[productId]; const opening=r.opening;
       const sales=salesFor(entryDate,productId), ret=returnsFor(entryDate,productId);
       const production=val===''?'':Number(val);
-      const closing=val===''?'':opening+Number(val)-sales+ret;
+      const closing=val===''?'':opening+Number(val)-sales+ret+adjFor(entryDate,productId);
       return {...prev,[productId]:{...r,production:val,closing:closing===''?'':String(closing)}};
     });
   };
@@ -792,7 +798,7 @@ function Production(){
       const r=prev[productId]; const opening=r.opening;
       const sales=salesFor(entryDate,productId), ret=returnsFor(entryDate,productId);
       const closing=val===''?'':Number(val);
-      const production=val===''?'':(closing-opening+sales-ret);
+      const production=val===''?'':(closing-opening+sales-ret-adjFor(entryDate,productId));
       return {...prev,[productId]:{...r,closing:val,production:production===''?'':String(production)}};
     });
   };
@@ -898,7 +904,7 @@ function Production(){
     finishedProducts.forEach(p=>{
       const existing=dayRows.find(r=>r.product_id===p.id);
       const opening=existing?Number(existing.opening_bags):openingFor(p.id);
-      init[p.id]={opening, production: existing?String(existing.production_bags):'', closing: existing?String(existing.closing_bags):''};
+      init[p.id]={opening, production: existing?String(existing.production_bags):'', closing: existing?String(netClosing(opening,existing.production_bags,date,p.id)):''};
     });
     setRows(init); setEntryDate(date); setEditingOriginal(dayRows); setSaving(false);
   };
@@ -1011,7 +1017,7 @@ function Production(){
         if(!laterRow) continue; // this product wasn't logged that day
         const laterSales=salesFor(d,p.id), laterReturns=returnsFor(d,p.id);
         const newOpening=runningClosingBags;
-        const newLaterClosing=newOpening+Number(laterRow.production_bags)-laterSales+laterReturns;
+        const newLaterClosing=newOpening+Number(laterRow.production_bags)-laterSales+laterReturns+adjFor(d,p.id);
         await sb.from('daily_production_log').update({
           opening_bags:newOpening, closing_bags:newLaterClosing
         }).eq('id',laterRow.id);
@@ -1060,6 +1066,7 @@ function Production(){
     {entryDate && (
       <div className="card" style={{marginBottom:24,borderLeft:'3px solid var(--green)'}}>
         <div className="section-label" style={{marginBottom:16}}>Entry for {entryDate}</div>
+        {(()=>{const list=finishedProducts.map(p=>({p,a:adjFor(entryDate,p.id)})).filter(x=>x.a!==0); return list.length>0&&<div style={{marginBottom:12,padding:'8px 12px',background:'color-mix(in srgb, var(--purple) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--purple) 25%, transparent)',borderRadius:6,fontSize:12}}>📋 Stock-count adjustments dated {entryDate} are already included in closing: {list.map(x=>`${x.p.product_name} ${x.a>0?'+':''}${fmt(x.a)}`).join(', ')}</div>;})()}
         <TableWrap><table>
           <thead><tr><th>Product</th><th>Opening (bags)</th><th>Sales (bags)</th><th>Returns (bags)</th><th>Production (bags)</th><th>Closing (bags)</th></tr></thead>
           <tbody>
@@ -1118,7 +1125,7 @@ function Production(){
                 <td className="mono" style={{color:'var(--green)'}}>{fmt(r.production_bags)}</td>
                 <td className="mono" style={{color:sales>0?'var(--red)':'var(--dim)'}}>{sales>0?'−'+fmt(sales):'—'}</td>
                 <td className="mono" style={{color:ret>0?'var(--blue)':'var(--dim)'}}>{ret>0?'+'+fmt(ret):'—'}</td>
-                <td className="mono" style={{fontWeight:600}}>{fmt(closing)}</td>
+                <td className="mono" style={{fontWeight:600}}>{fmt(closing)}{adjFor(r.date,r.product_id)!==0&&<div style={{fontSize:10,color:'var(--purple)',fontWeight:500}} title="Stock count adjustment">adj {adjFor(r.date,r.product_id)>0?'+':''}{fmt(adjFor(r.date,r.product_id))}</div>}</td>
               </tr>);
             })}
           </tbody>
@@ -3442,6 +3449,462 @@ function MyTasks({employeeId,onCount}){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// STOCK COUNT (physical vs book adjustment, Director approves)
+// ══════════════════════════════════════════════════════════
+const STOCK_REASONS=['Wastage / spillage','Moisture / weighing loss','Damaged','Pilferage / shortage','Counting error','Unrecorded entry','Other'];
+const COUNT_STATUS_BADGE={Pending:'badge-amber',Approved:'badge-green',Rejected:'badge-red',Reversed:'badge-muted'};
+const r3=(n)=>Math.round((Number(n)||0)*1000)/1000;
+const qtyFmt=(n)=>Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:3});
+const variancePct=(book,diff)=>book===0?(diff===0?0:100):Math.abs(diff)/Math.abs(book)*100;
+
+async function loadBookStock(category){
+  const rows=[];
+  if(category==='Store & Materials'){
+    const {data}=await sb.from('store_stock').select('*').order('item_name');
+    (data||[]).forEach(s=>rows.push({key:'store:'+s.id,item_type:'store',item_id:String(s.id),scheme:null,item_name:s.item_name,unit:s.unit||'Nos',book:r3(s.qty)}));
+    return rows;
+  }
+  const [{data:prods},{data:cs},{data:rs},{data:ss}]=await Promise.all([
+    sb.from('product_master').select('*').eq('is_active',true).eq('category',category).order('product_name'),
+    sb.from('current_stock').select('*'),
+    sb.from('raw_material_stock').select('*'),
+    sb.from('raw_material_scheme_stock').select('*'),
+  ]);
+  (prods||[]).forEach(p=>{
+    if(p.is_raw_material&&p.has_schemes){
+      const names=Array.from(new Set([...(p.scheme_list||'').split(',').map(s=>s.trim()).filter(Boolean),...(ss||[]).filter(r=>r.product_id===p.id).map(r=>r.scheme)]));
+      names.forEach(sch=>{
+        const r=(ss||[]).find(x=>x.product_id===p.id&&x.scheme===sch);
+        rows.push({key:`scheme:${p.id}:${sch}`,item_type:'scheme',item_id:String(p.id),scheme:sch,item_name:`${p.product_name} — ${sch}`,unit:'kg',book:r3(r?.qty_kg)});
+      });
+    } else if(!p.is_raw_material&&packSizeOf(p)>0){
+      const r=(cs||[]).find(x=>x.product_id===p.id);
+      rows.push({key:'finished:'+p.id,item_type:'finished',item_id:String(p.id),scheme:null,item_name:p.product_name,unit:'bags',book:r3(r?.qty_bags)});
+    } else {
+      const r=(rs||[]).find(x=>x.product_id===p.id);
+      rows.push({key:'raw:'+p.id,item_type:'raw',item_id:String(p.id),scheme:null,item_name:p.product_name,unit:'kg',book:r3(r?.qty_kg)});
+    }
+  });
+  return rows;
+}
+
+async function adjustStockRow(l,delta){
+  const now=new Date().toISOString();
+  if(l.item_type==='finished'){
+    const {data:s}=await sb.from('current_stock').select('*').eq('product_id',l.item_id).maybeSingle();
+    const {error}=s
+      ?await sb.from('current_stock').update({qty_bags:Number(s.qty_bags)+delta,updated_at:now}).eq('id',s.id)
+      :await sb.from('current_stock').insert({product_id:l.item_id,qty_bags:delta});
+    return error?error.message:null;
+  }
+  if(l.item_type==='raw'){
+    const {data:s}=await sb.from('raw_material_stock').select('*').eq('product_id',l.item_id).maybeSingle();
+    const {error}=s
+      ?await sb.from('raw_material_stock').update({qty_kg:Number(s.qty_kg)+delta,updated_at:now}).eq('id',s.id)
+      :await sb.from('raw_material_stock').insert({product_id:l.item_id,qty_kg:delta});
+    return error?error.message:null;
+  }
+  if(l.item_type==='scheme'){
+    const {data:s}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',l.item_id).eq('scheme',l.scheme).maybeSingle();
+    const {error}=s
+      ?await sb.from('raw_material_scheme_stock').update({qty_kg:Number(s.qty_kg)+delta,updated_at:now}).eq('id',s.id)
+      :await sb.from('raw_material_scheme_stock').insert({product_id:l.item_id,scheme:l.scheme,qty_kg:delta});
+    return error?error.message:null;
+  }
+  if(l.item_type==='store'){
+    const {data:s}=await sb.from('store_stock').select('*').eq('id',l.item_id).maybeSingle();
+    if(!s) return 'Store item not found';
+    const {error}=await sb.from('store_stock').update({qty:Number(s.qty)+delta,updated_at:now}).eq('id',s.id);
+    return error?error.message:null;
+  }
+  return 'Unknown item type';
+}
+
+// Finished-goods counts must not be dated before the last logged production day,
+// otherwise the daily production chain would no longer match the corrected stock.
+async function finishedDateProblem(countDate,lines){
+  if(!lines.some(l=>l.item_type==='finished'&&Number(l.diff)!==0)) return '';
+  const {data:lastRow}=await sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle();
+  if(lastRow&&countDate<lastRow.date) return `Production is logged up to ${lastRow.date}, which is after the count date (${countDate}). A finished-goods count must be dated on or after ${lastRow.date}.`;
+  return '';
+}
+
+async function applyStockLines(lines){
+  const todo=lines.filter(l=>!l.applied&&!l.reversed&&Number(l.diff)!==0);
+  for(const l of todo){
+    const err=await adjustStockRow(l,Number(l.diff));
+    if(err) return {ok:false,msg:`Could not apply "${l.item_name}": ${err}. Lines already applied are saved — use "Finish applying" on this count to retry.`};
+    const {error}=await sb.from('stock_count_lines').update({applied:true,applied_at:new Date().toISOString()}).eq('id',l.id);
+    if(error) return {ok:false,msg:`Stock for "${l.item_name}" was changed but could not be marked as applied (${error.message}). Do NOT retry this count — check that item's stock manually.`};
+  }
+  return {ok:true};
+}
+
+function StockCount({role,userEmail,onPending}){
+  const isDirector=role==='director';
+  const [tab,setTab]=useState('new');
+  const [threshold,setThreshold]=useState(1);
+  const [thresholdInput,setThresholdInput]=useState('1');
+  const [categories,setCategories]=useState([]);
+  const [category,setCategory]=useState('');
+  const [countDate,setCountDate]=useState(today);
+  const [book,setBook]=useState([]);
+  const [entries,setEntries]=useState({});
+  const [sheetNote,setSheetNote]=useState('');
+  const [saving,setSaving]=useState(false);
+  const [counts,setCounts]=useState([]);
+  const [linesByCount,setLinesByCount]=useState({});
+  const [loading,setLoading]=useState(true);
+  const [expanded,setExpanded]=useState(null);
+  const [month,setMonth]=useState(new Date().getMonth()+1);
+  const [year,setYear]=useState(new Date().getFullYear());
+  const [report,setReport]=useState(null);
+
+  const loadAll=useCallback(async()=>{
+    setLoading(true);
+    const [{data:st},{data:pc},{data:c}]=await Promise.all([
+      sb.from('erp_settings').select('*').eq('key','variance_threshold_pct').maybeSingle(),
+      sb.from('product_master').select('category').eq('is_active',true),
+      sb.from('stock_counts').select('*').order('submitted_at',{ascending:false}).limit(100),
+    ]);
+    const t=st?Number(st.value):1;
+    const tt=isNaN(t)?1:t;
+    setThreshold(tt); setThresholdInput(String(tt));
+    setCategories([...Array.from(new Set((pc||[]).map(p=>p.category).filter(Boolean))).sort(),'Store & Materials']);
+    const ids=(c||[]).map(x=>x.id);
+    const by={};
+    if(ids.length){
+      const {data:l}=await sb.from('stock_count_lines').select('*').in('count_id',ids);
+      (l||[]).forEach(x=>{ (by[x.count_id]=by[x.count_id]||[]).push(x); });
+    }
+    setCounts(c||[]); setLinesByCount(by);
+    if(onPending) onPending((c||[]).filter(x=>x.status==='Pending').length);
+    setLoading(false);
+  },[]);
+  useEffect(()=>{loadAll();},[loadAll]);
+
+  useEffect(()=>{
+    if(tab!=='report') return;
+    let cancelled=false;
+    (async()=>{
+      const {start,end}=monthRange(month,year);
+      const {data:cs}=await sb.from('stock_counts').select('id,count_date').eq('status','Approved').gte('count_date',start).lte('count_date',end);
+      const ids=(cs||[]).map(x=>x.id);
+      let ls=[];
+      if(ids.length){
+        const {data}=await sb.from('stock_count_lines').select('*').in('count_id',ids).eq('reversed',false);
+        ls=(data||[]).filter(l=>Number(l.diff)!==0);
+      }
+      if(!cancelled) setReport({counts:cs||[],lines:ls});
+    })();
+    return ()=>{cancelled=true;};
+  },[tab,month,year]);
+
+  const saveThreshold=async()=>{
+    const v=Number(thresholdInput);
+    if(isNaN(v)||v<0) return alert('Enter a valid percentage (0 or more).');
+    const {error}=await sb.from('erp_settings').upsert({key:'variance_threshold_pct',value:String(v)},{onConflict:'key'});
+    if(error) return alert(error.message);
+    setThreshold(v);
+    logActivity('Stock Count','update',`Variance threshold set to ${v}%`);
+    alert('Threshold saved.');
+  };
+
+  const startCount=async()=>{
+    if(!category) return alert('Select a category first.');
+    setSaving(true);
+    const rows=await loadBookStock(category);
+    setBook(rows); setEntries({}); setSheetNote(''); setSaving(false);
+    if(rows.length===0) alert('No items found in this category.');
+  };
+
+  const setE=(key,k,v)=>setEntries(p=>({...p,[key]:{counted:'',reason:'',note:'',...(p[key]||{}),[k]:v}}));
+
+  const buildLines=(rows)=>rows.map(r=>{
+    const e=entries[r.key];
+    const counted=Number(e.counted);
+    const diff=r3(counted-r.book);
+    return {item_type:r.item_type,item_id:r.item_id,scheme:r.scheme,item_name:r.item_name,unit:r.unit,book_qty:r.book,counted_qty:counted,diff,reason:diff===0?null:e.reason,note:(e.note||'').trim()||null};
+  });
+
+  const submitCount=async(applyNow)=>{
+    if(!category) return;
+    if(countDate>today) return alert('Count date cannot be in the future.');
+    const entered=book.filter(r=>{const e=entries[r.key]; return e&&e.counted!==''&&e.counted!==undefined;});
+    if(entered.length===0) return alert('Enter at least one counted quantity.');
+    for(const r of entered){
+      const e=entries[r.key]; const counted=Number(e.counted);
+      if(isNaN(counted)||counted<0) return alert(`Invalid count for ${r.item_name}.`);
+      const diff=r3(counted-r.book);
+      if(diff!==0){
+        if(!e.reason) return alert(`Select a reason for ${r.item_name}.`);
+        if(variancePct(r.book,diff)>threshold&&!(e.note||'').trim()) return alert(`${r.item_name}: the difference is above the ${threshold}% threshold — a written note is required.`);
+      }
+    }
+    setSaving(true);
+    const fresh=await loadBookStock(category);
+    const changed=entered.filter(r=>{const f=fresh.find(x=>x.key===r.key); return !f||Math.abs(f.book-r.book)>0.0005;});
+    if(changed.length){
+      setBook(fresh); setSaving(false);
+      return alert('Book stock changed while you were counting: '+changed.map(c=>c.item_name).join(', ')+'.\n\nThe sheet has been refreshed. Please review the differences and submit again.');
+    }
+    const lines=buildLines(entered);
+    const problem=await finishedDateProblem(countDate,lines);
+    if(problem){ setSaving(false); return alert(problem); }
+    const direct=applyNow&&isDirector;
+    const nowIso=new Date().toISOString();
+    const {data:c,error}=await sb.from('stock_counts').insert({count_date:countDate,category,notes:sheetNote.trim()||null,status:direct?'Approved':'Pending',submitted_by:userEmail,reviewed_by:direct?userEmail:null,reviewed_at:direct?nowIso:null}).select().single();
+    if(error){ setSaving(false); return alert(error.message); }
+    const {data:ins,error:le}=await sb.from('stock_count_lines').insert(lines.map(l=>({...l,count_id:c.id}))).select();
+    if(le){
+      await sb.from('stock_counts').update({status:'Rejected',review_note:'System: lines failed to save — '+le.message}).eq('id',c.id);
+      setSaving(false); return alert('Could not save the count lines: '+le.message);
+    }
+    if(direct){
+      const res=await applyStockLines(ins||[]);
+      if(!res.ok) alert(res.msg);
+    }
+    logActivity('Stock Count','create',`${direct?'Applied':'Submitted'} count — ${category} (${lines.length} items, ${lines.filter(l=>l.diff!==0).length} differences) dated ${countDate}`);
+    setSaving(false); setBook([]); setEntries({}); setSheetNote('');
+    await loadAll(); setTab('history');
+    if(!direct) alert('Count submitted. Stock will change only after the Director approves it.');
+  };
+
+  const approve=async(c)=>{
+    const ls=linesByCount[c.id]||[];
+    const diffs=ls.filter(l=>Number(l.diff)!==0).length;
+    const problem=await finishedDateProblem(c.count_date,ls);
+    if(problem) return alert(problem+'\n\nReject this count and submit a fresh one.');
+    if(!window.confirm(`Approve and apply this count? ${diffs} stock adjustment${diffs===1?'':'s'} will change live stock now.`)) return;
+    setSaving(true);
+    const {data:upd,error}=await sb.from('stock_counts').update({status:'Approved',reviewed_by:userEmail,reviewed_at:new Date().toISOString()}).eq('id',c.id).eq('status','Pending').select();
+    if(error||!upd||upd.length===0){ alert(error?error.message:'This count was already processed.'); setSaving(false); loadAll(); return; }
+    const res=await applyStockLines(ls);
+    if(!res.ok) alert(res.msg);
+    logActivity('Stock Count','update',`Approved count — ${c.category} dated ${c.count_date}`);
+    setSaving(false); loadAll();
+  };
+
+  const reject=async(c)=>{
+    const why=window.prompt('Reason for rejecting this count (required):');
+    if(!why||!why.trim()) return;
+    setSaving(true);
+    const {data:upd,error}=await sb.from('stock_counts').update({status:'Rejected',reviewed_by:userEmail,reviewed_at:new Date().toISOString(),review_note:why.trim()}).eq('id',c.id).eq('status','Pending').select();
+    if(error||!upd||upd.length===0) alert(error?error.message:'This count was already processed.');
+    else logActivity('Stock Count','update',`Rejected count — ${c.category} dated ${c.count_date}: ${why.trim()}`);
+    setSaving(false); loadAll();
+  };
+
+  const finishApplying=async(c)=>{
+    const ls=linesByCount[c.id]||[];
+    const problem=await finishedDateProblem(c.count_date,ls.filter(l=>!l.applied));
+    if(problem) return alert(problem);
+    setSaving(true);
+    const res=await applyStockLines(ls);
+    if(!res.ok) alert(res.msg);
+    setSaving(false); loadAll();
+  };
+
+  const reverse=async(c)=>{
+    const ls=(linesByCount[c.id]||[]).filter(l=>l.applied&&!l.reversed&&Number(l.diff)!==0);
+    for(const l of ls.filter(x=>x.item_type==='finished')){
+      const {data:later}=await sb.from('daily_production_log').select('date').eq('product_id',l.item_id).gt('date',c.count_date).limit(1);
+      if(later&&later.length) return alert(`Cannot reverse: production for "${l.item_name}" has been logged after ${c.count_date}. Submit a new corrective count instead.`);
+    }
+    const why=window.prompt('Reason for reversing this adjustment (required):');
+    if(!why||!why.trim()) return;
+    setSaving(true);
+    for(const l of ls){
+      const err=await adjustStockRow(l,-Number(l.diff));
+      if(err){ alert(`Could not reverse "${l.item_name}": ${err}. Reversal stopped; lines already reversed are saved.`); setSaving(false); loadAll(); return; }
+      await sb.from('stock_count_lines').update({reversed:true}).eq('id',l.id);
+    }
+    await sb.from('stock_counts').update({status:'Reversed',review_note:`Reversed by ${userEmail}: ${why.trim()}`}).eq('id',c.id);
+    logActivity('Stock Count','update',`Reversed count — ${c.category} dated ${c.count_date}: ${why.trim()}`);
+    setSaving(false); loadAll();
+  };
+
+  if(loading) return <Loading/>;
+
+  const pendingN=counts.filter(c=>c.status==='Pending').length;
+  const enteredRows=book.filter(r=>{const e=entries[r.key]; return e&&e.counted!==''&&e.counted!==undefined;});
+  const diffRows=enteredRows.filter(r=>r3(Number(entries[r.key].counted)-r.book)!==0);
+  const overRows=diffRows.filter(r=>variancePct(r.book,r3(Number(entries[r.key].counted)-r.book))>threshold);
+
+  const byItem={}; const byReason={};
+  ((report&&report.lines)||[]).forEach(l=>{
+    const k=`${l.item_name}|${l.unit}`;
+    const o=byItem[k]=byItem[k]||{name:l.item_name,unit:l.unit,n:0,plus:0,minus:0};
+    o.n++; const d=Number(l.diff); if(d>0) o.plus+=d; else o.minus+=d;
+    const rk=l.reason||'—'; byReason[rk]=(byReason[rk]||0)+1;
+  });
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">Inventory</div>
+      <div className="page-title">Stock count</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16,display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+      {isDirector?(<>
+        <div className="form-label" style={{marginBottom:0}}>Variance threshold</div>
+        <input type="number" step="0.1" min="0" style={{width:90}} value={thresholdInput} onChange={e=>setThresholdInput(e.target.value)}/>
+        <span style={{fontSize:13}}>%</span>
+        <button className="btn btn-blue btn-sm" onClick={saveThreshold}>Save</button>
+        <span className="dim" style={{fontSize:12}}>Differences above this need a written note.</span>
+      </>):(
+        <span style={{fontSize:13}}>Differences above <strong>{threshold}%</strong> need a written note. Your count is sent to the Director for approval — stock changes only after approval.</span>
+      )}
+    </div>
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:16}}>
+      {[['new','New count'],['history','Approvals & history'],['report','Variance report']].map(([id,l])=>(
+        <button key={id} className={`btn btn-sm ${tab===id?'btn-amber':'btn-ghost'}`} onClick={()=>setTab(id)}>{l}{id==='history'&&pendingN>0?` (${pendingN} pending)`:''}</button>
+      ))}
+    </div>
+
+    {tab==='new'&&(<>
+      <div className="card" style={{marginBottom:16}}>
+        <div className="form-grid">
+          <Field label="Category">
+            <select className="form-input" value={category} onChange={e=>{setCategory(e.target.value);setBook([]);setEntries({});}}>
+              <option value="">-- Select category --</option>
+              {categories.map(c=><option key={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Count date"><input type="date" className="form-input" value={countDate} max={today} onChange={e=>setCountDate(e.target.value)}/></Field>
+          <div className="form-field" style={{justifyContent:'flex-end'}}>
+            <button className="btn btn-blue" onClick={startCount} disabled={saving||!category}>Load book stock</button>
+          </div>
+        </div>
+        <div className="dim" style={{fontSize:12,marginTop:10}}>Before counting, make sure dispatches, returns and inwards up to the count date are already entered. If a difference is really a missed entry, fix that entry instead of adjusting.</div>
+      </div>
+
+      {book.length>0&&(<>
+        <TableWrap><table>
+          <thead><tr><th>Item</th><th>Unit</th><th>Book</th><th>Counted</th><th>Difference</th><th>%</th><th>Reason</th><th>Note</th></tr></thead>
+          <tbody>
+            {book.map(r=>{
+              const e=entries[r.key]||{counted:'',reason:'',note:''};
+              const has=e.counted!==''&&e.counted!==undefined;
+              const diff=has?r3(Number(e.counted)-r.book):0;
+              const pct=has?variancePct(r.book,diff):0;
+              const over=has&&diff!==0&&pct>threshold;
+              return(<tr key={r.key}>
+                <td><strong>{r.item_name}</strong></td>
+                <td className="dim">{r.unit}</td>
+                <td className="mono">{qtyFmt(r.book)}</td>
+                <td><input type="number" className="form-input" style={{width:110}} value={e.counted} onChange={ev=>setE(r.key,'counted',ev.target.value)}/></td>
+                <td className="mono" style={{fontWeight:600,color:!has||diff===0?'var(--muted)':diff>0?'var(--green)':'var(--red)'}}>{has?(diff>0?'+':'')+qtyFmt(diff):'—'}</td>
+                <td className="mono" style={{color:over?'var(--red)':'var(--muted)',fontWeight:over?700:400}}>{has&&diff!==0?pct.toFixed(1)+'%':'—'}</td>
+                <td>{has&&diff!==0?(
+                  <select className="form-input" style={{width:170}} value={e.reason} onChange={ev=>setE(r.key,'reason',ev.target.value)}>
+                    <option value="">-- Reason --</option>{STOCK_REASONS.map(x=><option key={x}>{x}</option>)}
+                  </select>):<span className="dim">—</span>}</td>
+                <td>{has&&diff!==0?(
+                  <input className="form-input" style={{width:200,borderColor:over&&!(e.note||'').trim()?'var(--red)':undefined}} placeholder={over?'Note required (above threshold)':'Note (optional)'} value={e.note} onChange={ev=>setE(r.key,'note',ev.target.value)}/>
+                  ):<span className="dim">—</span>}</td>
+              </tr>);
+            })}
+          </tbody>
+        </table></TableWrap>
+
+        <div className="card" style={{marginTop:16}}>
+          <div style={{fontSize:13,marginBottom:10}}>
+            <strong>{enteredRows.length}</strong> counted · <strong>{diffRows.length}</strong> with differences · <strong style={{color:overRows.length>0?'var(--red)':'inherit'}}>{overRows.length}</strong> above the {threshold}% threshold. Items left blank are not counted and are skipped.
+          </div>
+          <Field label="Overall note (optional)"><input className="form-input" value={sheetNote} onChange={e=>setSheetNote(e.target.value)} placeholder="e.g. Quarterly physical verification"/></Field>
+          <div className="form-actions">
+            <button className="btn btn-amber" onClick={()=>submitCount(false)} disabled={saving}>{saving?'Saving…':'Submit for approval'}</button>
+            {isDirector&&<button className="btn btn-green" onClick={()=>submitCount(true)} disabled={saving}>Save &amp; apply now</button>}
+          </div>
+        </div>
+      </>)}
+    </>)}
+
+    {tab==='history'&&(<>
+      {counts.length===0&&<div className="card"><Empty msg="No stock counts yet."/></div>}
+      {counts.map(c=>{
+        const ls=linesByCount[c.id]||[];
+        const diffLs=ls.filter(l=>Number(l.diff)!==0);
+        const unapplied=c.status==='Approved'&&diffLs.some(l=>!l.applied&&!l.reversed);
+        return(<div key={c.id} className="card" style={{marginBottom:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+            <div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <strong className="mono">{c.count_date}</strong>
+                <span style={{fontWeight:600}}>{c.category}</span>
+                <span className={`badge ${COUNT_STATUS_BADGE[c.status]||'badge-muted'}`}>{c.status}</span>
+              </div>
+              <div className="dim" style={{fontSize:12,marginTop:4}}>
+                {ls.length} item{ls.length===1?'':'s'} counted · {diffLs.length} difference{diffLs.length===1?'':'s'} · submitted by {c.submitted_by||'—'}
+                {c.reviewed_by?` · ${c.status==='Rejected'?'rejected':'reviewed'} by ${c.reviewed_by}`:''}
+              </div>
+              {c.notes&&<div style={{fontSize:12,marginTop:4}}>{c.notes}</div>}
+              {c.review_note&&<div style={{fontSize:12,marginTop:4,color:'var(--red)'}}>{c.review_note}</div>}
+              {c.status==='Pending'&&!isDirector&&<div style={{fontSize:12,marginTop:4,color:'var(--amber)'}}>Waiting for Director approval — stock has not changed yet.</div>}
+              {unapplied&&<div style={{fontSize:12,marginTop:4,color:'var(--red)'}}>⚠ Approved, but some lines are not applied yet.</div>}
+            </div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'flex-start'}}>
+              {isDirector&&c.status==='Pending'&&(<>
+                <button className="btn btn-green btn-sm" onClick={()=>approve(c)} disabled={saving}>Approve &amp; apply</button>
+                <button className="btn btn-red btn-sm" onClick={()=>reject(c)} disabled={saving}>Reject</button>
+              </>)}
+              {isDirector&&unapplied&&<button className="btn btn-amber btn-sm" onClick={()=>finishApplying(c)} disabled={saving}>Finish applying</button>}
+              {isDirector&&c.status==='Approved'&&<button className="btn btn-ghost btn-sm" onClick={()=>reverse(c)} disabled={saving}>Reverse</button>}
+              <button className="btn btn-ghost btn-sm" onClick={()=>setExpanded(expanded===c.id?null:c.id)}>{expanded===c.id?'Hide':'Details'}</button>
+            </div>
+          </div>
+          {expanded===c.id&&(<div style={{marginTop:12}}><TableWrap><table>
+            <thead><tr><th>Item</th><th>Book</th><th>Counted</th><th>Difference</th><th>Reason</th><th>Note</th><th>Applied</th></tr></thead>
+            <tbody>
+              {ls.map(l=>{
+                const d=Number(l.diff);
+                return(<tr key={l.id}>
+                  <td><strong>{l.item_name}</strong> <span className="dim">({l.unit})</span></td>
+                  <td className="mono">{qtyFmt(l.book_qty)}</td>
+                  <td className="mono">{qtyFmt(l.counted_qty)}</td>
+                  <td className="mono" style={{fontWeight:600,color:d===0?'var(--muted)':d>0?'var(--green)':'var(--red)'}}>{d>0?'+':''}{qtyFmt(d)}</td>
+                  <td>{l.reason||'—'}</td>
+                  <td className="dim">{l.note||'—'}</td>
+                  <td>{d===0?<span className="dim">no change</span>:l.reversed?<span className="badge badge-muted">reversed</span>:l.applied?<span className="badge badge-green">applied</span>:<span className="badge badge-amber">not yet</span>}</td>
+                </tr>);
+              })}
+            </tbody>
+          </table></TableWrap></div>)}
+        </div>);
+      })}
+    </>)}
+
+    {tab==='report'&&(<>
+      <div style={{marginBottom:12}}><MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/></div>
+      {!report?<Loading/>:(<>
+        <div className="section-label">By item — {MONTH_NAMES[month-1]} {year} (approved, not reversed)</div>
+        <TableWrap><table>
+          <thead><tr><th>Item</th><th>Adjustments</th><th>Excess (+)</th><th>Shortage (−)</th><th>Net</th></tr></thead>
+          <tbody>
+            {Object.keys(byItem).length===0&&<tr><td colSpan={5}><Empty msg="No approved adjustments in this month."/></td></tr>}
+            {Object.values(byItem).sort((a,b)=>a.minus-b.minus).map(o=>(<tr key={o.name+o.unit}>
+              <td><strong>{o.name}</strong> <span className="dim">({o.unit})</span></td>
+              <td className="mono">{o.n}</td>
+              <td className="mono" style={{color:'var(--green)'}}>{o.plus>0?'+'+qtyFmt(o.plus):'—'}</td>
+              <td className="mono" style={{color:'var(--red)'}}>{o.minus<0?qtyFmt(o.minus):'—'}</td>
+              <td className="mono" style={{fontWeight:600,color:(o.plus+o.minus)<0?'var(--red)':'var(--green)'}}>{(o.plus+o.minus)>0?'+':''}{qtyFmt(o.plus+o.minus)}</td>
+            </tr>))}
+          </tbody>
+        </table></TableWrap>
+
+        <div className="section-label" style={{marginTop:24}}>By reason (number of adjustments)</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {Object.keys(byReason).length===0&&<span className="dim" style={{fontSize:13}}>—</span>}
+          {Object.entries(byReason).sort((a,b)=>b[1]-a[1]).map(([r,n])=><span key={r} className="badge badge-blue">{r}: {n}</span>)}
+        </div>
+      </>)}
+    </>)}
+  </div>);
+}
+
 const titleCase=(s)=>String(s||'').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
 
 function TaskBadge({n,compact}){
@@ -3472,6 +3935,18 @@ function App(){
 
   const [myOpenCount,setMyOpenCount]=useState(null);
   const [myName,setMyName]=useState('');
+  const [pendingCounts,setPendingCounts]=useState(0);
+  useEffect(()=>{
+    if(!access||access.role!=='director'){ setPendingCounts(0); return; }
+    let cancelled=false;
+    const f=async()=>{
+      const {count,error}=await sb.from('stock_counts').select('id',{count:'exact',head:true}).eq('status','Pending');
+      if(!cancelled&&!error) setPendingCounts(count||0);
+    };
+    f();
+    const t=setInterval(f,60000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role]);
   useEffect(()=>{
     if(!access||!access.employee_id){ setMyName(''); return; }
     let cancelled=false;
@@ -3533,6 +4008,7 @@ function App(){
     'activity-log':<ActivityLog/>,
     'job-cards':<JobCards/>,
     'my-tasks':myTasksView,
+    'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
   };
 
   return(<div className="app">
@@ -3559,7 +4035,7 @@ function App(){
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
         return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
-          <span className="icon">{item.icon}</span>{item.label}{item.id==='my-tasks'&&myOpenCount!==null&&<TaskBadge n={myOpenCount}/>}
+          <span className="icon">{item.icon}</span>{item.label}{item.id==='my-tasks'&&myOpenCount!==null&&<TaskBadge n={myOpenCount}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
         </button>);
       })}
       <div className="sidebar-footer">
