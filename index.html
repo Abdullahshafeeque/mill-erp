@@ -2200,9 +2200,17 @@ async function cashRebuildAll(){
 function Ledger({role,userEmail}){
   const isDirector=role==='director';
   const SEALED='var(--purple)';
-  const LEDGER_TYPES=['Sales Receipt','Wheat Purchase','Packing Material Purchase','Salary / Wages','Fuel / Transport','Repairs & Maintenance','Electricity','Supplyco Payment Received','Supplier Payment','Daily Expenses','Loan / Advance','Other Income','Other Expense'];
-  const incomeTypes=['Sales Receipt','Supplyco Payment Received','Other Income','Loan / Advance'];
-  const expenseTypes=LEDGER_TYPES.filter(t=>!incomeTypes.includes(t));
+  const [txnTypes,setTxnTypes]=useState([]);
+  const [recentTypes,setRecentTypes]=useState({in:[],out:[]});
+  const typeNames=(side)=>txnTypes.filter(t=>t.direction===side).map(t=>t.name);
+  // Last 5 used types first, then the rest A–Z. Keeps an old entry's own type visible when editing it.
+  const typeOptions=(side,current)=>{
+    const all=typeNames(side);
+    const recent=(recentTypes[side]||[]).filter(n=>all.includes(n)).slice(0,5);
+    const rest=all.filter(n=>!recent.includes(n)).sort((a,b)=>a.localeCompare(b));
+    const extra=current&&!all.includes(current)?[current]:[];
+    return {recent,rest:[...extra,...rest]};
+  };
   const [entries,setEntries]=useState([]);
   const [days,setDays]=useState([]);
   const [baseOpen,setBaseOpen]=useState(0);
@@ -2229,11 +2237,13 @@ function Ledger({role,userEmail}){
   };
 
   const load=useCallback(async(d)=>{
-    const [{data:e},dd,fr,base]=await Promise.all([
+    const [{data:e},dd,fr,base,{data:tt},{data:rc}]=await Promise.all([
       sb.from('daily_ledger').select('*').eq('date',d).order('created_at'),
       cashAllDays(),
       cashSetting('cashbook_freeze_date'),
       cashBaseOpening(),
+      sb.from('cash_txn_types').select('*').order('name'),
+      sb.from('daily_ledger').select('txn_type,direction').order('created_at',{ascending:false}).limit(300),
     ]);
     let daysData=dd.data;
     if(daysData.length===0){
@@ -2243,13 +2253,27 @@ function Ledger({role,userEmail}){
         daysData=(await cashAllDays()).data;
       }
     }
+    const rec={in:[],out:[]};
+    (rc||[]).forEach(r=>{ const s=r.direction==='in'?'in':'out'; if(rec[s].length<5&&!rec[s].includes(r.txn_type)) rec[s].push(r.txn_type); });
+    setTxnTypes(tt||[]); setRecentTypes(rec);
     setEntries(e||[]); setDays(daysData); setFreezeDate(fr||''); setBaseOpen(base); setLoading(false);
   },[]);
   useEffect(()=>{load(selDate);},[selDate,load]);
 
+  const addNewType=async()=>{
+    const name=(prompt(`New ${formSide==='in'?'receipt':'payment'} type name:`)||'').trim();
+    if(!name) return;
+    if(typeNames(formSide).some(n=>n.toLowerCase()===name.toLowerCase())) return alert('That type already exists.');
+    const {data,error}=await sb.from('cash_txn_types').insert({name,direction:formSide}).select().single();
+    if(error) return alert(error.message);
+    setTxnTypes(p=>[...p,data]);
+    f('txn_type',data.name);
+    logActivity('Ledger','create',`New cash book type — ${name} (${formSide==='in'?'receipt':'payment'})`);
+  };
+
   const startAdd=(side)=>{
     setEditingId(null); setFormSide(side);
-    setForm({...blank,date:selDate,txn_type:side==='in'?incomeTypes[0]:expenseTypes[0]});
+    setForm({...blank,date:selDate,txn_type:typeOptions(side,'').recent[0]||typeOptions(side,'').rest[0]||''});
     setShowForm(true);
   };
   const startEdit=(e)=>{
@@ -2261,12 +2285,13 @@ function Ledger({role,userEmail}){
 
   const save=async()=>{
     if(!form.amount||Number(form.amount)<=0) return alert('Enter amount.');
+    if(!form.txn_type) return alert('Select a transaction type.');
     const m1=lockReason(form.date);
     if(m1) return alert(m1);
     const orig=editingId?entries.find(x=>x.id===editingId):null;
     if(orig){ const m2=lockReason(orig.date); if(m2) return alert(m2); }
     setSaving(true);
-    const isIn=incomeTypes.includes(form.txn_type);
+    const isIn=formSide==='in';
     const row={...form,amount:Number(form.amount),direction:isIn?'in':'out'};
     if(editingId){
       const {error}=await sb.from('daily_ledger').update(row).eq('id',editingId);
@@ -2430,9 +2455,12 @@ function Ledger({role,userEmail}){
             <div className="form-grid">
               <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
               <Field label="Transaction type">
-                <select className="form-input" value={form.txn_type} onChange={e=>f('txn_type',e.target.value)}>
-                  {(formSide==='in'?incomeTypes:expenseTypes).map(t=><option key={t}>{t}</option>)}
-                </select>
+                {(()=>{const o=typeOptions(formSide,form.txn_type); return(
+                <select className="form-input" value={form.txn_type} onChange={e=>{ if(e.target.value==='__new__') addNewType(); else f('txn_type',e.target.value); }}>
+                  {o.recent.length>0&&<optgroup label="Recently used">{o.recent.map(t=><option key={'r-'+t} value={t}>{t}</option>)}</optgroup>}
+                  {o.rest.length>0&&<optgroup label={o.recent.length>0?'Other types':'All types'}>{o.rest.map(t=><option key={t} value={t}>{t}</option>)}</optgroup>}
+                  <option value="__new__">+ Add new type…</option>
+                </select>);})()}
               </Field>
               <Field label="Amount (₹) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.amount} onChange={e=>f('amount',e.target.value)}/></Field>
               <Field label="Party name"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
@@ -2499,12 +2527,23 @@ function CashBookSettings(){
   const [freezeDate,setFreezeDate]=useState('');
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
-  const [msg,setMsg]=useState('');
+  const [types,setTypes]=useState([]);
+  const loadTypes=async()=>{
+    const {data}=await sb.from('cash_txn_types').select('*').order('name');
+    setTypes(data||[]);
+  };
+  const delType=async(t)=>{
+    if(!confirm(`Delete the ${t.direction==='in'?'receipt':'payment'} type "${t.name}"?\n\nExisting entries keep this label; it just won't be offered for new entries.`)) return;
+    const {error}=await sb.from('cash_txn_types').delete().eq('id',t.id);
+    if(error) return alert(error.message);
+    logActivity('Settings','delete',`Cash book type deleted — ${t.name} (${t.direction==='in'?'receipt':'payment'})`);
+    loadTypes();
+  };
 
   useEffect(()=>{
     (async()=>{
       const [o,fz]=await Promise.all([cashSetting('cashbook_opening_balance'),cashSetting('cashbook_freeze_date')]);
-      setOpening(o??''); setFreezeDate(fz||''); setLoading(false);
+      setOpening(o??''); setFreezeDate(fz||''); await loadTypes(); setLoading(false);
     })();
   },[]);
 
@@ -2589,6 +2628,25 @@ function CashBookSettings(){
         Recalculates every day's opening and closing balance from the entries. Only needed if a day ever shows “out of sync”.
       </div>
       <button className="btn btn-ghost" onClick={rebuild} disabled={busy}>{busy?'Working…':'Rebuild balances'}</button>
+    </div>
+
+        <div className="card" style={{maxWidth:500,marginTop:20}}>
+      <div className="section-label" style={{marginBottom:12}}>Transaction types</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+        New types are added from the cash book itself (choose “+ Add new type…” in the list). Delete the ones you no longer want here. Existing entries keep their label.
+      </div>
+      {[['in','Receipts (money in)','var(--green)'],['out','Payments (money out)','var(--red)']].map(([side,label,col])=>(
+        <div key={side} style={{marginBottom:14}}>
+          <div className="form-label" style={{color:col,marginBottom:6}}>{label}</div>
+          {types.filter(t=>t.direction===side).length===0&&<div className="dim" style={{fontSize:12}}>No types.</div>}
+          {types.filter(t=>t.direction===side).map(t=>(
+            <div key={t.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+              <span style={{fontSize:13}}>{t.name}</span>
+              <button className="btn btn-red btn-sm" onClick={()=>delType(t)}>✕</button>
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
 
     {msg&&<div style={{marginTop:14,fontSize:12,color:'var(--green)'}}>{msg}</div>}
@@ -2749,8 +2807,8 @@ function Dashboard({name}){
 
   const prodMT=prod.reduce((s,r)=>s+(Number(r.qty_produced)*packSizeOf(r.product)),0)/1000;
   const dispBags=disp.reduce((s,r)=>s+Number(r.qty_bags),0);
-  const cashIn=ledger.filter(r=>['Sales Receipt','Supplyco Payment Received','Other Income','Loan / Advance'].includes(r.txn_type)).reduce((s,r)=>s+Number(r.amount),0);
-  const cashOut=ledger.filter(r=>!['Sales Receipt','Supplyco Payment Received','Other Income','Loan / Advance'].includes(r.txn_type)).reduce((s,r)=>s+Number(r.amount),0);
+  const cashIn=ledger.filter(r=>r.direction==='in').reduce((s,r)=>s+Number(r.amount),0);
+  const cashOut=ledger.filter(r=>r.direction!=='in').reduce((s,r)=>s+Number(r.amount),0);
 
   const stockWithLevels=products.filter(p=>!p.is_raw_material).map(p=>{
     const row=currentStock.find(r=>r.product_id===p.id);
