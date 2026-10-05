@@ -180,6 +180,7 @@ const NAV = [
   { id:'private-inwards', label:'Private Inwards', icon:'🌿' },
   { id:'reconciliation', label:'Reconciliation', icon:'📊' },
   { id:'job-cards', label:'Job Cards', icon:'🛠️' },
+    { id:'licenses', label:'Licenses & Renewals', icon:'📑' },
   { section:'Inventory' },
   { id:'all-stock', label:'All Stock', icon:'📦' },
   { id:'store', label:'Store & Materials', icon:'🧰' },
@@ -2527,6 +2528,7 @@ function CashBookSettings(){
   const [freezeDate,setFreezeDate]=useState('');
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
+    const [msg,setMsg]=useState('');
   const [types,setTypes]=useState([]);
   const loadTypes=async()=>{
     const {data}=await sb.from('cash_txn_types').select('*').order('name');
@@ -2554,6 +2556,7 @@ function CashBookSettings(){
   const flash=(t)=>{ setMsg(t); setTimeout(()=>setMsg(''),3000); };
 
   const saveOpening=async()=>{
+        if(freezeDate) return alert('Clear the freeze date first — changing the opening balance recalculates every day.');
     const {count:subN}=await sb.from('cash_book_days').select('date',{count:'exact',head:true}).eq('submitted',true);
     if((subN||0)>0) return alert('Some days are submitted. A Director must reopen them before the opening balance can be changed.');
     const n=Number(opening);
@@ -3709,7 +3712,7 @@ async function uploadJobPhotos(jobId,files,stage){
   }
 }
 
-function MyTasks({employeeId,onCount}){
+function MyTasks({employeeId,onCount,role,onRenewed}){
   const [jobs,setJobs]=useState([]);
   const [photos,setPhotos]=useState({});
   const [loading,setLoading]=useState(true);
@@ -3793,7 +3796,7 @@ function MyTasks({employeeId,onCount}){
 
   if(loading) return <Loading/>;
 
-  if(!employeeId) return(<div className="page"><div className="card" style={{maxWidth:480}}>
+  if(!employeeId&&role!=='director') return(<div className="page"><div className="card" style={{maxWidth:480}}>
     <div className="section-label">My tasks</div>
     <div style={{fontSize:14}}>Your login is not linked to an employee profile yet. Please ask the Director to link it in the HR portal (Users tab).</div>
   </div></div>);
@@ -3812,7 +3815,7 @@ function MyTasks({employeeId,onCount}){
       <div className="page-label">My Work{who?` · ${who.name}${who.emp_code?` (${who.emp_code})`:''}`:''}</div>
       <div className="page-title">My tasks</div>
     </div>
-
+    <RenewalAlerts employeeId={employeeId} role={role} onRenewed={onRenewed}/>
     <div className="stat-grid">
       <StatCard label="Open tasks" value={open.length} col="var(--blue)"/>
       <StatCard label="Overdue" value={overdue.length} col={overdue.length>0?'var(--red)':'var(--green)'}/>
@@ -4349,6 +4352,474 @@ function StockCount({role,userEmail,onPending}){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// LICENSES & RENEWALS
+// ══════════════════════════════════════════════════════════
+const LIC_CATEGORIES=['License','Certificate','Registration','Permit','Insurance','Compliance filing','Other'];
+const LIC_FREQUENCIES=['Monthly','Quarterly','Half-yearly','Annual','Every 2 years','Every 3 years','Every 5 years'];
+const LIC_BUCKET='license-docs';
+const LIC_STAGE_LABEL=['Not due yet','Person in charge alerted','Escalated to manager','Escalated to Director'];
+const LIC_STAGE_COL=['var(--green)','var(--amber)','#EA580C','var(--red)'];
+
+const licShift=(dateStr,n)=>{
+  const [y,m,d]=dateStr.split('-').map(Number);
+  const dt=new Date(y,m-1,d);
+  dt.setDate(dt.getDate()+n);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+};
+
+// Stage is worked out live from the dates every time — nothing about "alert state" is stored, so it can never go stale.
+const licInfo=(l)=>{
+  const daysLeft=daysUntil(l.expiry_date);
+  const r=Number(l.remind_days)||0, m=Number(l.manager_days)||0, d=Number(l.director_days)||0;
+  let stage=0;
+  if(daysLeft!==null){
+    if(daysLeft<=r-m-d) stage=3;
+    else if(daysLeft<=r-m) stage=2;
+    else if(daysLeft<=r) stage=1;
+  }
+  return {daysLeft,stage};
+};
+
+const licDaysText=(d)=>d===null?'—':d<0?`Expired ${-d} day${-d===1?'':'s'} ago`:d===0?'Expires today':`${d} day${d===1?'':'s'} left`;
+
+// Which licences should this person see in My Tasks?
+const licAlertsFor=(list,employeeId,role)=>{
+  const me=(employeeId===null||employeeId===undefined)?'':String(employeeId);
+  const out=[];
+  list.forEach(l=>{
+    if(l.status!=='Active') return;
+    const {daysLeft,stage}=licInfo(l);
+    if(stage<1) return;
+    let as=null;
+    if(me&&String(l.assigned_to_id||'')===me) as='assignee';
+    else if(stage>=2&&me&&String(l.manager_id||'')===me) as='manager';
+    else if(stage>=3&&role==='director') as='director';
+    if(as) out.push({lic:l,daysLeft,stage,as});
+  });
+  return out.sort((a,b)=>a.daysLeft-b.daysLeft);
+};
+
+async function uploadLicenseFiles(licenseId,renewalId,files){
+  let ok=0; const failed=[];
+  for(const file of files){
+    try{
+      const isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name);
+      const isImg=(file.type||'').startsWith('image/');
+      if(!isPdf&&!isImg){ failed.push(`${file.name} (not an image or PDF)`); continue; }
+      if(isPdf&&file.size>10*1024*1024){ failed.push(`${file.name} (PDF is over 10 MB)`); continue; }
+      const body=isPdf?file:await compressImage(file,2000,0.85);
+      const path=`${licenseId}/${Date.now()}-${Math.random().toString(36).slice(2,8)}.${isPdf?'pdf':'jpg'}`;
+      const {error}=await sb.storage.from(LIC_BUCKET).upload(path,body,{contentType:isPdf?'application/pdf':'image/jpeg'});
+      if(error){ failed.push(`${file.name} (${error.message})`); continue; }
+      const {error:e2}=await sb.from('license_docs').insert({license_id:licenseId,renewal_id:renewalId||null,storage_path:path,file_name:file.name,kind:isPdf?'pdf':'image'});
+      if(e2){ await sb.storage.from(LIC_BUCKET).remove([path]); failed.push(`${file.name} (${e2.message})`); continue; }
+      ok++;
+    }catch(e){ failed.push(`${file.name} (${e.message})`); }
+  }
+  return {ok,failed};
+}
+
+// Shared "Renew" popup — used on the Licenses page and inside My Tasks.
+function RenewModal({lic,onClose,onDone}){
+  const [newExpiry,setNewExpiry]=useState('');
+  const [notes,setNotes]=useState('');
+  const [cost,setCost]=useState('');
+  const [files,setFiles]=useState([]);
+  const [saving,setSaving]=useState(false);
+
+  const submit=async()=>{
+    if(!newExpiry) return alert('Enter the new expiry date exactly as printed on the renewed document.');
+    if(newExpiry<=today) return alert('The new expiry date must be in the future.');
+    if(lic.expiry_date&&newExpiry<=lic.expiry_date&&!confirm(`The new expiry (${newExpiry}) is not later than the current expiry (${lic.expiry_date}). Continue anyway?`)) return;
+    if(files.length===0) return alert('Upload the renewed certificate (photo or PDF) before saving.');
+    setSaving(true);
+    const {data:{user}}=await sb.auth.getUser();
+    const {data:ren,error}=await sb.from('license_renewals').insert({license_id:lic.id,previous_expiry:lic.expiry_date,new_expiry:newExpiry,renewed_by:user?.email||null,notes:notes.trim()||null,cost:cost===''?null:Number(cost)}).select().single();
+    if(error){ alert(error.message); setSaving(false); return; }
+    const {ok,failed}=await uploadLicenseFiles(lic.id,ren.id,files);
+    if(ok===0){
+      await sb.from('license_renewals').delete().eq('id',ren.id);
+      alert('No document could be uploaded, so the renewal was NOT saved.\n'+failed.join('\n'));
+      setSaving(false); return;
+    }
+    const {error:ue}=await sb.from('licenses').update({expiry_date:newExpiry}).eq('id',lic.id);
+    if(ue){ alert('The document was saved, but the expiry date could not be updated: '+ue.message+'\nPlease try again.'); setSaving(false); return; }
+    if(failed.length) alert('Renewed, but these files failed to upload:\n'+failed.join('\n'));
+    logActivity('Licenses','update',`Renewed — ${lic.name}: new expiry ${newExpiry}`);
+    setSaving(false); onDone();
+  };
+
+  return(<div className="modal-overlay">
+    <div className="card" style={{maxWidth:480,width:'100%',maxHeight:'90vh',overflowY:'auto'}}>
+      <div className="section-label">Renew — {lic.name}</div>
+      <div style={{fontSize:12,color:'var(--muted)',marginBottom:12}}>Current expiry: <strong>{lic.expiry_date}</strong>. The expiry date only changes after the new document has been uploaded.</div>
+      <div style={{display:'flex',flexDirection:'column',gap:12}}>
+        <Field label="New expiry date ★ (as printed on the new document)"><input type="date" className="form-input" min={today} value={newExpiry} onChange={e=>setNewExpiry(e.target.value)}/></Field>
+        <Field label="Renewed certificate ★ (photos or PDF)"><input type="file" accept="image/*,application/pdf" multiple className="form-input" onChange={e=>setFiles(Array.from(e.target.files||[]))}/></Field>
+        {files.length>0&&<div style={{fontSize:12,color:'var(--muted)'}}>{files.length} file{files.length===1?'':'s'} selected.</div>}
+        <Field label="Renewal cost (₹) — optional"><input type="number" className="form-input" value={cost} onChange={e=>setCost(e.target.value)}/></Field>
+        <Field label="Notes — optional"><input className="form-input" value={notes} onChange={e=>setNotes(e.target.value)}/></Field>
+      </div>
+      <div className="form-actions">
+        <button className="btn btn-green" onClick={submit} disabled={saving}>{saving?'Saving…':'Save renewal'}</button>
+        <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+      </div>
+    </div>
+  </div>);
+}
+
+// Shown at the top of My Tasks.
+function RenewalAlerts({employeeId,role,onRenewed}){
+  const [list,setList]=useState([]);
+  const [loaded,setLoaded]=useState(false);
+  const [renewing,setRenewing]=useState(null);
+  const load=useCallback(async()=>{
+    const {data}=await sb.from('licenses').select('*').eq('status','Active');
+    setList(licAlertsFor(data||[],employeeId,role)); setLoaded(true);
+  },[employeeId,role]);
+  useEffect(()=>{load();},[load]);
+  if(!loaded||list.length===0) return null;
+  return(<div style={{marginBottom:24}}>
+    <div className="section-label">Renewals needing action ({list.length})</div>
+    {list.map(a=>{
+      const l=a.lic;
+      const col=LIC_STAGE_COL[a.stage];
+      const who=a.as==='assignee'
+        ?'You are the person in charge of this renewal.'
+        :a.as==='manager'
+          ?`Escalated to you as manager — ${l.assigned_to_name||'the person in charge'} has not renewed it yet.`
+          :`Escalated to the Director — ${l.assigned_to_name||'the person in charge'} and ${l.manager_name||'the manager'} have not renewed it yet.`;
+      return(<div key={l.id} className="card" style={{marginBottom:12,borderLeft:`4px solid ${col}`}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:200}}>
+            <div style={{fontSize:15,fontWeight:600}}>🔔 Renew: {l.name}</div>
+            <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{[l.category,l.license_no,l.issuing_authority].filter(Boolean).join(' · ')}</div>
+            <div style={{fontSize:13,marginTop:6,color:col,fontWeight:500}}>{licDaysText(a.daysLeft)} (expiry {l.expiry_date})</div>
+            <div style={{fontSize:12,marginTop:4}}>{who}</div>
+          </div>
+          <div><button className="btn btn-green btn-sm" onClick={()=>setRenewing(l)}>Renew &amp; upload</button></div>
+        </div>
+      </div>);
+    })}
+    {renewing&&<RenewModal lic={renewing} onClose={()=>setRenewing(null)} onDone={()=>{ setRenewing(null); load(); if(onRenewed) onRenewed(); }}/>}
+  </div>);
+}
+
+function Licenses({role,userEmail,onChanged}){
+  const isDirector=role==='director';
+  const [licenses,setLicenses]=useState([]);
+  const [docs,setDocs]=useState([]);
+  const [renewals,setRenewals]=useState([]);
+  const [employees,setEmployees]=useState([]);
+  const [appUsers,setAppUsers]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [filter,setFilter]=useState('Active');
+  const [search,setSearch]=useState('');
+  const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const [newFiles,setNewFiles]=useState([]);
+  const [fileKey,setFileKey]=useState(0);
+  const [renewing,setRenewing]=useState(null);
+  const [history,setHistory]=useState(null);
+  const [viewerUrl,setViewerUrl]=useState(null);
+  const blank={name:'',category:'License',license_no:'',issuing_authority:'',frequency:'Annual',issue_date:'',expiry_date:'',assigned_to_id:'',manager_id:'',remind_days:30,manager_days:10,director_days:10,notes:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const changed=()=>{ if(onChanged) onChanged(); };
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    const [{data:emps},{data:au},{data:l},{data:d},{data:r}]=await Promise.all([
+      sb.from(EMP_TABLE).select('*').range(0,4999),
+      sb.from('app_users').select('*'),
+      sb.from('licenses').select('*').order('expiry_date'),
+      sb.from('license_docs').select('*').order('created_at'),
+      sb.from('license_renewals').select('*').order('created_at',{ascending:false}),
+    ]);
+    setEmployees(emps||[]); setAppUsers(au||[]); setLicenses(l||[]); setDocs(d||[]); setRenewals(r||[]); setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const resetForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); setNewFiles([]); setFileKey(k=>k+1); };
+  const startAdd=()=>{ setEditingId(null); setForm(blank); setNewFiles([]); setFileKey(k=>k+1); setShowForm(true); };
+  const startEdit=(l)=>{
+    setEditingId(l.id);
+    setForm({name:l.name||'',category:l.category||'License',license_no:l.license_no||'',issuing_authority:l.issuing_authority||'',frequency:l.frequency||'Annual',issue_date:l.issue_date||'',expiry_date:l.expiry_date||'',assigned_to_id:l.assigned_to_id||'',manager_id:l.manager_id||'',remind_days:l.remind_days,manager_days:l.manager_days,director_days:l.director_days,notes:l.notes||''});
+    setNewFiles([]); setFileKey(k=>k+1); setShowForm(true);
+  };
+
+  const empNameById=(id)=>{ const e=employees.find(x=>String(x.id)===String(id)); return e?empName(e):''; };
+  const linked=new Set(appUsers.filter(u=>u.employee_id!==null&&u.employee_id!==undefined).map(u=>String(u.employee_id)));
+  const noLogin=(id)=>!!id&&!linked.has(String(id));
+
+  const save=async()=>{
+    if(!form.name.trim()) return alert('Name is required.');
+    if(!form.expiry_date) return alert('Expiry date is required.');
+    if(!form.assigned_to_id) return alert('Select the person in charge of renewing.');
+    if(!form.manager_id) return alert('Select the manager the alert escalates to.');
+    const r=Number(form.remind_days), m=Number(form.manager_days), d=Number(form.director_days);
+    if(!Number.isInteger(r)||r<1) return alert('"Alert before expiry" must be a whole number of days, at least 1.');
+    if(!Number.isInteger(m)||m<0||!Number.isInteger(d)||d<0) return alert('Escalation days must be whole numbers (0 or more).');
+    if(m+d>r&&!confirm(`The manager and Director days add up to more than ${r}, so the Director alert would only start AFTER the expiry date. Continue anyway?`)) return;
+    if(form.assigned_to_id===form.manager_id&&!confirm('The person in charge and the manager are the same person, so escalation adds nobody new until it reaches the Director. Continue anyway?')) return;
+    const unl=[form.assigned_to_id,form.manager_id].filter(id=>noLogin(id)).map(id=>empNameById(id)||'Unknown');
+    if(unl.length&&!confirm(`No login is linked to: ${unl.join(', ')}.\n\nThey will NOT see any alert in My Tasks until the Director links their login in the HR portal. Save anyway?`)) return;
+    const orig=editingId?licenses.find(x=>x.id===editingId):null;
+    if(orig&&isDirector&&orig.expiry_date!==form.expiry_date&&!confirm(`You are changing the expiry date from ${orig.expiry_date} to ${form.expiry_date} directly, without a renewal document. Use "Renew" for real renewals; edit the date only to correct a typing mistake. Continue?`)) return;
+    setSaving(true);
+    const {data:{user}}=await sb.auth.getUser();
+    const payload={name:form.name.trim(),category:form.category,license_no:form.license_no.trim()||null,issuing_authority:form.issuing_authority.trim()||null,frequency:form.frequency,issue_date:form.issue_date||null,assigned_to_id:String(form.assigned_to_id),assigned_to_name:empNameById(form.assigned_to_id)||null,manager_id:String(form.manager_id),manager_name:empNameById(form.manager_id)||null,remind_days:r,manager_days:m,director_days:d,notes:form.notes.trim()||null};
+    if(!editingId||isDirector) payload.expiry_date=form.expiry_date;
+    if(editingId){
+      const {error}=await sb.from('licenses').update(payload).eq('id',editingId);
+      if(error){ alert(error.message); setSaving(false); return; }
+      logActivity('Licenses','update',`Edited — ${payload.name}${orig&&orig.expiry_date!==payload.expiry_date&&payload.expiry_date?` (expiry ${orig.expiry_date} → ${payload.expiry_date})`:''}${orig&&String(orig.assigned_to_id||'')!==payload.assigned_to_id?` (person in charge → ${payload.assigned_to_name})`:''}`);
+    } else {
+      const {data:ins,error}=await sb.from('licenses').insert({...payload,status:'Active',created_by:user?.email||userEmail||null}).select().single();
+      if(error){ alert(error.message); setSaving(false); return; }
+      if(newFiles.length){
+        const res=await uploadLicenseFiles(ins.id,null,newFiles);
+        if(res.failed.length) alert('Saved, but these files failed to upload:\n'+res.failed.join('\n'));
+      }
+      logActivity('Licenses','create',`New — ${payload.name}, expires ${payload.expiry_date}`);
+    }
+    setSaving(false); resetForm(); load(); changed();
+  };
+
+  const openDoc=async(d)=>{
+    const w=d.kind==='pdf'?window.open('','_blank'):null;
+    const {data,error}=await sb.storage.from(LIC_BUCKET).createSignedUrl(d.storage_path,300);
+    if(error||!data||!data.signedUrl){ if(w) w.close(); return alert('Could not open the file: '+(error?error.message:'unknown error')); }
+    if(d.kind==='pdf'){ if(w) w.location.href=data.signedUrl; else window.open(data.signedUrl,'_blank'); }
+    else setViewerUrl(data.signedUrl);
+  };
+
+  const addFiles=async(l,fileList)=>{
+    const files=Array.from(fileList||[]);
+    if(!files.length) return;
+    const latest=renewals.find(r=>r.license_id===l.id);
+    const {ok,failed}=await uploadLicenseFiles(l.id,latest?latest.id:null,files);
+    if(failed.length) alert('These files failed to upload:\n'+failed.join('\n'));
+    if(ok) logActivity('Licenses','update',`${ok} file${ok===1?'':'s'} added — ${l.name}`);
+    load();
+  };
+
+  const delDoc=async(d,l)=>{
+    if(!isDirector) return alert('Only a Director can delete documents.');
+    if(!confirm(`Delete "${d.file_name||'this file'}" from ${l.name}? This cannot be undone.`)) return;
+    const {error:se}=await sb.storage.from(LIC_BUCKET).remove([d.storage_path]);
+    if(se) return alert('Could not delete the file: '+se.message);
+    await sb.from('license_docs').delete().eq('id',d.id);
+    logActivity('Licenses','delete',`File deleted — ${d.file_name||''} from ${l.name}`);
+    load();
+  };
+
+  const setArchived=async(l,archive)=>{
+    if(!isDirector) return alert('Only a Director can archive or restore a record.');
+    if(archive&&!confirm(`Archive "${l.name}"? All alerts for it will stop.`)) return;
+    const {error}=await sb.from('licenses').update({status:archive?'Archived':'Active'}).eq('id',l.id);
+    if(error) return alert(error.message);
+    logActivity('Licenses','update',`${archive?'Archived':'Restored'} — ${l.name}`);
+    load(); changed();
+  };
+
+  const deleteLicense=async(l)=>{
+    if(!isDirector) return alert('Only a Director can delete a record.');
+    if(!confirm(`Permanently delete "${l.name}", its renewal history and ALL its uploaded documents?\n\nThis cannot be undone. If it is simply no longer needed, use Archive instead.`)) return;
+    const paths=docs.filter(d=>d.license_id===l.id).map(d=>d.storage_path);
+    if(paths.length){
+      const {error:se}=await sb.storage.from(LIC_BUCKET).remove(paths);
+      if(se) return alert('Could not delete the files: '+se.message);
+    }
+    const {error}=await sb.from('licenses').delete().eq('id',l.id);
+    if(error) return alert('Could not delete: '+error.message);
+    logActivity('Licenses','delete',`Deleted — ${l.name}`);
+    load(); changed();
+  };
+
+  if(loading) return <Loading/>;
+
+  const activeEmps=employees.filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b)));
+  const rows=licenses.map(l=>({l,...licInfo(l)}));
+  const activeRows=rows.filter(x=>x.l.status==='Active');
+  const dueSoonN=activeRows.filter(x=>x.stage>=1&&x.daysLeft>=0).length;
+  const expiredN=activeRows.filter(x=>x.daysLeft<0).length;
+  const escalatedN=activeRows.filter(x=>x.stage>=2).length;
+  const q=search.trim().toLowerCase();
+  const visible=rows.filter(x=>{
+    const l=x.l;
+    if(filter==='Active'&&l.status!=='Active') return false;
+    if(filter==='Archived'&&l.status!=='Archived') return false;
+    if(filter==='Due soon'&&!(l.status==='Active'&&x.stage>=1&&x.daysLeft>=0)) return false;
+    if(filter==='Expired'&&!(l.status==='Active'&&x.daysLeft<0)) return false;
+    if(q&&!`${l.name} ${l.license_no||''} ${l.issuing_authority||''} ${l.category||''} ${l.assigned_to_name||''}`.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a,b)=>(a.l.expiry_date||'9999').localeCompare(b.l.expiry_date||'9999'));
+
+  const empSelect=(key,label)=>(
+    <Field label={label}>
+      <select className="form-input" value={form[key]} onChange={e=>f(key,e.target.value)}>
+        <option value="">-- Select person --</option>
+        {form[key]&&!activeEmps.some(e=>String(e.id)===String(form[key]))&&<option value={form[key]}>{empNameById(form[key])||'Unknown'} (inactive)</option>}
+        {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+      </select>
+      {noLogin(form[key])&&<div style={{fontSize:11,color:'var(--red)',marginTop:4}}>⚠ No login is linked to this employee — they will not see the alert.</div>}
+    </Field>
+  );
+
+  const pr=Number(form.remind_days)||0, pm=Number(form.manager_days)||0, pd=Number(form.director_days)||0;
+  const preview=form.expiry_date?`Alerts will start: person in charge ${licShift(form.expiry_date,-pr)} · manager ${licShift(form.expiry_date,-(pr-pm))} · Director ${licShift(form.expiry_date,-(pr-pm-pd))}`:'';
+
+  const docChip=(d,l)=>(
+    <span key={d.id} style={{display:'inline-flex',gap:2,marginRight:6,marginBottom:6}}>
+      <button className="btn btn-ghost btn-sm" style={{maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} onClick={()=>openDoc(d)}>{d.kind==='pdf'?'📄':'🖼️'} {d.file_name||'file'}</button>
+      {isDirector&&<button className="btn btn-red btn-sm" onClick={()=>delDoc(d,l)}>✕</button>}
+    </span>
+  );
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Compliance</div>
+        <div className="page-title">Licenses &amp; renewals</div>
+      </div>
+      <button className="btn btn-amber" onClick={startAdd}>+ New license / certificate</button>
+    </div>
+
+    <div className="stat-grid">
+      <StatCard label="Active" value={activeRows.length} col="var(--blue)"/>
+      <StatCard label="Due soon" value={dueSoonN} col={dueSoonN>0?'var(--amber)':'var(--green)'}/>
+      <StatCard label="Expired" value={expiredN} col={expiredN>0?'var(--red)':'var(--green)'}/>
+      <StatCard label="Escalated" value={escalatedN} col={escalatedN>0?'var(--red)':'var(--green)'}/>
+    </div>
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:12}}>
+      {['Active','Due soon','Expired','Archived','All'].map(s=><button key={s} className={`btn btn-sm ${filter===s?'btn-amber':'btn-ghost'}`} onClick={()=>setFilter(s)}>{s}</button>)}
+      <input style={{width:220}} placeholder="Search name, number, authority…" value={search} onChange={e=>setSearch(e.target.value)}/>
+    </div>
+
+    {visible.length===0&&<div className="card"><Empty msg="Nothing to show in this view."/></div>}
+
+    {visible.map(x=>{
+      const l=x.l;
+      const isActive=l.status==='Active';
+      const latest=renewals.find(r=>r.license_id===l.id);
+      const rens=renewals.filter(r=>r.license_id===l.id);
+      const curDocs=docs.filter(d=>d.license_id===l.id&&(latest?d.renewal_id===latest.id:!d.renewal_id));
+      const col=LIC_STAGE_COL[x.stage];
+      const asg=employees.find(e=>String(e.id)===String(l.assigned_to_id));
+      const mgr=employees.find(e=>String(e.id)===String(l.manager_id));
+      const r=Number(l.remind_days)||0, m=Number(l.manager_days)||0, d=Number(l.director_days)||0;
+      return(<div key={l.id} className="card" style={{marginBottom:14,borderLeft:`4px solid ${isActive?col:'var(--border2)'}`,opacity:isActive?1:0.7}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:220}}>
+            <div style={{fontSize:16,fontWeight:600}}>{l.name}</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+              <span className="badge badge-blue">{l.category}</span>
+              {l.frequency&&<span className="badge badge-muted">{l.frequency}</span>}
+              {!isActive&&<span className="badge badge-muted">Archived</span>}
+              {isActive&&x.daysLeft<0&&<span className="badge badge-red">Expired</span>}
+              {isActive&&x.daysLeft>=0&&x.stage>=1&&<span className="badge" style={{background:`color-mix(in srgb, ${col} 18%, transparent)`,color:col}}>{LIC_STAGE_LABEL[x.stage]}</span>}
+            </div>
+          </div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'flex-start'}}>
+            {isActive&&<button className="btn btn-green btn-sm" onClick={()=>setRenewing(l)}>Renew</button>}
+            <button className="btn btn-blue btn-sm" onClick={()=>startEdit(l)}>Edit</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setHistory(history===l.id?null:l.id)}>{history===l.id?'Hide history':'History'}</button>
+            {isDirector&&(isActive
+              ?<button className="btn btn-ghost btn-sm" onClick={()=>setArchived(l,true)}>Archive</button>
+              :<button className="btn btn-ghost btn-sm" onClick={()=>setArchived(l,false)}>Restore</button>)}
+            {isDirector&&<button className="btn btn-red btn-sm" onClick={()=>deleteLicense(l)}>✕</button>}
+          </div>
+        </div>
+
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:10,fontSize:12,color:'var(--muted)'}}>
+          {l.license_no&&<span>No. {l.license_no}</span>}
+          {l.issuing_authority&&<span>🏛 {l.issuing_authority}</span>}
+          {l.issue_date&&<span>Issued {l.issue_date}</span>}
+          <span style={{color:isActive?(x.daysLeft<0?'var(--red)':x.stage>=1?col:'var(--muted)'):'var(--muted)',fontWeight:500}}>⏰ Expires {l.expiry_date} · {licDaysText(x.daysLeft)}</span>
+          <span>👤 {l.assigned_to_name||'—'}{asg&&!empIsActive(asg)&&<strong style={{color:'var(--red)'}}> (no longer active — reassign!)</strong>}</span>
+          <span>🧑‍💼 Manager: {l.manager_name||'—'}{mgr&&!empIsActive(mgr)&&<strong style={{color:'var(--red)'}}> (no longer active — reassign!)</strong>}</span>
+        </div>
+        {isActive&&<div style={{fontSize:11,color:'var(--dim)',marginTop:6}}>Alerts: person in charge from {licShift(l.expiry_date,-r)} · manager from {licShift(l.expiry_date,-(r-m))} · Director from {licShift(l.expiry_date,-(r-m-d))}</div>}
+        {l.notes&&<div style={{fontSize:13,marginTop:8,whiteSpace:'pre-wrap'}}>{l.notes}</div>}
+
+        <div style={{marginTop:10}}>
+          <div className="form-label" style={{marginBottom:6}}>Current document{curDocs.length===1?'':'s'}</div>
+          {curDocs.length===0&&<div style={{fontSize:12,color:'var(--red)',marginBottom:6}}>⚠ No document on file</div>}
+          <div>
+            {curDocs.map(dd=>docChip(dd,l))}
+            <label className="btn btn-ghost btn-sm" style={{display:'inline-block',marginBottom:6,cursor:'pointer'}}>
+              + Add file
+              <input type="file" accept="image/*,application/pdf" multiple style={{display:'none'}} onChange={e=>{ addFiles(l,e.target.files); e.target.value=''; }}/>
+            </label>
+          </div>
+        </div>
+
+        {history===l.id&&(<div style={{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)'}}>
+          <div className="form-label" style={{marginBottom:6}}>Renewal history</div>
+          {rens.length===0&&<div className="dim" style={{fontSize:12}}>Not renewed through the app yet.</div>}
+          {rens.map(rn=>(<div key={rn.id} style={{fontSize:12,marginBottom:8}}>
+            <strong>{(rn.created_at||'').slice(0,10)}</strong> — expiry {rn.previous_expiry||'—'} → <strong>{rn.new_expiry}</strong> · by {rn.renewed_by||'—'}{rn.cost!==null&&rn.cost!==undefined?` · ₹${fmt(rn.cost)}`:''}{rn.notes?` · ${rn.notes}`:''}
+            <div style={{marginTop:4}}>{docs.filter(dd=>dd.renewal_id===rn.id).map(dd=>docChip(dd,l))}</div>
+          </div>))}
+          {docs.some(dd=>dd.license_id===l.id&&!dd.renewal_id)&&(<div style={{fontSize:12,marginBottom:8}}>
+            <strong>Original document{docs.filter(dd=>dd.license_id===l.id&&!dd.renewal_id).length===1?'':'s'}</strong>
+            <div style={{marginTop:4}}>{docs.filter(dd=>dd.license_id===l.id&&!dd.renewal_id).map(dd=>docChip(dd,l))}</div>
+          </div>)}
+          <div style={{fontSize:11,color:'var(--dim)'}}>Created {(l.created_at||'').slice(0,10)}{l.created_by?` by ${l.created_by}`:''}</div>
+        </div>)}
+      </div>);
+    })}
+
+    {showForm&&(
+      <div className="modal-overlay">
+        <div style={{maxWidth:720,width:'100%',maxHeight:'92vh',overflowY:'auto'}}>
+          <FormCard title={editingId?'Edit license / certificate':'New license / certificate'} col="var(--amber)" onSave={save} onCancel={resetForm} saving={saving}>
+            <div className="form-grid">
+              <Field label="Name ★"><input className="form-input" value={form.name} onChange={e=>f('name',e.target.value)} placeholder="e.g. FSSAI License"/></Field>
+              <Field label="Category"><select className="form-input" value={form.category} onChange={e=>f('category',e.target.value)}>{LIC_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+              <Field label="License / certificate no."><input className="form-input" value={form.license_no} onChange={e=>f('license_no',e.target.value)}/></Field>
+              <Field label="Issuing authority"><input className="form-input" value={form.issuing_authority} onChange={e=>f('issuing_authority',e.target.value)}/></Field>
+              <Field label="Renews"><select className="form-input" value={form.frequency} onChange={e=>f('frequency',e.target.value)}>{LIC_FREQUENCIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+              <Field label="Issue date"><input type="date" className="form-input" value={form.issue_date} onChange={e=>f('issue_date',e.target.value)}/></Field>
+              <Field label={editingId&&!isDirector?'Expiry date (use Renew to change)':'Expiry date ★'}><input type="date" className="form-input" value={form.expiry_date} disabled={!!editingId&&!isDirector} onChange={e=>f('expiry_date',e.target.value)}/></Field>
+            </div>
+            <div className="divider"/>
+            <div className="section-label">Who gets the alerts</div>
+            <div className="form-grid">
+              {empSelect('assigned_to_id','Person in charge ★')}
+              {empSelect('manager_id','Manager (escalation) ★')}
+              <Field label="Alert person in charge ★ (days before expiry)"><input type="number" min="1" className="form-input" value={form.remind_days} onChange={e=>f('remind_days',e.target.value)}/></Field>
+              <Field label="Escalate to manager after (more days)"><input type="number" min="0" className="form-input" value={form.manager_days} onChange={e=>f('manager_days',e.target.value)}/></Field>
+              <Field label="Escalate to Director after (more days)"><input type="number" min="0" className="form-input" value={form.director_days} onChange={e=>f('director_days',e.target.value)}/></Field>
+            </div>
+            {preview&&<div style={{marginTop:10,fontSize:12,color:'var(--blue)'}}>{preview}</div>}
+            <div style={{marginTop:4,fontSize:11,color:'var(--muted)'}}>Director alerts go to every user with the Director role.</div>
+            <div style={{marginTop:12}}>
+              <Field label="Notes"><textarea className="form-input" rows={2} value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
+            </div>
+            {!editingId&&(<div style={{marginTop:12}}>
+              <Field label="Certificate photos / PDF"><input key={fileKey} type="file" accept="image/*,application/pdf" multiple className="form-input" onChange={e=>setNewFiles(Array.from(e.target.files||[]))}/></Field>
+              {newFiles.length>0&&<div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>{newFiles.length} file{newFiles.length===1?'':'s'} selected.</div>}
+            </div>)}
+          </FormCard>
+        </div>
+      </div>
+    )}
+
+    {renewing&&<RenewModal lic={renewing} onClose={()=>setRenewing(null)} onDone={()=>{ setRenewing(null); load(); changed(); }}/>}
+
+    {viewerUrl&&(
+      <div className="modal-overlay" onClick={()=>setViewerUrl(null)} style={{cursor:'zoom-out'}}>
+        <img src={viewerUrl} alt="" style={{maxWidth:'100%',maxHeight:'92vh',borderRadius:8,background:'#fff'}}/>
+      </div>
+    )}
+  </div>);
+}
+
 const titleCase=(s)=>String(s||'').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
 
 function TaskBadge({n,compact}){
@@ -4380,6 +4851,8 @@ function App(){
   const [myOpenCount,setMyOpenCount]=useState(null);
   const [myName,setMyName]=useState('');
   const [pendingCounts,setPendingCounts]=useState(0);
+    const [renewalCount,setRenewalCount]=useState(0);
+  const [renewalTick,setRenewalTick]=useState(0);
   useEffect(()=>{
     if(!access||access.role!=='director'){ setPendingCounts(0); return; }
     let cancelled=false;
@@ -4410,6 +4883,18 @@ function App(){
   },[access?.employee_id]);
 
   useEffect(()=>{
+    if(!access||!access.role||access.role==='pending'){ setRenewalCount(0); return; }
+    let cancelled=false;
+    const fetchRenewals=async()=>{
+      const {data,error}=await sb.from('licenses').select('*').eq('status','Active');
+      if(!cancelled&&!error) setRenewalCount(licAlertsFor(data||[],access.employee_id,access.role).length);
+    };
+    fetchRenewals();
+    const t=setInterval(fetchRenewals,60000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.employee_id,access?.role,renewalTick]);
+
+  useEffect(()=>{
     sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setAuthLoading(false);});
     sb.auth.onAuthStateChange((_,session)=>setUser(session?.user??null));
   },[]);
@@ -4429,7 +4914,7 @@ function App(){
   const firstName=displayName.split(' ')[0];
   const activeTab=isViewer?'my-tasks':tab;
   const navItems=isViewer?MY_WORK_NAV:[...MY_WORK_NAV,...NAV];
-  const myTasksView=<MyTasks employeeId={access.employee_id} onCount={setMyOpenCount}/>;
+  const myTasksView=<MyTasks employeeId={access.employee_id} onCount={setMyOpenCount} role={access.role} onRenewed={()=>setRenewalTick(x=>x+1)}/>;
 
   const VIEWS={
     'dashboard':<Dashboard name={firstName}/>,
@@ -4452,13 +4937,14 @@ function App(){
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
     'job-cards':<JobCards/>,
+        'licenses':<Licenses role={access.role} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
     'my-tasks':myTasksView,
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
   };
 
   return(<div className="app">
     <div className="mobile-bar">
-      <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰{myOpenCount>0&&<TaskBadge n={myOpenCount} compact/>}</button>
+      <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰{((myOpenCount||0)+renewalCount)>0&&<TaskBadge n={(myOpenCount||0)+renewalCount} compact/>}</button>
       <div>
         <div style={{fontFamily:'var(--mono)',fontSize:11,fontWeight:700,letterSpacing:'.15em',color:'var(--amber)'}}>PRFM</div>
         <div style={{fontSize:12,color:'var(--muted)'}}>{(navItems.find(n=>n.id===activeTab)||{}).label||'Mill Operations'} · {firstName}</div>
@@ -4480,7 +4966,7 @@ function App(){
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
         return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
-          <span className="icon">{item.icon}</span>{item.label}{item.id==='my-tasks'&&myOpenCount!==null&&<TaskBadge n={myOpenCount}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
+          <span className="icon">{item.icon}</span>{item.label}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&<TaskBadge n={(myOpenCount||0)+renewalCount}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
         </button>);
       })}
       <div className="sidebar-footer">
