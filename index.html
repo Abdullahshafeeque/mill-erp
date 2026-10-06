@@ -3508,23 +3508,13 @@ function ProductionSettings(){
   };
 
   const truncateStock=async()=>{
-    const pw=prompt('This will set ALL stock to zero across the entire system. Enter the password to confirm:');
-    if(pw===null) return;
-    if(pw!=='Abdu@1998'){ alert('Incorrect password. Nothing was changed.'); return; }
-    if(!confirm('Final confirmation: this will zero out ALL raw material, scheme, finished-goods and store stock. This cannot be undone. Proceed?')) return;
+    const phrase=prompt('This will set ALL stock to zero across the entire system and cannot be undone.\n\nType ZERO ALL STOCK to confirm:');
+    if(phrase===null) return;
+    if(phrase.trim()!=='ZERO ALL STOCK'){ alert('Phrase did not match. Nothing was changed.'); return; }
 
     setTruncating(true);
-    const nowIso=new Date().toISOString();
-    const [{error:e1},{error:e2},{error:e3},{error:e4}]=await Promise.all([
-      sb.from('current_stock').update({qty_bags:0,updated_at:nowIso}).gte('qty_bags',-999999999),
-      sb.from('raw_material_stock').update({qty_kg:0,updated_at:nowIso}).gte('qty_kg',-999999999),
-      sb.from('raw_material_scheme_stock').update({qty_kg:0,updated_at:nowIso}).gte('qty_kg',-999999999),
-      sb.from('store_stock').update({qty:0,updated_at:nowIso}).gte('qty',-999999999),
-    ]);
-    const err=e1||e2||e3||e4;
-    if(err){ alert('Error while truncating: '+err.message); setTruncating(false); return; }
-
-    logActivity('Settings','update','ALL STOCK TRUNCATED TO ZERO');
+    const {error}=await sb.rpc('truncate_all_stock');
+    if(error){ alert('Could not truncate stock: '+error.message); setTruncating(false); return; }
     setTruncating(false);
     alert('All stock has been set to zero.');
   };
