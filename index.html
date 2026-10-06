@@ -1695,6 +1695,8 @@ function LiftingOrders(){
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
   const blank={order_no:'',order_date:today,material_id:'',scheme:'',allotted_kg:'',deadline:'',notes:''};
+  const [editingId,setEditingId]=useState(null);
+  const [editLocked,setEditLocked]=useState(0);
   const [S,setS]=useState(LIFT_DEFAULTS);
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
@@ -1717,12 +1719,40 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
     if(!form.order_no||!form.material_id||!form.scheme||!form.allotted_kg) return alert('Order no., material, scheme and allotted quantity required.');
     if(S.require_deadline&&!form.deadline) return alert('Deadline is required.');
     if(form.deadline&&form.deadline<form.order_date) return alert('The deadline cannot be before the order date.');
+    if(Number(form.allotted_kg)<=0) return alert('Allotted quantity must be above 0.');
+
+    if(editingId){
+      const orig=orders.find(x=>x.id===editingId);
+      if(!orig) return alert('This order could not be found. Reload the page and try again.');
+      if(Number(form.allotted_kg)<Number(orig.lifted_kg)) return alert(`Allotted quantity cannot be below the quantity already lifted (${fmtMT(orig.lifted_kg)}).`);
+      if(editLocked>0&&(form.material_id!==orig.material_id||form.scheme!==orig.scheme)) return alert('Material and scheme cannot be changed after stock has been received against this order.');
+      if(orders.some(x=>x.id!==editingId&&x.order_no===form.order_no)&&!confirm(`Another lifting order already uses the number "${form.order_no}". Save anyway?`)) return;
+      setSaving(true);
+      const upd={order_no:form.order_no,order_date:form.order_date,material_id:form.material_id,scheme:form.scheme,allotted_kg:Number(form.allotted_kg),deadline:form.deadline||null,notes:form.notes};
+      const {data,error}=await sb.from('lifting_orders').update(upd).eq('id',editingId).select('*, material:material_id(*)').single();
+      if(error){alert(error.message);setSaving(false);return;}
+      setOrders(p=>p.map(x=>x.id===editingId?data:x));
+      logActivity('Lifting Orders','update',`Edited ${form.order_no} — ${form.allotted_kg}kg, deadline ${form.deadline||'none'}`);
+      setSaving(false); closeForm();
+      return;
+    }
+
     setSaving(true);
     const row={order_no:form.order_no,order_date:form.order_date,material_id:form.material_id,scheme:form.scheme,allotted_kg:Number(form.allotted_kg),lifted_kg:0,deadline:form.deadline||null,notes:form.notes};
     const {data,error}=await sb.from('lifting_orders').insert(row).select('*, material:material_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
-    setOrders(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
+    setOrders(p=>[data,...p]); closeForm(); setSaving(false);
     logActivity('Lifting Orders','create',`${form.order_no} — ${form.allotted_kg}kg ${selectedMaterial?.product_name} (${form.scheme})`);
+  };
+
+  const closeForm=()=>{ setForm(blank); setEditingId(null); setEditLocked(0); setShowForm(false); };
+
+  const startEdit=async(o)=>{
+    const {count}=await sb.from('fci_inwards').select('id',{count:'exact',head:true}).eq('lifting_order_id',o.id);
+    setEditLocked(Math.max(count||0,Number(o.lifted_kg)>0?1:0));
+    setEditingId(o.id);
+    setForm({order_no:o.order_no||'',order_date:o.order_date||today,material_id:o.material_id||'',scheme:o.scheme||'',allotted_kg:String(o.allotted_kg??''),deadline:o.deadline||'',notes:o.notes||''});
+    setShowForm(true);
   };
 
   const setDeadline=async(o)=>{
@@ -1752,28 +1782,31 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
         <div className="page-label">Raw Materials</div>
         <div className="page-title">Lifting orders</div>
       </div>
-      <button className="btn btn-amber" onClick={()=>{ if(!showForm&&Number(S.default_deadline_days)>0) setForm(p=>({...p,deadline:p.deadline||licShift(p.order_date||today,Number(S.default_deadline_days))})); setShowForm(v=>!v); }}>+ New lifting order</button>
+      <button className="btn btn-amber" onClick={()=>{ if(showForm){ closeForm(); return; } setEditingId(null); setEditLocked(0); setForm({...blank,deadline:Number(S.default_deadline_days)>0?licShift(today,Number(S.default_deadline_days)):''}); setShowForm(true); }}>+ New lifting order</button>
     </div>
 
     {showForm&&(
-      <FormCard title="Register lifting order" col="var(--amber)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+      <FormCard title={editingId?'Edit lifting order':'Register lifting order'} col="var(--amber)" onSave={save} onCancel={closeForm} saving={saving}>
         <div className="form-grid">
           <Field label="Order no. ★"><input className="form-input" value={form.order_no} onChange={e=>f('order_no',e.target.value)}/></Field>
           <Field label="Date"><input type="date" className="form-input" value={form.order_date} onChange={e=>f('order_date',e.target.value)}/></Field>
           <Field label="Raw Material">
-            <select className="form-input" value={form.material_id} onChange={e=>{f('material_id',e.target.value);f('scheme','');}}>
+            <select className="form-input" value={form.material_id} disabled={editLocked>0} onChange={e=>{f('material_id',e.target.value);f('scheme','');}}>
               <option value="">-- Select material --</option>
               {rawMaterials.map(m=><option key={m.id} value={m.id}>{m.product_name}</option>)}
             </select>
           </Field>
           <Field label="Scheme">
-  <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)} disabled={!selectedMaterial}>
+  <select className="form-input" value={form.scheme} onChange={e=>f('scheme',e.target.value)} disabled={!selectedMaterial||editLocked>0}>
     <option value="">{selectedMaterial?'-- Select scheme --':'-- Select material first --'}</option>
     {schemeOptions.map(s=><option key={s}>{s}</option>)}
   </select>
 </Field>
           <Field label="Allotted quantity (kg) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.allotted_kg} onChange={e=>f('allotted_kg',e.target.value)}/></Field>
           <Field label={S.require_deadline?'Lifting deadline ★':'Lifting deadline'}><input type="date" className="form-input" min={form.order_date} value={form.deadline} onChange={e=>f('deadline',e.target.value)}/></Field>
+          {editingId&&<div style={{gridColumn:'1 / -1',fontSize:12,color:editLocked>0?'var(--blue)':'var(--muted)'}}>
+            Already lifted: <strong>{fmtMT((orders.find(x=>x.id===editingId)||{}).lifted_kg)}</strong> (from FCI Inwards, not editable here).{editLocked>0?' Material and scheme are locked because stock has been received against this order.':''}
+          </div>}
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
       </FormCard>
@@ -1803,7 +1836,10 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
               {li.atRisk&&!li.complete&&<div style={{fontSize:11,color:'var(--red)'}}>⚠ above daily capacity</div>}
             </td>
             <td className="mono dim">{o.deadline&&!li.complete?`${fmtMT(li.reqPerDay)}/day${li.trucksPerDay?` · ${li.trucksPerDay} truck${li.trucksPerDay===1?'':'s'}`:''}`:'—'}</td>
-            <td><button className="btn btn-red btn-sm" onClick={()=>del(o)}>✕</button></td>
+            <td><div style={{display:'flex',gap:6}}>
+              <button className="btn btn-blue btn-sm" onClick={()=>startEdit(o)}>Edit</button>
+              <button className="btn btn-red btn-sm" onClick={()=>del(o)}>✕</button>
+            </div></td>
           </tr>);
         })}
       </tbody>
