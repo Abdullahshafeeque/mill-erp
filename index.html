@@ -203,6 +203,40 @@ const NAV = [
 ];
 
 // ══════════════════════════════════════════════════════════
+// ROLE PERMISSIONS  (roles come from app_users.role in the HR portal)
+// ══════════════════════════════════════════════════════════
+const ALL_PAGES='*';
+const ROLE_PAGES={
+  director:ALL_PAGES,
+  manager:['dashboard','timeline','production','dispatch','work-order-tracker','private-dispatch','lifting-orders','returns','fci-inwards','private-inwards','reconciliation','job-cards','licenses','all-stock','store','stock-count','ledger','reports','product-master','depot-settings','lifting-settings','workorder-settings','product-recipes','activity-log','my-tasks'],
+  accountant:['dashboard','timeline','reconciliation','all-stock','ledger','reports','my-tasks'],
+  supervisor:['dashboard','timeline','production','returns','job-cards','all-stock','store','stock-count','my-tasks'],
+  store:['dashboard','all-stock','store','stock-count','fci-inwards','private-inwards','my-tasks'],
+  dispatch:['dashboard','timeline','dispatch','private-dispatch','returns','all-stock','my-tasks'],
+  viewer:['my-tasks'],
+};
+const ROLE_ACTIONS={
+  'production.edit':['director','manager'],
+  'production.delete':['director','manager'],
+  'ledger.view':['director','manager','accountant'],
+  'ledger.write':['director','accountant'],
+  'master.delete':['director'],
+  'record.delete':['director','manager'],
+};
+let CUR_ROLE='';
+const canSeePage=(role,id)=>{ const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
+const can=(role,action)=>(ROLE_ACTIONS[action]||[]).includes(role);
+const allow=(action)=>can(CUR_ROLE,action);
+const visibleNav=(role)=>{
+  const out=[]; let head=null;
+  NAV.forEach(n=>{
+    if(n.section){ head=n; return; }
+    if(canSeePage(role,n.id)){ if(head){ out.push(head); head=null; } out.push(n); }
+  });
+  return out;
+};
+
+// ══════════════════════════════════════════════════════════
 // SHARED COMPONENTS
 // ══════════════════════════════════════════════════════════
 function StatCard({label,value,sub,col='var(--amber)'}){
@@ -531,7 +565,7 @@ function ProductMaster(){
               <td><button className={`btn btn-sm ${p.is_active?'btn-green':'btn-ghost'}`} onClick={()=>toggleActive(p)}>{p.is_active?'Active':'Archived'}</button></td>
               <td><div style={{display:'flex',gap:6}}>
                 <button className="btn btn-blue btn-sm" onClick={()=>startEdit(p)}>Edit</button>
-                <button className="btn btn-red btn-sm" onClick={()=>deleteProduct(p)}>Delete</button>
+                {allow('master.delete') && <button className="btn btn-red btn-sm" onClick={()=>deleteProduct(p)}>Delete</button>}
               </div></td>
             </tr>
           ))}
@@ -1155,8 +1189,8 @@ function Production(){
             <div style={{fontFamily:'var(--mono)',fontSize:12,color:'var(--green)'}}>Total production: {totalMT.toFixed(3)} MT</div>
             {!entryDate && !frozen && (
               <div style={{display:'flex',gap:6}}>
-                <button className="btn btn-blue btn-sm" onClick={()=>editDay(date,dayRows)}>Edit</button>
-                {isLatest && <button className="btn btn-red btn-sm" onClick={()=>deleteDay(date,dayRows)}>Delete</button>}
+                {allow('production.edit') && <button className="btn btn-blue btn-sm" onClick={()=>editDay(date,dayRows)}>Edit</button>}
+                {isLatest && allow('production.delete') && <button className="btn btn-red btn-sm" onClick={()=>deleteDay(date,dayRows)}>Delete</button>}
               </div>
             )}
           </div>
@@ -1886,6 +1920,7 @@ function Returns(){
   };
 
   const del=async(r)=>{
+    if(!allow('record.delete')) return alert('Your role cannot delete records.');
     if(!confirm('Delete this return entry? Stock will be reversed (deducted back).')) return;
     await sb.from('product_returns').delete().eq('id',r.id);
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',r.product_id).maybeSingle();
@@ -2015,6 +2050,7 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
   };
 
   const del=async(r)=>{
+    if(!allow('record.delete')) return alert('Your role cannot delete records.');
     if(!confirm('Delete this receipt? Stock and lifting order balance will be reversed.')) return;
     await sb.from('fci_inwards').delete().eq('id',r.id);
     const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',r.material_id).eq('scheme',r.scheme).maybeSingle();
@@ -2188,6 +2224,7 @@ setEntries(e||[]); setRawMaterials(rm||[]); setLoading(false);
   };
 
   const del=async(e)=>{
+    if(!allow('record.delete')) return alert('Your role cannot delete records.');
     if(!confirm('Delete entry? Stock will be reversed.')) return;
     await sb.from('private_inwards').delete().eq('id',e.id);
     await creditStock(e.material_id, -Number(e.qty_kg));
@@ -2310,6 +2347,7 @@ function Dispatch(){
   };
 
   const delD=async(d)=>{
+    if(!allow('record.delete')) return alert('Your role cannot delete records.');
     if(!confirm('Delete dispatch? Stock will be restored.')) return;
     await sb.from('supplyco_dispatches').delete().eq('id',d.id);
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',d.product_id).maybeSingle();
@@ -2461,6 +2499,7 @@ function PrivateDispatch(){
   };
 
   const del=async(e)=>{
+    if(!allow('record.delete')) return alert('Your role cannot delete records.');
     if(!confirm('Delete entry? Stock will be restored.')) return;
     await sb.from('private_dispatches').delete().eq('id',e.id);
     const qty=e.product?.is_raw_material?Number(e.qty_kg):Number(e.qty_bags);
@@ -2974,7 +3013,8 @@ function Ledger({role,userEmail}){
   const dayRow=days.find(d=>d.date===selDate);
   const submitted=!!(dayRow&&dayRow.submitted);
   const lockMsg=lockReason(selDate);
-  const locked=!!lockMsg;
+  const canWrite=allow('ledger.write');
+  const locked=!!lockMsg||!canWrite;
   const prior=days.filter(d=>d.date<selDate).pop();
   const opening=dayRow?Number(dayRow.opening_balance):(prior?Number(prior.closing_balance):baseOpen);
   const inEntries=entries.filter(e=>e.direction==='in');
@@ -3054,7 +3094,8 @@ function Ledger({role,userEmail}){
         {isDirector&&!frozen&&<button className="btn btn-sm" style={{background:'color-mix(in srgb, var(--purple) 15%, transparent)',color:SEALED,borderColor:'color-mix(in srgb, var(--purple) 30%, transparent)'}} onClick={reopenDay} disabled={saving}>Reopen day (Director)</button>}
       </div>
     )}
-    {locked&&!submitted&&<Alert type="amber" icon="🔒" title="This day is locked" sub={lockMsg}/>}
+    {lockMsg&&!submitted&&<Alert type="amber" icon="🔒" title="This day is locked" sub={lockMsg}/>}
+    {!canWrite&&<Alert type="amber" icon="👁" title="View only" sub="Your role can view the cash book but not change it."/>}
     {outOfSync&&<Alert type="red" icon="⚠" title="Balances for this day are out of sync" sub="Open Settings → Cash Book Settings and click “Rebuild balances”."/>}
 
     <div className="stat-grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))'}}>
@@ -3444,8 +3485,8 @@ function Dashboard({name}){
     <div className="stat-grid">
       <StatCard label="Produced this month" value={prodMT.toFixed(3)+' MT'} sub="all products" col="var(--amber)"/>
       <StatCard label="Dispatched this month" value={fmt(dispBags)+' bags'} sub="to Supplyco" col="var(--green)"/>
-      <StatCard label="Cash in (month)" value={'₹'+fmt(cashIn)} col="var(--green)"/>
-      <StatCard label="Cash out (month)" value={'₹'+fmt(cashOut)} col="var(--red)"/>
+      {allow('ledger.view')&&<StatCard label="Cash in (month)" value={'₹'+fmt(cashIn)} col="var(--green)"/>}
+      {allow('ledger.view')&&<StatCard label="Cash out (month)" value={'₹'+fmt(cashOut)} col="var(--red)"/>}
     </div>
 
     <div style={{marginBottom:24}}>
@@ -6784,11 +6825,11 @@ function App(){
     <div style={{fontSize:13,color:'var(--muted)',marginBottom:20}}>{access.error?access.error:'Your account is waiting for Director approval in the HR portal.'}</div>
     <button className="btn btn-ghost" onClick={()=>sb.auth.signOut()}>Sign out</button>
   </div></div>);
-  const isViewer=access.role==='viewer';
+  CUR_ROLE=access.role;
   const displayName=titleCase(myName||(user.email||'').split('@')[0].replace(/[._-]+/g,' '));
   const firstName=displayName.split(' ')[0];
-  const activeTab=isViewer?'my-tasks':tab;
-  const navItems=isViewer?MY_WORK_NAV:[...MY_WORK_NAV,...NAV];
+  const activeTab=canSeePage(access.role,tab)?tab:'my-tasks';
+  const navItems=[...MY_WORK_NAV,...visibleNav(access.role)];
   const myTasksView=<MyTasks employeeId={access.employee_id} onCount={setMyOpenCount} role={access.role} onRenewed={()=>setRenewalTick(x=>x+1)}/>;
 
   const VIEWS={
