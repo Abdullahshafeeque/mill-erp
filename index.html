@@ -197,6 +197,7 @@ const NAV = [
   { id:'depot-settings', label:'Depots', icon:'🏢' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
+  { id:'whatsapp-settings', label:'WhatsApp Alerts', icon:'💬' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
 ];
@@ -4219,6 +4220,204 @@ function TimelineCalendar({onGo}){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// WHATSAPP ALERTS — settings, contacts, test sending
+// ══════════════════════════════════════════════════════════
+const NOTIFY_KEY='notify_settings';
+const NOTIFY_DEFAULTS={enabled:false,send_hour:8,template_name:'daily_mill_alerts',template_lang:'en',include_lifting:true,include_workorder:true,include_license:true,include_job:true,job_days:3,send_when_empty:false,max_chars:600};
+const normPhone=(v)=>{
+  let d=String(v||'').replace(/\D/g,'');
+  if(d.length===10) d='91'+d;
+  if(d.length===11&&d.startsWith('0')) d='91'+d.slice(1);
+  return d;
+};
+
+function WhatsAppSettings(){
+  const [S,setS]=useState(NOTIFY_DEFAULTS);
+  const [contacts,setContacts]=useState([]);
+  const [log,setLog]=useState([]);
+  const [emps,setEmps]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [busy,setBusy]=useState('');
+  const [msg,setMsg]=useState('');
+  const blank={name:'',phone:'',employee_id:'',is_director:false,enabled:true};
+  const [form,setForm]=useState(blank);
+  const [editingId,setEditingId]=useState(null);
+  const [showForm,setShowForm]=useState(false);
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    const [{data:st},{data:c,error:ce},{data:lg},{data:e}]=await Promise.all([
+      sb.from('erp_settings').select('value').eq('key',NOTIFY_KEY).maybeSingle(),
+      sb.from('notify_contacts').select('*').order('name'),
+      sb.from('notify_log').select('*').order('sent_at',{ascending:false}).limit(40),
+      sb.from(EMP_TABLE).select('*').range(0,4999),
+    ]);
+    let saved={}; try{ saved=st&&st.value?JSON.parse(st.value):{}; }catch(_){ saved={}; }
+    setS({...NOTIFY_DEFAULTS,...saved});
+    setContacts(c||[]); setLog(lg||[]);
+    setEmps((e||[]).filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b))));
+    setMsg(ce?'Could not load contacts (Directors only): '+ce.message:'');
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const saveSettings=async()=>{
+    const h=Number(S.send_hour), mc=Number(S.max_chars), jd=Number(S.job_days);
+    if(!Number.isInteger(h)||h<0||h>23) return alert('Send hour must be a whole number from 0 to 23.');
+    if(!String(S.template_name||'').trim()) return alert('Template name is required.');
+    if(!Number.isInteger(mc)||mc<100||mc>900) return alert('Maximum message length must be between 100 and 900 characters.');
+    if(!Number.isInteger(jd)||jd<0) return alert('Job reminder days must be a whole number, 0 or more.');
+    const clean={...S,send_hour:h,max_chars:mc,job_days:jd,template_name:String(S.template_name).trim(),template_lang:String(S.template_lang||'en').trim()};
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:NOTIFY_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    setS(clean);
+    logActivity('Settings','update','WhatsApp alert settings updated');
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000);
+  };
+
+  const closeForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); };
+  const startEdit=(c)=>{ setEditingId(c.id); setForm({name:c.name||'',phone:c.phone||'',employee_id:c.employee_id||'',is_director:!!c.is_director,enabled:c.enabled!==false}); setShowForm(true); };
+
+  const saveContact=async()=>{
+    if(!form.name.trim()) return alert('Name is required.');
+    const phone=normPhone(form.phone);
+    if(phone.length<11||phone.length>15) return alert('Enter the WhatsApp number with country code, for example 919847012345. A plain 10-digit Indian number is also fine.');
+    if(!form.employee_id&&!form.is_director&&!confirm('No employee is linked and Director alerts are off, so this person will receive nothing. Save anyway?')) return;
+    if(contacts.some(c=>c.id!==editingId&&c.phone===phone)&&!confirm('Another contact already has this number. Save anyway?')) return;
+    setSaving(true);
+    const payload={name:form.name.trim(),phone,employee_id:form.employee_id?String(form.employee_id):null,is_director:!!form.is_director,enabled:!!form.enabled};
+    const {error}=editingId?await sb.from('notify_contacts').update(payload).eq('id',editingId):await sb.from('notify_contacts').insert(payload);
+    setSaving(false);
+    if(error) return alert(error.message);
+    logActivity('Settings',editingId?'update':'create',`WhatsApp contact — ${payload.name}`);
+    closeForm(); load();
+  };
+
+  const delContact=async(c)=>{
+    if(!confirm(`Remove ${c.name} from WhatsApp alerts?`)) return;
+    const {error}=await sb.from('notify_contacts').delete().eq('id',c.id);
+    if(error) return alert(error.message);
+    logActivity('Settings','delete',`WhatsApp contact removed — ${c.name}`);
+    load();
+  };
+
+  const invoke=async(action,contactId)=>{
+    if(action==='run_now'&&!confirm('Send today\'s alerts to everyone now? People with nothing pending are skipped.')) return;
+    setBusy(action+(contactId||''));
+    const {data,error}=await sb.functions.invoke('daily-alerts',{body:{action,contact_id:contactId||null}});
+    setBusy('');
+    if(error){
+      let m=error.message||String(error);
+      try{ const j=await error.context.json(); if(j&&j.error) m=j.error; }catch(_){}
+      alert('Could not send: '+m); return;
+    }
+    if(data&&data.error){ alert(data.error); return; }
+    const r=data||{};
+    alert(`Done. Sent: ${r.sent||0}, failed: ${r.failed||0}, skipped: ${r.skipped||0}.${r.note?'\n'+r.note:''}${r.failed?'\nSee the log below for the reason.':''}`);
+    load();
+  };
+
+  if(loading) return <Loading/>;
+
+  const chk=(k,label)=>(<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={!!S[k]} onChange={e=>s(k,e.target.checked)}/>{label}</label>);
+  const empById=(id)=>emps.find(e=>String(e.id)===String(id));
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">System Settings</div>
+      <div className="page-title">WhatsApp alerts</div>
+    </div>
+
+    {msg&&<div style={{marginBottom:12,fontSize:12,color:msg==='Saved.'?'var(--green)':'var(--red)'}}>{msg}</div>}
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--red)'}`}}>
+      {chk('enabled','Daily WhatsApp alerts are ON (untick to stop the automatic morning messages; manual test sends still work)')}
+      <div className="form-grid" style={{marginTop:10}}>
+        <Field label="Send time (India time, hour 0–23)"><input type="number" min="0" max="23" className="form-input" value={S.send_hour} onChange={e=>s('send_hour',e.target.value)}/></Field>
+        <Field label="Approved template name"><input className="form-input" value={S.template_name} onChange={e=>s('template_name',e.target.value)}/></Field>
+        <Field label="Template language code"><input className="form-input" value={S.template_lang} onChange={e=>s('template_lang',e.target.value)}/></Field>
+        <Field label="Remind about jobs due within (days)"><input type="number" min="0" className="form-input" value={S.job_days} onChange={e=>s('job_days',e.target.value)}/></Field>
+        <Field label="Maximum digest length (characters)"><input type="number" min="100" max="900" className="form-input" value={S.max_chars} onChange={e=>s('max_chars',e.target.value)}/></Field>
+      </div>
+      <div style={{marginTop:10}}>
+        <div className="form-label" style={{marginBottom:6}}>Include in the daily message</div>
+        {chk('include_lifting','🚛 Lifting orders')}
+        {chk('include_workorder','📊 Work orders')}
+        {chk('include_license','📑 Licenses and renewals')}
+        {chk('include_job','🛠️ Job cards assigned to the person')}
+        {chk('send_when_empty','Also send "No pending alerts today" when someone has nothing (costs a message each day)')}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:4}}>Who is alerted, and when it escalates, still comes from the Lifting Alerts, Work Order Alerts and License settings. This page only controls delivery.</div>
+      <div className="form-actions"><button className="btn btn-green" onClick={saveSettings} disabled={saving}>{saving?'Saving…':'Save settings'}</button></div>
+    </div>
+
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',margin:'24px 0 12px',flexWrap:'wrap',gap:8}}>
+      <div className="section-label" style={{marginBottom:0}}>People who receive WhatsApp alerts</div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        <button className="btn btn-ghost btn-sm" onClick={()=>invoke('run_now')} disabled={!!busy}>{busy==='run_now'?'Sending…':'Send today\'s alerts now'}</button>
+        <button className="btn btn-amber btn-sm" onClick={()=>{ setEditingId(null); setForm(blank); setShowForm(true); }}>+ Add person</button>
+      </div>
+    </div>
+
+    {showForm&&(
+      <FormCard title={editingId?'Edit person':'Add person'} col="var(--amber)" onSave={saveContact} onCancel={closeForm} saving={saving}>
+        <div className="form-grid">
+          <Field label="Name ★"><input className="form-input" value={form.name} onChange={e=>f('name',e.target.value)}/></Field>
+          <Field label="WhatsApp number ★ (with country code)"><input className="form-input" value={form.phone} onChange={e=>f('phone',e.target.value)} placeholder="919847012345"/></Field>
+          <Field label="Linked employee (for their own alerts and jobs)">
+            <select className="form-input" value={form.employee_id} onChange={e=>f('employee_id',e.target.value)}>
+              <option value="">-- None --</option>
+              {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+            </select>
+          </Field>
+        </div>
+        <div style={{marginTop:10}}>
+          <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={form.is_director} onChange={e=>f('is_director',e.target.checked)}/>Receives Director-level escalations</label>
+          <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13}}><input type="checkbox" checked={form.enabled} onChange={e=>f('enabled',e.target.checked)}/>Enabled</label>
+        </div>
+      </FormCard>
+    )}
+
+    <TableWrap><table>
+      <thead><tr><th>Name</th><th>WhatsApp</th><th>Linked employee</th><th>Director</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {contacts.length===0&&<tr><td colSpan={6}><Empty msg="No one added yet."/></td></tr>}
+        {contacts.map(c=>{ const em=empById(c.employee_id); return(<tr key={c.id}>
+          <td><strong>{c.name}</strong></td>
+          <td className="mono">{c.phone}</td>
+          <td className="dim">{em?empLabel(em):'—'}</td>
+          <td>{c.is_director?<span className="badge badge-blue">Yes</span>:<span className="dim">—</span>}</td>
+          <td>{c.enabled?<span className="badge badge-green">On</span>:<span className="badge badge-muted">Off</span>}</td>
+          <td><div style={{display:'flex',gap:6}}>
+            <button className="btn btn-green btn-sm" onClick={()=>invoke('test',c.id)} disabled={!!busy}>{busy==='test'+c.id?'Sending…':'Send test'}</button>
+            <button className="btn btn-blue btn-sm" onClick={()=>startEdit(c)}>Edit</button>
+            <button className="btn btn-red btn-sm" onClick={()=>delContact(c)}>✕</button>
+          </div></td>
+        </tr>); })}
+      </tbody>
+    </table></TableWrap>
+
+    <div className="section-label" style={{marginTop:24}}>Recent sends</div>
+    <TableWrap><table>
+      <thead><tr><th>Time</th><th>Name</th><th>Status</th><th>Detail</th></tr></thead>
+      <tbody>
+        {log.length===0&&<tr><td colSpan={4}><Empty msg="Nothing sent yet."/></td></tr>}
+        {log.map(l=>(<tr key={l.id}>
+          <td className="mono dim">{new Date(l.sent_at).toLocaleString('en-IN')}</td>
+          <td>{l.name||'—'}</td>
+          <td><span className={`badge ${l.status==='sent'?'badge-green':l.status==='failed'?'badge-red':'badge-muted'}`}>{l.status}</span></td>
+          <td className="dim" style={{fontSize:12}}>{l.detail||'—'}</td>
+        </tr>))}
+      </tbody>
+    </table></TableWrap>
+  </div>);
+}
+
 function WorkOrderTracker(){
   const [workOrders,setWorkOrders]=useState([]);
   const [dispatches,setDispatches]=useState([]);
@@ -6623,6 +6822,7 @@ function App(){
     'depot-settings':<DepotSettings/>,
     'lifting-settings':<LiftingAlertSettings/>,
     'workorder-settings':<WorkOrderAlertSettings/>,
+    'whatsapp-settings':<WhatsAppSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
     'job-cards':<JobCards/>,
