@@ -3993,6 +3993,7 @@ function WorkOrderTracker(){
   const [filterMonth,setFilterMonth]=useState(now.getMonth()+1);
   const [S,setS]=useState(WOA_DEFAULTS);
   const [board,setBoard]=useState({});
+  const [eAllot,setEAllot]=useState({});
   const [filterYear,setFilterYear]=useState(now.getFullYear());
   const eBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',deadline:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
   const cBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',deadline:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
@@ -4053,6 +4054,7 @@ function WorkOrderTracker(){
 
   const startEdit=(wo)=>{
     setEditingId(wo.id);
+    setEAllot(Object.fromEntries((wo.allots||[]).map(a=>[String(a.depot_id),String(a.allotted_pkts)])));
     setEForm({
       work_order_no:wo.work_order_no, work_order_date:wo.work_order_date, scheme:wo.scheme, batch_no:wo.batch_no||'', deadline:wo.deadline||'',
       period_month: wo.period_month||now.getMonth()+1, period_year: wo.period_year||now.getFullYear()
@@ -4062,13 +4064,58 @@ function WorkOrderTracker(){
   const saveEdit=async()=>{
     if(S.require_deadline&&!eForm.deadline) return alert('Deadline is required.');
     if(eForm.deadline&&eForm.deadline<eForm.work_order_date) return alert('The deadline cannot be before the work order date.');
+    for(const v of Object.values(eAllot)){
+      if(v!==''&&(isNaN(Number(v))||Number(v)<0)) return alert('Every allotted quantity must be a number, zero or more.');
+    }
+    const want={};
+    Object.entries(eAllot).forEach(([k,v])=>{ if(Number(v)>0) want[k]=Number(v); });
+    const newTotal=Object.values(want).reduce((s,v)=>s+v,0);
+    if(newTotal<=0) return alert('Allot at least one packet to a depot.');
+
+    // Warn if a depot's new allotment is lower than what has already been dispatched to it.
+    const ppb=productForScheme(eForm.scheme)?.packets_per_bag||1;
+    const sentBy={};
+    dispatches.filter(d=>d.work_order_id===editingId).forEach(d=>{ sentBy[d.depot_name]=(sentBy[d.depot_name]||0)+Number(d.qty_bags)*ppb; });
+    const below=[];
+    depots.forEach(d=>{
+      const sent=sentBy[d.name]||0, w=want[String(d.id)]||0;
+      if(sent>w) below.push(`${d.name}: ${fmt(w)} allotted, but ${fmt(sent)} packets already dispatched`);
+    });
+    if(below.length&&!confirm('Dispatched quantity is already higher than the new allotment for:\n\n'+below.join('\n')+'\n\nSave anyway?')) return;
+
     setSaving(true);
+    const wo0=workOrders.find(w=>w.id===editingId);
+    const oldAllots=(wo0&&wo0.allotments)||[];
     const {error}=await sb.from('work_orders').update({
       work_order_no:eForm.work_order_no, work_order_date:eForm.work_order_date, scheme:eForm.scheme, batch_no:eForm.batch_no, deadline:eForm.deadline||null,
-      period_month:Number(eForm.period_month), period_year:Number(eForm.period_year)
+      period_month:Number(eForm.period_month), period_year:Number(eForm.period_year), total_pkts:newTotal
     }).eq('id',editingId);
     if(error){alert(error.message);setSaving(false);return;}
-    logActivity('Work Order Tracker','update',`Edited ${eForm.work_order_no}`);
+
+    const errs=[];
+    for(const a of oldAllots){
+      const k=String(a.depot_id);
+      if(want[k]){
+        if(Number(a.allotted_pkts)!==want[k]){
+          const {error:e}=await sb.from('work_order_allotments').update({allotted_pkts:want[k]}).eq('id',a.id);
+          if(e) errs.push(e.message);
+        }
+      } else {
+        const {error:e}=await sb.from('work_order_allotments').delete().eq('id',a.id);
+        if(e) errs.push(e.message);
+      }
+    }
+    const have=new Set(oldAllots.map(a=>String(a.depot_id)));
+    const toAdd=Object.entries(want).filter(([k])=>!have.has(k)).map(([k,v])=>{
+      const dep=depots.find(x=>String(x.id)===k);
+      return {work_order_id:editingId,depot_id:dep?dep.id:k,allotted_pkts:v};
+    });
+    if(toAdd.length){
+      const {error:e}=await sb.from('work_order_allotments').insert(toAdd);
+      if(e) errs.push(e.message);
+    }
+    if(errs.length) alert('Work order saved, but some depot allotments could not be updated:\n'+errs.join('\n'));
+    logActivity('Work Order Tracker','update',`Edited ${eForm.work_order_no} — total ${fmt(newTotal)} packets across ${Object.keys(want).length} depot${Object.keys(want).length===1?'':'s'}`);
     setEditingId(null); setSaving(false);
     load();
   };
@@ -4156,6 +4203,33 @@ function WorkOrderTracker(){
                 <select className="form-input" value={eForm.period_year} onChange={e=>ef('period_year',e.target.value)}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
               </Field>
             </div>
+            {(()=>{
+              const ppb=productForScheme(eForm.scheme)?.packets_per_bag||1;
+              const sentBy={};
+              dispatches.filter(d=>d.work_order_id===editingId).forEach(d=>{ sentBy[d.depot_name]=(sentBy[d.depot_name]||0)+Number(d.qty_bags)*ppb; });
+              const known=new Set(depots.map(d=>String(d.id)));
+              const orphans=Object.keys(eAllot).filter(k=>!known.has(k));
+              const total=Object.values(eAllot).reduce((s,v)=>s+(Number(v)||0),0);
+              return(<div style={{marginTop:14}}>
+                <div className="section-label" style={{marginBottom:8}}>Depot allotments (packets)</div>
+                {depots.length===0&&<div style={{fontSize:12,color:'var(--muted)'}}>No depots configured yet — add them under Settings → Depots first.</div>}
+                <div className="form-grid">
+                  {depots.map(d=>(
+                    <Field key={d.id} label={`${d.name}${sentBy[d.name]?` · dispatched ${fmt(sentBy[d.name])}`:''}`}>
+                      <input type="number" min="0" className="form-input" value={eAllot[String(d.id)]??''} onChange={e=>setEAllot(p=>({...p,[String(d.id)]:e.target.value}))}/>
+                    </Field>
+                  ))}
+                  {orphans.map(k=>(
+                    <Field key={k} label="(removed depot)">
+                      <input type="number" min="0" className="form-input" value={eAllot[k]??''} onChange={e=>setEAllot(p=>({...p,[k]:e.target.value}))}/>
+                    </Field>
+                  ))}
+                </div>
+                <div style={{marginTop:8,fontSize:12,color:'var(--blue)'}}>
+                  Total allotted: <strong>{fmt(total)}</strong> packets ({fmt(Math.ceil(total/ppb))} bags). Leave a depot empty or 0 to remove it from this work order.
+                </div>
+              </div>);
+            })()}
             <div className="form-actions">
               <button className="btn btn-green" onClick={saveEdit} disabled={saving}>{saving?'Saving…':'Save'}</button>
               <button className="btn btn-ghost" onClick={()=>setEditingId(null)}>Cancel</button>
