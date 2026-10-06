@@ -170,6 +170,7 @@ const packSizeOf = (prod) => {
 const NAV = [
   { section:'Mill Operations' },
   { id:'dashboard', label:'Dashboard', icon:'⬡' },
+  { id:'timeline', label:'Timeline Calendar', icon:'📆' },
   { id:'production', label:'Production', icon:'⚙' },
   { id:'dispatch', label:'Supplyco Dispatch', icon:'🚛' },
   { id:'work-order-tracker', label:'Work Order Tracker', icon:'📊' },
@@ -4014,6 +4015,210 @@ function WorkOrderAlertSettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// TIMELINE CALENDAR
+// ══════════════════════════════════════════════════════════
+const TL_TYPES={
+  lifting:{label:'Lifting orders',icon:'🚛',col:'var(--amber)',page:'lifting-orders'},
+  workorder:{label:'Work orders',icon:'📊',col:'var(--blue)',page:'work-order-tracker'},
+  license:{label:'Licenses',icon:'📑',col:'var(--purple)',page:'licenses'},
+  job:{label:'Job cards',icon:'🛠️',col:'var(--green)',page:'job-cards'},
+};
+const tlDaysText=(it)=>it.done?'Complete':it.daysLeft<0?`Overdue by ${-it.daysLeft} day${-it.daysLeft===1?'':'s'}`:it.daysLeft===0?'Due today':`${it.daysLeft} day${it.daysLeft===1?'':'s'} left`;
+const tlColor=(it)=>it.done?'var(--green)':it.daysLeft<0?'var(--red)':it.stage>=1?LIFT_STAGE_COL[it.stage]:TL_TYPES[it.type].col;
+const tlKey=(y,m,d)=>`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+
+async function loadTimelineItems(){
+  const [LS,WS]=await Promise.all([loadLiftSettings(),loadWoaSettings()]);
+  const [lo,lic,jobs]=await Promise.all([
+    sb.from('lifting_orders').select('*, material:material_id(*)').then(repMust),
+    sb.from('licenses').select('*').eq('status','Active').then(repMust),
+    sb.from('job_cards').select('*').neq('status','Done').then(repMust),
+  ]);
+  const items=[];
+
+  lo.forEach(o=>{
+    if(!o.deadline) return;
+    const x=liftInfo(o,LS);
+    items.push({key:'L'+o.id,type:'lifting',date:o.deadline,daysLeft:daysUntil(o.deadline),stage:x.stage,done:x.complete,
+      title:`Lifting ${o.order_no}`,
+      sub:[o.material?.product_name,o.scheme].filter(Boolean).join(' · ')+(x.complete?' · fully lifted':` · ${fmtMT(x.balance)} still to lift`),
+      extra:x.complete?'':`Needs ${fmtMT(x.reqPerDay)}/day${x.trucksPerDay?` · ${x.trucksPerDay} truck${x.trucksPerDay===1?'':'s'}/day`:''}`});
+  });
+
+  let board=[];
+  try{ board=woaBoard(await loadWoaBase(),WS); }catch(e){ console.error('Timeline: work orders failed:',e.message); }
+  board.forEach(x=>{
+    items.push({key:'W'+x.wo.id,type:'workorder',date:x.wo.deadline,daysLeft:daysUntil(x.wo.deadline),stage:x.stage,done:x.complete,
+      title:`Work order ${x.wo.work_order_no}`,
+      sub:[x.wo.scheme,x.wo.batch_no&&('Batch '+x.wo.batch_no)].filter(Boolean).join(' · ')+(x.complete?' · fully dispatched':` · ${fmt(x.balPkts)} packets pending`),
+      extra:x.complete?'':`Needs ${fmt(Math.ceil(x.bagsPerDay))} bags/day${x.shortBags>0?` · ${fmt(Math.ceil(x.shortBags))} bags still to produce`:''}`});
+  });
+
+  lic.forEach(l=>{
+    if(!l.expiry_date) return;
+    const x=licInfo(l);
+    items.push({key:'C'+l.id,type:'license',date:l.expiry_date,daysLeft:x.daysLeft,stage:x.stage,done:false,
+      title:`Renew ${l.name}`,
+      sub:[l.category,l.license_no,l.assigned_to_name&&('In charge: '+l.assigned_to_name)].filter(Boolean).join(' · '),extra:''});
+  });
+
+  jobs.forEach(j=>{
+    if(!j.deadline) return;
+    const dl=daysUntil(j.deadline);
+    items.push({key:'J'+j.id,type:'job',date:j.deadline,daysLeft:dl,stage:dl<=3?1:0,done:false,
+      title:j.title,
+      sub:[j.priority,j.status,j.assigned_to&&('Assigned: '+j.assigned_to),j.location].filter(Boolean).join(' · '),extra:''});
+  });
+
+  return {items,off:LS.off_days||[]};
+}
+
+function TimelineCalendar({onGo}){
+  const [ty,tm]=today.split('-').map(Number);
+  const [cur,setCur]=useState({y:ty,m:tm});
+  const [view,setView]=useState('calendar');
+  const [items,setItems]=useState([]);
+  const [off,setOff]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [sel,setSel]=useState(today);
+  const [show,setShow]=useState({lifting:true,workorder:true,license:true,job:true,done:false});
+
+  const load=useCallback(async()=>{
+    setLoading(true); setErr('');
+    try{ const r=await loadTimelineItems(); setItems(r.items); setOff(r.off); }
+    catch(e){ setErr(e.message||String(e)); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const move=(n)=>setCur(p=>{ let m=p.m+n,y=p.y; if(m<1){m=12;y--;} if(m>12){m=1;y++;} return {y,m}; });
+  const goToday=()=>{ setCur({y:ty,m:tm}); setSel(today); };
+
+  if(loading) return <Loading/>;
+
+  const vis=items.filter(i=>show[i.type]&&(show.done||!i.done));
+  const byDate={};
+  vis.forEach(i=>{ (byDate[i.date]=byDate[i.date]||[]).push(i); });
+  const open=vis.filter(i=>!i.done);
+  const overdueList=open.filter(i=>i.daysLeft<0).sort((a,b)=>a.date.localeCompare(b.date));
+  const upList=open.filter(i=>i.daysLeft>=0).sort((a,b)=>a.date.localeCompare(b.date));
+  const upDates=Array.from(new Set(upList.map(i=>i.date)));
+  const wk=upList.filter(i=>i.daysLeft<=7).length;
+  const mo=upList.filter(i=>i.daysLeft<=30).length;
+
+  const first=new Date(cur.y,cur.m-1,1).getDay();
+  const daysInMonth=new Date(cur.y,cur.m,0).getDate();
+  const cells=[];
+  for(let i=0;i<first;i++) cells.push(null);
+  for(let d=1;d<=daysInMonth;d++) cells.push(d);
+  while(cells.length%7!==0) cells.push(null);
+
+  const row=(it,showDate)=>{
+    const c=tlColor(it); const T=TL_TYPES[it.type];
+    return(<div key={it.key} style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap',padding:'10px 12px',marginBottom:8,border:'1px solid var(--border)',borderLeft:`4px solid ${c}`,borderRadius:6,background:'var(--surface)'}}>
+      <div style={{flex:1,minWidth:200}}>
+        <div style={{fontWeight:600,fontSize:14}}>{T.icon} {it.title}</div>
+        <div className="dim" style={{fontSize:12,marginTop:2}}>{it.sub}</div>
+        {it.extra&&<div style={{fontSize:12,marginTop:2}}>{it.extra}</div>}
+      </div>
+      <div style={{textAlign:'right'}}>
+        <span className="badge" style={{background:`color-mix(in srgb, ${c} 18%, transparent)`,color:c}}>{tlDaysText(it)}</span>
+        {showDate&&<div className="mono dim" style={{fontSize:11,marginTop:4}}>{it.date}</div>}
+        <div style={{marginTop:4}}><button className="btn btn-ghost btn-sm" onClick={()=>onGo&&onGo(T.page)}>Open ↗</button></div>
+      </div>
+    </div>);
+  };
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Planning</div>
+        <div className="page-title">Timeline calendar</div>
+      </div>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        <button className={`btn btn-sm ${view==='calendar'?'btn-amber':'btn-ghost'}`} onClick={()=>setView('calendar')}>Calendar</button>
+        <button className={`btn btn-sm ${view==='agenda'?'btn-amber':'btn-ghost'}`} onClick={()=>setView('agenda')}>Agenda list</button>
+        <button className="btn btn-ghost btn-sm" onClick={load}>↻ Refresh</button>
+      </div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load the calendar" sub={err}/>}
+
+    <div className="stat-grid">
+      <StatCard label="Overdue" value={overdueList.length} col={overdueList.length>0?'var(--red)':'var(--green)'}/>
+      <StatCard label="Due in 7 days" value={wk} col={wk>0?'var(--amber)':'var(--green)'}/>
+      <StatCard label="Due in 30 days" value={mo} col="var(--blue)"/>
+      <StatCard label="Open items" value={open.length} col="var(--purple)"/>
+    </div>
+
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16,alignItems:'center'}}>
+      {Object.entries(TL_TYPES).map(([k,T])=>(
+        <button key={k} className={`btn btn-sm ${show[k]?'btn-amber':'btn-ghost'}`} onClick={()=>setShow(p=>({...p,[k]:!p[k]}))}>{T.icon} {T.label}</button>
+      ))}
+      <button className={`btn btn-sm ${show.done?'btn-amber':'btn-ghost'}`} onClick={()=>setShow(p=>({...p,done:!p.done}))}>✓ Show completed</button>
+    </div>
+
+    {view==='calendar'&&(<>
+      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
+        <button className="btn btn-ghost btn-sm" onClick={()=>move(-1)}>◀</button>
+        <div style={{fontSize:16,fontWeight:600,minWidth:160,textAlign:'center'}}>{MONTH_NAMES[cur.m-1]} {cur.y}</div>
+        <button className="btn btn-ghost btn-sm" onClick={()=>move(1)}>▶</button>
+        <button className="btn btn-ghost btn-sm" onClick={goToday}>Today</button>
+      </div>
+
+      <div className="card" style={{padding:0,overflow:'hidden',marginBottom:16}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:1,background:'var(--border)'}}>
+          {LIFT_WEEKDAYS.map(n=>(
+            <div key={n} style={{background:'var(--surface2)',padding:'6px 4px',textAlign:'center',fontFamily:'var(--mono)',fontSize:10,letterSpacing:'.08em',color:'var(--muted)',textTransform:'uppercase'}}>{n}</div>
+          ))}
+          {cells.map((d,i)=>{
+            if(d===null) return <div key={'b'+i} style={{background:'var(--surface2)',minHeight:92}}/>;
+            const key=tlKey(cur.y,cur.m,d);
+            const list=byDate[key]||[];
+            const isToday=key===today, isSel=key===sel;
+            const isOff=off.includes(new Date(cur.y,cur.m-1,d).getDay());
+            return(<div key={key} onClick={()=>setSel(key)} style={{background:isOff?'var(--surface2)':'var(--surface)',minHeight:92,padding:4,cursor:'pointer',outline:isSel?'2px solid var(--blue)':'none',outlineOffset:-2,overflow:'hidden'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
+                <span style={isToday?{background:'var(--amber)',color:'#fff',borderRadius:10,padding:'0 6px',fontSize:12,fontWeight:700}:{fontSize:12,color:'var(--muted)'}}>{d}</span>
+                {list.length>0&&<span className="mono" style={{fontSize:10,color:'var(--muted)'}}>{list.length}</span>}
+              </div>
+              {list.slice(0,3).map(it=>{
+                const c=tlColor(it), T=TL_TYPES[it.type];
+                return <div key={it.key} title={`${it.title} — ${tlDaysText(it)}`} style={{fontSize:10,lineHeight:'15px',padding:'0 4px',marginBottom:2,borderRadius:3,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',background:`color-mix(in srgb, ${T.col} 14%, transparent)`,borderLeft:`3px solid ${c}`,opacity:it.done?0.6:1}}>{T.icon} {it.title}</div>;
+              })}
+              {list.length>3&&<div style={{fontSize:10,color:'var(--muted)'}}>+{list.length-3} more</div>}
+            </div>);
+          })}
+        </div>
+      </div>
+
+      <div className="section-label">{cashDayLabel(sel)}{sel===today?' · today':''}</div>
+      {(byDate[sel]||[]).length===0
+        ?<div className="card"><Empty msg="Nothing due on this day."/></div>
+        :(byDate[sel]||[]).map(it=>row(it,false))}
+    </>)}
+
+    {view==='agenda'&&(<>
+      {overdueList.length>0&&(<>
+        <div className="section-label" style={{color:'var(--red)'}}>Overdue ({overdueList.length})</div>
+        {overdueList.map(it=>row(it,true))}
+      </>)}
+      <div className="section-label" style={{marginTop:16}}>Upcoming ({upList.length})</div>
+      {upList.length===0&&<div className="card"><Empty msg="Nothing upcoming."/></div>}
+      {upDates.map(dt=>(<div key={dt}>
+        <div className="mono" style={{fontSize:12,color:'var(--amber)',margin:'10px 0 6px'}}>{cashDayLabel(dt)}{dt===today?' · today':''}</div>
+        {upList.filter(i=>i.date===dt).map(it=>row(it,false))}
+      </div>))}
+    </>)}
+
+    <div className="dim" style={{fontSize:12,marginTop:20,maxWidth:760}}>
+      Left bar colour: green = complete, red = overdue, amber/orange = an alert is active, otherwise the item's own colour. Shaded days are the weekly off days from Settings → Lifting Alerts. Items without a deadline are not shown.
+    </div>
+  </div>);
+}
+
 function WorkOrderTracker(){
   const [workOrders,setWorkOrders]=useState([]);
   const [dispatches,setDispatches]=useState([]);
@@ -6399,6 +6604,7 @@ function App(){
 
   const VIEWS={
     'dashboard':<Dashboard name={firstName}/>,
+    'timeline':<TimelineCalendar onGo={(id)=>setTab(id)}/>,
     'production':<Production/>,
     'lifting-orders':<LiftingOrders/>,
     'returns':<Returns/>,
