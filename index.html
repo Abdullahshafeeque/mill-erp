@@ -194,6 +194,7 @@ const NAV = [
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
     { id:'cashbook-settings', label:'Cash Book Settings', icon:'🧾' },
   { id:'depot-settings', label:'Depots', icon:'🏢' },
+  { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
 ];
@@ -1363,13 +1364,337 @@ function PackingRules(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// LIFTING ORDER DEADLINES — settings, calculations, alerts
+// ══════════════════════════════════════════════════════════
+const LIFT_SETTING_KEY='lifting_alert_settings';
+const LIFT_DEFAULTS={
+  enabled:true,
+  default_deadline_days:30, require_deadline:false,
+  remind_days:15, manager_days:5, director_days:5,
+  person_id:'', manager_id:'', notify_director:true,
+  extra_ids:[], extra_from_stage:2,
+  min_balance_kg:0, tolerance_pct:1,
+  alert_overdue:true, overdue_to_director:true,
+  pace_enabled:true, pace_lag_pct:15,
+  buffer_days:2, off_days:[0],
+  truck_kg:10000, daily_capacity_kg:0, risk_alert:true,
+  show_dashboard:true, show_tasks:true
+};
+const LIFT_STAGE_LABEL=['No alert','Person in charge alerted','Escalated to manager','Escalated to Director'];
+const LIFT_STAGE_COL=['var(--green)','var(--amber)','#EA580C','var(--red)'];
+const LIFT_WEEKDAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+async function loadLiftSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',LIFT_SETTING_KEY).maybeSingle();
+  let saved={};
+  try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  return {...LIFT_DEFAULTS,...saved};
+}
+
+// Counts days from fromStr to toStr (inclusive) that are not weekly off days.
+const liftWorkingDays=(fromStr,toStr,off)=>{
+  if(!fromStr||!toStr||toStr<fromStr) return 0;
+  const [y1,m1,d1]=fromStr.split('-').map(Number);
+  const [y2,m2,d2]=toStr.split('-').map(Number);
+  const c=new Date(y1,m1-1,d1); const e=new Date(y2,m2-1,d2);
+  let n=0;
+  while(c<=e){ if(!(off||[]).includes(c.getDay())) n++; c.setDate(c.getDate()+1); }
+  return n;
+};
+
+// Everything is worked out live from the order + settings. Nothing about alert state is stored.
+const liftInfo=(o,S)=>{
+  const allotted=Number(o.allotted_kg)||0, lifted=Number(o.lifted_kg)||0;
+  const balance=Math.max(0,allotted-lifted);
+  const info={balance,pct:allotted>0?lifted/allotted*100:0,daysLeft:null,stage:0,reasons:[],complete:false,reqPerDay:0,trucksPerDay:0,workDays:0,atRisk:false};
+  if(allotted>0&&balance<=allotted*(Number(S.tolerance_pct)||0)/100){ info.complete=true; return info; }
+  if(!o.deadline) return info;
+  const daysLeft=daysUntil(o.deadline);
+  info.daysLeft=daysLeft;
+  const target=licShift(o.deadline,-(Number(S.buffer_days)||0));
+  info.workDays=liftWorkingDays(today,target,S.off_days);
+  info.reqPerDay=balance/Math.max(1,info.workDays);
+  info.trucksPerDay=Number(S.truck_kg)>0?Math.ceil(info.reqPerDay/Number(S.truck_kg)):0;
+  if(Number(S.daily_capacity_kg)>0&&info.reqPerDay>Number(S.daily_capacity_kg)) info.atRisk=true;
+  if(!S.enabled) return info;
+  if(balance<(Number(S.min_balance_kg)||0)) return info;
+
+  const r=Number(S.remind_days)||0, m=Number(S.manager_days)||0, d=Number(S.director_days)||0;
+  let stage=0;
+  if(daysLeft<=r){ stage=1; info.reasons.push(`Within ${r} days of the deadline`); }
+  if(daysLeft<=r-m) stage=2;
+  if(daysLeft<=r-m-d) stage=3;
+  if(daysLeft<0){
+    if(S.alert_overdue){ stage=Math.max(stage,S.overdue_to_director?3:2); info.reasons.push('Deadline has passed'); }
+    else stage=0;
+  }
+  if(S.pace_enabled&&o.order_date&&o.deadline>o.order_date&&daysLeft>=0){
+    const total=daysUntil(o.deadline)-daysUntil(o.order_date);
+    const elapsed=-daysUntil(o.order_date);
+    const timePct=total>0?Math.min(100,Math.max(0,elapsed/total*100)):0;
+    if(info.pct<timePct-(Number(S.pace_lag_pct)||0)){
+      stage=Math.max(stage,1);
+      info.reasons.push(`Behind pace: ${info.pct.toFixed(0)}% lifted, ${timePct.toFixed(0)}% of time used`);
+    }
+  }
+  if(S.risk_alert&&info.atRisk&&daysLeft>=0){
+    stage=Math.max(stage,1);
+    info.reasons.push(`Needs ${(info.reqPerDay/1000).toFixed(2)} MT/day, above capacity`);
+  }
+  info.stage=stage;
+  return info;
+};
+
+// Which lifting orders should this person see in My Tasks?
+const liftAlertsFor=(orders,S,employeeId,role)=>{
+  if(!S.enabled||!S.show_tasks) return [];
+  const me=(employeeId===null||employeeId===undefined)?'':String(employeeId);
+  const extras=(S.extra_ids||[]).map(String);
+  const out=[];
+  orders.forEach(o=>{
+    const x=liftInfo(o,S);
+    if(x.stage<1) return;
+    let as=null;
+    if(me&&String(S.person_id||'')===me) as='assignee';
+    else if(x.stage>=2&&me&&String(S.manager_id||'')===me) as='manager';
+    else if(me&&extras.includes(me)&&x.stage>=Number(S.extra_from_stage||1)) as='extra';
+    else if(x.stage>=3&&S.notify_director&&role==='director') as='director';
+    if(as) out.push({o,...x,as});
+  });
+  return out.sort((a,b)=>a.daysLeft-b.daysLeft);
+};
+
+// Shown at the top of My Tasks.
+function LiftingAlerts({employeeId,role}){
+  const [list,setList]=useState([]);
+  useEffect(()=>{(async()=>{
+    const S=await loadLiftSettings();
+    const {data}=await sb.from('lifting_orders').select('*, material:material_id(*)');
+    setList(liftAlertsFor(data||[],S,employeeId,role));
+  })();},[employeeId,role]);
+  if(list.length===0) return null;
+  return(<div style={{marginBottom:24}}>
+    <div className="section-label">Lifting orders needing action ({list.length})</div>
+    {list.map(a=>{
+      const o=a.o; const col=LIFT_STAGE_COL[a.stage];
+      const who=a.as==='assignee'?'You are the person in charge of lifting.'
+        :a.as==='manager'?'Escalated to you as manager — the person in charge has not finished lifting.'
+        :a.as==='extra'?'You are on the extra notification list for lifting orders.'
+        :'Escalated to the Director.';
+      return(<div key={o.id} className="card" style={{marginBottom:12,borderLeft:`4px solid ${col}`}}>
+        <div style={{fontSize:15,fontWeight:600}}>🚛 Lift against {o.order_no}</div>
+        <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{[o.material?.product_name,o.scheme].filter(Boolean).join(' · ')}</div>
+        <div style={{fontSize:13,marginTop:6,color:col,fontWeight:500}}>{fmtMT(a.balance)} still to lift · {licDaysText(a.daysLeft)} (deadline {o.deadline})</div>
+        <div style={{fontSize:12,marginTop:4}}>Needs about {fmtMT(a.reqPerDay)}/day{a.trucksPerDay?` (${a.trucksPerDay} truck${a.trucksPerDay===1?'':'s'}/day)`:''} over {a.workDays} working day{a.workDays===1?'':'s'}.</div>
+        {a.reasons.length>0&&<div style={{fontSize:12,marginTop:4,color:'var(--muted)'}}>{a.reasons.join(' · ')}</div>}
+        <div style={{fontSize:12,marginTop:4}}>{who}</div>
+      </div>);
+    })}
+  </div>);
+}
+
+// Shown on the Dashboard (all users who can see it).
+function LiftingDashboardAlerts(){
+  const [items,setItems]=useState([]);
+  useEffect(()=>{(async()=>{
+    const S=await loadLiftSettings();
+    if(!S.enabled||!S.show_dashboard) return;
+    const {data}=await sb.from('lifting_orders').select('*, material:material_id(*)');
+    setItems((data||[]).map(o=>({o,...liftInfo(o,S)})).filter(x=>x.stage>=1).sort((a,b)=>a.daysLeft-b.daysLeft));
+  })();},[]);
+  return <>{items.map(x=>(
+    <Alert key={x.o.id} type={x.stage>=3?'red':'amber'} icon="🚛"
+      title={`Lifting order ${x.o.order_no} — ${fmtMT(x.balance)} still to lift, ${licDaysText(x.daysLeft).toLowerCase()}`}
+      sub={`${[x.o.material?.product_name,x.o.scheme].filter(Boolean).join(' · ')} · deadline ${x.o.deadline} · needs ${fmtMT(x.reqPerDay)}/day${x.reasons.length?' · '+x.reasons.join('; '):''}`}/>
+  ))}</>;
+}
+
+// Settings page
+function LiftingAlertSettings(){
+  const [S,setS]=useState(LIFT_DEFAULTS);
+  const [emps,setEmps]=useState([]);
+  const [orders,setOrders]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+
+  useEffect(()=>{(async()=>{
+    const [cfg,{data:e},{data:o}]=await Promise.all([
+      loadLiftSettings(),
+      sb.from(EMP_TABLE).select('*').range(0,4999),
+      sb.from('lifting_orders').select('*, material:material_id(*)'),
+    ]);
+    setS(cfg);
+    setEmps((e||[]).filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b))));
+    setOrders(o||[]);
+    setLoading(false);
+  })();},[]);
+
+  const save=async()=>{
+    const r=Number(S.remind_days), m=Number(S.manager_days), d=Number(S.director_days);
+    if(!Number.isInteger(r)||r<1) return alert('"Alert person in charge" must be a whole number of days, at least 1.');
+    if(!Number.isInteger(m)||m<0||!Number.isInteger(d)||d<0) return alert('Escalation days must be whole numbers (0 or more).');
+    if(m+d>r&&!confirm(`Manager and Director days add up to more than ${r}, so the Director alert would only start AFTER the deadline. Continue?`)) return;
+    if(S.enabled&&!S.person_id&&!confirm('No person in charge is selected, so only the manager, extra people and Director will be alerted. Continue?')) return;
+    const num=(v)=>Number(v)||0;
+    const clean={...S,
+      default_deadline_days:num(S.default_deadline_days),remind_days:r,manager_days:m,director_days:d,
+      extra_from_stage:num(S.extra_from_stage)||1,min_balance_kg:num(S.min_balance_kg),tolerance_pct:num(S.tolerance_pct),
+      pace_lag_pct:num(S.pace_lag_pct),buffer_days:num(S.buffer_days),truck_kg:num(S.truck_kg),daily_capacity_kg:num(S.daily_capacity_kg)};
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:LIFT_SETTING_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    setS(clean);
+    logActivity('Settings','update','Lifting order alert settings updated');
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000);
+  };
+
+  const reset=()=>{ if(confirm('Reset every field on this page to the defaults? (Nothing is saved until you press Save.)')) setS(LIFT_DEFAULTS); };
+
+  const num=(k,label,props)=>(<Field label={label}><input type="number" className="form-input" value={S[k]} onChange={e=>s(k,e.target.value)} {...(props||{})}/></Field>);
+  const chk=(k,label)=>(<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={!!S[k]} onChange={e=>s(k,e.target.checked)}/>{label}</label>);
+  const empSel=(k,label)=>(<Field label={label}>
+    <select className="form-input" value={S[k]||''} onChange={e=>s(k,e.target.value)}>
+      <option value="">-- Select person --</option>
+      {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+    </select>
+  </Field>);
+  const toggleOff=(i)=>s('off_days',(S.off_days||[]).includes(i)?(S.off_days||[]).filter(x=>x!==i):[...(S.off_days||[]),i]);
+
+  if(loading) return <Loading/>;
+
+  const r=Number(S.remind_days)||0, m=Number(S.manager_days)||0, d=Number(S.director_days)||0;
+  const preview=orders.map(o=>({o,...liftInfo(o,S)})).filter(x=>x.o.deadline&&!x.complete).sort((a,b)=>a.daysLeft-b.daysLeft);
+  const previewRows=preview.map(x=>[
+    <strong>{x.o.order_no}</strong>,
+    x.o.scheme,
+    repMt(x.balance),
+    x.o.deadline,
+    licDaysText(x.daysLeft),
+    `${repMt(x.reqPerDay)} /day`,
+    <span style={{color:LIFT_STAGE_COL[x.stage],fontWeight:600}}>{LIFT_STAGE_LABEL[x.stage]}</span>,
+    x.reasons.join('; ')||'—',
+  ]);
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Lifting order alerts</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--red)'}`}}>
+      {chk('enabled','Lifting deadline alerts are ON (untick to switch every alert off; deadlines and planning figures still show)')}
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. Deadline entry</div>
+      <div className="form-grid">
+        {num('default_deadline_days','Default deadline (days after order date)',{min:0})}
+      </div>
+      <div style={{marginTop:10}}>{chk('require_deadline','Deadline is compulsory when creating a lifting order')}</div>
+      <div className="dim" style={{fontSize:12}}>The default is pre-filled when a new lifting order form is opened. Set 0 for no pre-fill. The deadline can still be changed in the order.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. When to alert (days before the deadline)</div>
+      <div className="form-grid">
+        {num('remind_days','Alert person in charge (days before deadline)',{min:1})}
+        {num('manager_days','Escalate to manager after (more days)',{min:0})}
+        {num('director_days','Escalate to Director after (more days)',{min:0})}
+      </div>
+      <div style={{marginTop:10,fontSize:12,color:'var(--blue)'}}>
+        Person in charge from {r} days left · manager from {r-m} days left · Director from {r-m-d} days left (a negative number means after the deadline).
+      </div>
+      <div style={{marginTop:10}}>
+        {chk('alert_overdue','Keep alerting after the deadline passes, until the order is fully lifted')}
+        {chk('overdue_to_director','Once overdue, go straight to the Director')}
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">3. Who gets alerted</div>
+      <div className="form-grid">
+        {empSel('person_id','Person in charge of lifting')}
+        {empSel('manager_id','Manager (escalation)')}
+      </div>
+      <div style={{marginTop:10}}>{chk('notify_director','Alert every Director when escalation reaches the Director stage')}</div>
+      <div className="form-grid" style={{marginTop:10}}>
+        <Field label="Additional people to alert (Ctrl/Cmd-click to pick several)">
+          <select multiple size={6} className="form-input" value={(S.extra_ids||[]).map(String)} onChange={e=>s('extra_ids',Array.from(e.target.selectedOptions).map(o=>o.value))}>
+            {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+          </select>
+        </Field>
+        <Field label="Additional people start getting alerts from">
+          <select className="form-input" value={S.extra_from_stage} onChange={e=>s('extra_from_stage',Number(e.target.value))}>
+            <option value={1}>First alert (same time as person in charge)</option>
+            <option value={2}>Manager stage</option>
+            <option value={3}>Director stage</option>
+          </select>
+        </Field>
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>A person only sees alerts if their login is linked to their employee profile in the HR portal.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">4. Quantity rules</div>
+      <div className="form-grid">
+        {num('min_balance_kg','Only alert if balance is at least (kg)',{min:0})}
+        {num('tolerance_pct','Treat order as complete when balance is within (% of allotted)',{min:0,step:'0.1'})}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>Example: tolerance 1% means a 100 MT order with 0.9 MT left is treated as done and stops alerting. The minimum balance stops alerts for small leftover quantities.</div>
+      <div className="form-grid" style={{marginTop:12}}>
+        {num('pace_lag_pct','Early warning if lifted % is behind time used by more than (% points)',{min:0})}
+      </div>
+      <div style={{marginTop:10}}>{chk('pace_enabled','Behind-pace early warning: alert before the normal window if lifting is slower than the time used since the order date')}</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">5. Planning and capacity</div>
+      <div className="form-grid">
+        {num('buffer_days','Safety buffer (finish lifting this many days before the deadline)',{min:0})}
+        {num('truck_kg','Average truck load (kg)',{min:0})}
+        {num('daily_capacity_kg','Maximum you can lift per day (kg, 0 = no limit)',{min:0})}
+      </div>
+      <div style={{marginTop:12}}>
+        <div className="form-label" style={{marginBottom:6}}>Weekly off days (not counted as lifting days)</div>
+        <div style={{display:'flex',gap:14,flexWrap:'wrap'}}>
+          {LIFT_WEEKDAYS.map((n,i)=>(<label key={i} style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}>
+            <input type="checkbox" checked={(S.off_days||[]).includes(i)} onChange={()=>toggleOff(i)}/>{n}
+          </label>))}
+        </div>
+      </div>
+      <div style={{marginTop:12}}>{chk('risk_alert','Alert the person in charge early if the required daily lifting is above your daily capacity')}</div>
+      <div className="dim" style={{fontSize:12}}>Each order then shows: balance ÷ working days left (up to the buffer date) = MT needed per day, and trucks per day.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">6. Where alerts appear</div>
+      {chk('show_tasks','In My Tasks and the red/green badge on the sidebar')}
+      {chk('show_dashboard','On the Dashboard alerts list (visible to everyone who opens the Dashboard)')}
+    </div>
+
+    <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:24,flexWrap:'wrap'}}>
+      <button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':'Save settings'}</button>
+      <button className="btn btn-ghost" onClick={reset}>Reset to defaults</button>
+      {msg&&<span style={{fontSize:12,color:'var(--green)'}}>{msg}</span>}
+    </div>
+
+    <div className="section-label">Live preview — your current orders under these settings (unsaved changes included)</div>
+    <RTable head={['Order','Scheme','Balance (MT)','Deadline','Time left','Needed','Alert stage','Why']} rows={previewRows} empty="No open lifting orders with a deadline yet."/>
+  </div>);
+}
+
 function LiftingOrders(){
   const [orders,setOrders]=useState([]);
   const [rawMaterials,setRawMaterials]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const blank={order_no:'',order_date:today,material_id:'',scheme:'',allotted_kg:'',notes:''};
+  const blank={order_no:'',order_date:today,material_id:'',scheme:'',allotted_kg:'',deadline:'',notes:''};
+  const [S,setS]=useState(LIFT_DEFAULTS);
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -1379,6 +1704,7 @@ function LiftingOrders(){
       sb.from('lifting_orders').select('*, material:material_id(*)').order('order_date',{ascending:false}),
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('available_for_supplyco',true).eq('is_active',true),
     ]);
+    setS(await loadLiftSettings());
     setOrders(o||[]); setRawMaterials(rm||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -1388,12 +1714,25 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
 
   const save=async()=>{
     if(!form.order_no||!form.material_id||!form.scheme||!form.allotted_kg) return alert('Order no., material, scheme and allotted quantity required.');
+    if(S.require_deadline&&!form.deadline) return alert('Deadline is required.');
+    if(form.deadline&&form.deadline<form.order_date) return alert('The deadline cannot be before the order date.');
     setSaving(true);
-    const row={order_no:form.order_no,order_date:form.order_date,material_id:form.material_id,scheme:form.scheme,allotted_kg:Number(form.allotted_kg),lifted_kg:0,notes:form.notes};
+    const row={order_no:form.order_no,order_date:form.order_date,material_id:form.material_id,scheme:form.scheme,allotted_kg:Number(form.allotted_kg),lifted_kg:0,deadline:form.deadline||null,notes:form.notes};
     const {data,error}=await sb.from('lifting_orders').insert(row).select('*, material:material_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
     setOrders(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Lifting Orders','create',`${form.order_no} — ${form.allotted_kg}kg ${selectedMaterial?.product_name} (${form.scheme})`);
+  };
+
+  const setDeadline=async(o)=>{
+    const v=prompt('Deadline for '+o.order_no+' (YYYY-MM-DD). Leave empty to clear:',o.deadline||'');
+    if(v===null) return;
+    const dd=v.trim();
+    if(dd&&!/^\d{4}-\d{2}-\d{2}$/.test(dd)) return alert('Use the format YYYY-MM-DD, for example 2026-11-30.');
+    const {error}=await sb.from('lifting_orders').update({deadline:dd||null}).eq('id',o.id);
+    if(error) return alert(error.message);
+    setOrders(p=>p.map(x=>x.id===o.id?{...x,deadline:dd||null}:x));
+    logActivity('Lifting Orders','update',`${o.order_no} deadline → ${dd||'cleared'}`);
   };
 
   const del=async(o)=>{
@@ -1412,7 +1751,7 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
         <div className="page-label">Raw Materials</div>
         <div className="page-title">Lifting orders</div>
       </div>
-      <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ New lifting order</button>
+      <button className="btn btn-amber" onClick={()=>{ if(!showForm&&Number(S.default_deadline_days)>0) setForm(p=>({...p,deadline:p.deadline||licShift(p.order_date||today,Number(S.default_deadline_days))})); setShowForm(v=>!v); }}>+ New lifting order</button>
     </div>
 
     {showForm&&(
@@ -1433,17 +1772,20 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
   </select>
 </Field>
           <Field label="Allotted quantity (kg) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.allotted_kg} onChange={e=>f('allotted_kg',e.target.value)}/></Field>
+          <Field label={S.require_deadline?'Lifting deadline ★':'Lifting deadline'}><input type="date" className="form-input" min={form.order_date} value={form.deadline} onChange={e=>f('deadline',e.target.value)}/></Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
       </FormCard>
     )}
 
     <TableWrap><table>
-      <thead><tr><th>Order no.</th><th>Date</th><th>Material</th><th>Scheme</th><th>Allotted</th><th>Lifted</th><th>Balance</th><th></th></tr></thead>
+      <thead><tr><th>Order no.</th><th>Date</th><th>Material</th><th>Scheme</th><th>Allotted</th><th>Lifted</th><th>Balance</th><th>Deadline</th><th>Status</th><th>Needed</th><th></th></tr></thead>
       <tbody>
-        {orders.length===0&&<tr><td colSpan={8}><Empty msg="No lifting orders yet."/></td></tr>}
+        {orders.length===0&&<tr><td colSpan={11}><Empty msg="No lifting orders yet."/></td></tr>}
         {orders.map(o=>{
           const balance=Number(o.allotted_kg)-Number(o.lifted_kg);
+          const li=liftInfo(o,S);
+          const lcol=li.daysLeft!==null&&li.daysLeft<0?'var(--red)':LIFT_STAGE_COL[li.stage];
           return(<tr key={o.id}>
             <td><strong className="mono">{o.order_no}</strong></td>
             <td className="mono dim">{o.order_date}</td>
@@ -1452,6 +1794,14 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
             <td className="mono">{fmtMT(o.allotted_kg)}</td>
             <td className="mono" style={{color:'var(--green)'}}>{fmtMT(o.lifted_kg)}</td>
             <td className="mono" style={{color:balance>0?'var(--amber)':'var(--green)',fontWeight:600}}>{fmtMT(balance)}</td>
+            <td className="mono dim">{o.deadline||'—'} <button className="btn btn-ghost btn-sm" onClick={()=>setDeadline(o)}>✎</button></td>
+            <td>
+              {li.complete?<span className="badge badge-green">Complete</span>
+                :!o.deadline?<span className="dim">No deadline</span>
+                :<span className="badge" style={{background:`color-mix(in srgb, ${lcol} 18%, transparent)`,color:lcol}}>{licDaysText(li.daysLeft)}</span>}
+              {li.atRisk&&!li.complete&&<div style={{fontSize:11,color:'var(--red)'}}>⚠ above daily capacity</div>}
+            </td>
+            <td className="mono dim">{o.deadline&&!li.complete?`${fmtMT(li.reqPerDay)}/day${li.trucksPerDay?` · ${li.trucksPerDay} truck${li.trucksPerDay===1?'':'s'}`:''}`:'—'}</td>
             <td><button className="btn btn-red btn-sm" onClick={()=>del(o)}>✕</button></td>
           </tr>);
         })}
@@ -3061,6 +3411,7 @@ function Dashboard({name}){
 
     <div style={{marginBottom:24}}>
       <div className="section-label">Alerts</div>
+      <LiftingDashboardAlerts/>
       {stockAlerts.map(r=>(
         <Alert key={r.product.id} type="amber" icon="⚠" title={`${r.product.product_name} — ${fmt(r.qty)} bags, within watch range`} sub={`Between min (${fmt(r.product.min_stock_alert)}) and max (${fmt(r.product.max_stock_alert)})`}/>
       ))}
@@ -4042,6 +4393,7 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
       <div className="page-title">My tasks</div>
     </div>
     <RenewalAlerts employeeId={employeeId} role={role} onRenewed={onRenewed}/>
+    <LiftingAlerts employeeId={employeeId} role={role}/>
     <div className="stat-grid">
       <StatCard label="Open tasks" value={open.length} col="var(--blue)"/>
       <StatCard label="Overdue" value={overdue.length} col={overdue.length>0?'var(--red)':'var(--green)'}/>
@@ -5495,7 +5847,13 @@ function App(){
     let cancelled=false;
     const fetchRenewals=async()=>{
       const {data,error}=await sb.from('licenses').select('*').eq('status','Active');
-      if(!cancelled&&!error) setRenewalCount(licAlertsFor(data||[],access.employee_id,access.role).length);
+      let n=error?0:licAlertsFor(data||[],access.employee_id,access.role).length;
+      try{
+        const LS=await loadLiftSettings();
+        const {data:lo}=await sb.from('lifting_orders').select('*');
+        n+=liftAlertsFor(lo||[],LS,access.employee_id,access.role).length;
+      }catch(e){}
+      if(!cancelled&&!error) setRenewalCount(n);
     };
     fetchRenewals();
     const t=setInterval(fetchRenewals,60000);
@@ -5542,6 +5900,7 @@ function App(){
     'production-settings':<ProductionSettings/>,
         'cashbook-settings':<CashBookSettings/>,
     'depot-settings':<DepotSettings/>,
+    'lifting-settings':<LiftingAlertSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
     'job-cards':<JobCards/>,
