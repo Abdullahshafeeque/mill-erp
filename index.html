@@ -195,6 +195,7 @@ const NAV = [
     { id:'cashbook-settings', label:'Cash Book Settings', icon:'🧾' },
   { id:'depot-settings', label:'Depots', icon:'🏢' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
+  { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
 ];
@@ -3412,6 +3413,7 @@ function Dashboard({name}){
     <div style={{marginBottom:24}}>
       <div className="section-label">Alerts</div>
       <LiftingDashboardAlerts/>
+      <WoaDashboardAlerts/>
       {stockAlerts.map(r=>(
         <Alert key={r.product.id} type="amber" icon="⚠" title={`${r.product.product_name} — ${fmt(r.qty)} bags, within watch range`} sub={`Between min (${fmt(r.product.min_stock_alert)}) and max (${fmt(r.product.max_stock_alert)})`}/>
       ))}
@@ -3612,6 +3614,370 @@ function DepotSettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// WORK ORDER DEADLINES — settings, calculations, alerts
+// ══════════════════════════════════════════════════════════
+const WOA_SETTING_KEY='workorder_alert_settings';
+const WOA_DEFAULTS={
+  enabled:true,
+  default_deadline_days:30, require_deadline:false,
+  remind_days:10, manager_days:4, director_days:3,
+  person_id:'', manager_id:'', notify_director:true,
+  extra_ids:[], extra_from_stage:2,
+  min_balance_pkts:0, tolerance_pct:1,
+  alert_overdue:true, overdue_to_director:true,
+  pace_enabled:true, pace_lag_pct:15,
+  buffer_days:1, off_days:[0],
+  bags_per_truck:200, daily_capacity_bags:0, risk_alert:true,
+  shortfall_alert:true, shortfall_days:7, production_capacity_bags:0,
+  show_dashboard:true, show_tasks:true
+};
+const WOA_STAGE_LABEL=['No alert','Person in charge alerted','Escalated to manager','Escalated to Director'];
+
+async function loadWoaSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',WOA_SETTING_KEY).maybeSingle();
+  let saved={};
+  try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  return {...WOA_DEFAULTS,...saved};
+}
+
+// Raw facts for every work order that has a deadline: bags dispatched, packets per bag, finished stock.
+async function loadWoaBase(){
+  const {data:w,error}=await sb.from('work_orders').select('*');
+  if(error) throw new Error(error.message);
+  const wos=(w||[]).filter(x=>x.deadline);
+  if(!wos.length) return [];
+  const minDate=wos.map(x=>x.work_order_date).filter(Boolean).sort()[0]||'2000-01-01';
+  const [disp,{data:fp},{data:cs}]=await Promise.all([
+    fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('id,work_order_id,qty_bags').gte('date',minDate).order('id').range(a,b)),
+    sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true),
+    sb.from('current_stock').select('*'),
+  ]);
+  const sent={};
+  disp.forEach(d=>{ if(d.work_order_id) sent[d.work_order_id]=(sent[d.work_order_id]||0)+Number(d.qty_bags); });
+  return wos.map(wo=>{
+    const sch=String(wo.scheme||'').toUpperCase();
+    const prod=sch?(fp||[]).find(p=>p.product_name.toUpperCase().includes(sch)):null;
+    const stockRow=prod?(cs||[]).find(r=>r.product_id===prod.id):null;
+    return {wo,ctx:{sentBags:sent[wo.id]||0,ppb:prod?.packets_per_bag||1,stockBags:Number(stockRow?.qty_bags)||0,productName:prod?.product_name||''}};
+  });
+}
+
+// Everything is worked out live from the order + settings. Nothing about alert state is stored.
+const woaInfo=(wo,S,ctx)=>{
+  const ppb=Number(ctx.ppb)||1;
+  const total=Number(wo.total_pkts)||0;
+  const sentPkts=(Number(ctx.sentBags)||0)*ppb;
+  const balPkts=Math.max(0,total-sentPkts);
+  const balBags=balPkts/ppb;
+  const stockBags=Number(ctx.stockBags)||0;
+  const shortBags=Math.max(0,balBags-stockBags);
+  const info={total,sentPkts,balPkts,balBags,ppb,stockBags,shortBags,pct:total>0?sentPkts/total*100:0,daysLeft:null,stage:0,reasons:[],complete:false,bagsPerDay:0,pktsPerDay:0,trucksPerDay:0,prodPerDay:0,workDays:0,atRisk:false,prodRisk:false};
+  if(total>0&&balPkts<=total*(Number(S.tolerance_pct)||0)/100){ info.complete=true; return info; }
+  if(total<=0||!wo.deadline) return info;
+  const daysLeft=daysUntil(wo.deadline);
+  info.daysLeft=daysLeft;
+  const target=licShift(wo.deadline,-(Number(S.buffer_days)||0));
+  info.workDays=liftWorkingDays(today,target,S.off_days);
+  const wd=Math.max(1,info.workDays);
+  info.bagsPerDay=balBags/wd;
+  info.pktsPerDay=balPkts/wd;
+  info.trucksPerDay=Number(S.bags_per_truck)>0?Math.ceil(info.bagsPerDay/Number(S.bags_per_truck)):0;
+  info.prodPerDay=shortBags/wd;
+  if(Number(S.daily_capacity_bags)>0&&info.bagsPerDay>Number(S.daily_capacity_bags)) info.atRisk=true;
+  if(Number(S.production_capacity_bags)>0&&info.prodPerDay>Number(S.production_capacity_bags)) info.prodRisk=true;
+  if(!S.enabled) return info;
+  if(balPkts<(Number(S.min_balance_pkts)||0)) return info;
+
+  const r=Number(S.remind_days)||0, m=Number(S.manager_days)||0, d=Number(S.director_days)||0;
+  let stage=0;
+  if(daysLeft<=r){ stage=1; info.reasons.push(`Within ${r} days of the deadline`); }
+  if(daysLeft<=r-m) stage=2;
+  if(daysLeft<=r-m-d) stage=3;
+  if(daysLeft<0){
+    if(S.alert_overdue){ stage=Math.max(stage,S.overdue_to_director?3:2); info.reasons.push('Deadline has passed'); }
+    else stage=0;
+  }
+  if(S.pace_enabled&&wo.work_order_date&&wo.deadline>wo.work_order_date&&daysLeft>=0){
+    const totalDays=daysUntil(wo.deadline)-daysUntil(wo.work_order_date);
+    const elapsed=-daysUntil(wo.work_order_date);
+    const timePct=totalDays>0?Math.min(100,Math.max(0,elapsed/totalDays*100)):0;
+    if(info.pct<timePct-(Number(S.pace_lag_pct)||0)){
+      stage=Math.max(stage,1);
+      info.reasons.push(`Behind pace: ${info.pct.toFixed(0)}% dispatched, ${timePct.toFixed(0)}% of time used`);
+    }
+  }
+  if(S.risk_alert&&info.atRisk&&daysLeft>=0){
+    stage=Math.max(stage,1);
+    info.reasons.push(`Needs ${fmt(Math.ceil(info.bagsPerDay))} bags/day dispatched, above capacity`);
+  }
+  if(S.shortfall_alert&&shortBags>0&&daysLeft>=0&&daysLeft<=(Number(S.shortfall_days)||0)){
+    stage=Math.max(stage,1);
+    info.reasons.push(`Stock has ${fmt(stockBags)} of ${fmt(Math.ceil(balBags))} pending bags — ${fmt(Math.ceil(shortBags))} bags still to produce`);
+  }
+  if(S.shortfall_alert&&info.prodRisk&&daysLeft>=0){
+    stage=Math.max(stage,1);
+    info.reasons.push(`Needs ${fmt(Math.ceil(info.prodPerDay))} bags/day produced, above production capacity`);
+  }
+  info.stage=stage;
+  return info;
+};
+
+const woaBoard=(base,S)=>base.map(b=>({wo:b.wo,...woaInfo(b.wo,S,b.ctx)}));
+
+// Which work orders should this person see in My Tasks?
+const woaAlertsFor=(board,S,employeeId,role)=>{
+  if(!S.enabled||!S.show_tasks) return [];
+  const me=(employeeId===null||employeeId===undefined)?'':String(employeeId);
+  const extras=(S.extra_ids||[]).map(String);
+  const out=[];
+  board.forEach(x=>{
+    if(x.stage<1) return;
+    let as=null;
+    if(me&&String(S.person_id||'')===me) as='assignee';
+    else if(x.stage>=2&&me&&String(S.manager_id||'')===me) as='manager';
+    else if(me&&extras.includes(me)&&x.stage>=Number(S.extra_from_stage||1)) as='extra';
+    else if(x.stage>=3&&S.notify_director&&role==='director') as='director';
+    if(as) out.push({...x,as});
+  });
+  return out.sort((a,b)=>a.daysLeft-b.daysLeft);
+};
+
+// Shown at the top of My Tasks.
+function WoaAlerts({employeeId,role}){
+  const [list,setList]=useState([]);
+  useEffect(()=>{(async()=>{
+    try{
+      const S=await loadWoaSettings();
+      if(!S.enabled||!S.show_tasks) return;
+      const base=await loadWoaBase();
+      setList(woaAlertsFor(woaBoard(base,S),S,employeeId,role));
+    }catch(e){ console.error('Work order alerts failed:',e.message); }
+  })();},[employeeId,role]);
+  if(list.length===0) return null;
+  return(<div style={{marginBottom:24}}>
+    <div className="section-label">Work orders needing action ({list.length})</div>
+    {list.map(a=>{
+      const wo=a.wo; const col=LIFT_STAGE_COL[a.stage];
+      const who=a.as==='assignee'?'You are the person in charge of dispatching this work order.'
+        :a.as==='manager'?'Escalated to you as manager — the person in charge has not finished dispatching.'
+        :a.as==='extra'?'You are on the extra notification list for work orders.'
+        :'Escalated to the Director.';
+      return(<div key={wo.id} className="card" style={{marginBottom:12,borderLeft:`4px solid ${col}`}}>
+        <div style={{fontSize:15,fontWeight:600}}>📊 Dispatch work order {wo.work_order_no}</div>
+        <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{[wo.scheme,wo.batch_no&&('Batch '+wo.batch_no)].filter(Boolean).join(' · ')}</div>
+        <div style={{fontSize:13,marginTop:6,color:col,fontWeight:500}}>{fmt(a.balPkts)} packets ({fmt(Math.ceil(a.balBags))} bags) still to dispatch · {licDaysText(a.daysLeft)} (deadline {wo.deadline})</div>
+        <div style={{fontSize:12,marginTop:4}}>Needs about {fmt(Math.ceil(a.bagsPerDay))} bags/day{a.trucksPerDay?` (${a.trucksPerDay} truck${a.trucksPerDay===1?'':'s'}/day)`:''} over {a.workDays} working day{a.workDays===1?'':'s'}.</div>
+        {a.reasons.length>0&&<div style={{fontSize:12,marginTop:4,color:'var(--muted)'}}>{a.reasons.join(' · ')}</div>}
+        <div style={{fontSize:12,marginTop:4}}>{who}</div>
+      </div>);
+    })}
+  </div>);
+}
+
+// Shown on the Dashboard.
+function WoaDashboardAlerts(){
+  const [items,setItems]=useState([]);
+  useEffect(()=>{(async()=>{
+    try{
+      const S=await loadWoaSettings();
+      if(!S.enabled||!S.show_dashboard) return;
+      const base=await loadWoaBase();
+      setItems(woaBoard(base,S).filter(x=>x.stage>=1).sort((a,b)=>a.daysLeft-b.daysLeft));
+    }catch(e){ console.error('Work order dashboard alerts failed:',e.message); }
+  })();},[]);
+  return <>{items.map(x=>(
+    <Alert key={x.wo.id} type={x.stage>=3?'red':'amber'} icon="📊"
+      title={`Work order ${x.wo.work_order_no} — ${fmt(x.balPkts)} packets still to dispatch, ${licDaysText(x.daysLeft).toLowerCase()}`}
+      sub={`${x.wo.scheme||''} · deadline ${x.wo.deadline} · needs ${fmt(Math.ceil(x.bagsPerDay))} bags/day${x.reasons.length?' · '+x.reasons.join('; '):''}`}/>
+  ))}</>;
+}
+
+// Settings page
+function WorkOrderAlertSettings(){
+  const [S,setS]=useState(WOA_DEFAULTS);
+  const [emps,setEmps]=useState([]);
+  const [base,setBase]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+
+  useEffect(()=>{(async()=>{
+    const [cfg,{data:e}]=await Promise.all([
+      loadWoaSettings(),
+      sb.from(EMP_TABLE).select('*').range(0,4999),
+    ]);
+    setS(cfg);
+    setEmps((e||[]).filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b))));
+    try{ setBase(await loadWoaBase()); }catch(err){ console.error(err.message); }
+    setLoading(false);
+  })();},[]);
+
+  const save=async()=>{
+    const r=Number(S.remind_days), m=Number(S.manager_days), d=Number(S.director_days);
+    if(!Number.isInteger(r)||r<1) return alert('"Alert person in charge" must be a whole number of days, at least 1.');
+    if(!Number.isInteger(m)||m<0||!Number.isInteger(d)||d<0) return alert('Escalation days must be whole numbers (0 or more).');
+    if(m+d>r&&!confirm(`Manager and Director days add up to more than ${r}, so the Director alert would only start AFTER the deadline. Continue?`)) return;
+    if(S.enabled&&!S.person_id&&!confirm('No person in charge is selected, so only the manager, extra people and Director will be alerted. Continue?')) return;
+    const num=(v)=>Number(v)||0;
+    const clean={...S,
+      default_deadline_days:num(S.default_deadline_days),remind_days:r,manager_days:m,director_days:d,
+      extra_from_stage:num(S.extra_from_stage)||1,min_balance_pkts:num(S.min_balance_pkts),tolerance_pct:num(S.tolerance_pct),
+      pace_lag_pct:num(S.pace_lag_pct),buffer_days:num(S.buffer_days),bags_per_truck:num(S.bags_per_truck),
+      daily_capacity_bags:num(S.daily_capacity_bags),shortfall_days:num(S.shortfall_days),production_capacity_bags:num(S.production_capacity_bags)};
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:WOA_SETTING_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    setS(clean);
+    logActivity('Settings','update','Work order alert settings updated');
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000);
+  };
+
+  const reset=()=>{ if(confirm('Reset every field on this page to the defaults? (Nothing is saved until you press Save.)')) setS(WOA_DEFAULTS); };
+
+  const num=(k,label,props)=>(<Field label={label}><input type="number" className="form-input" value={S[k]} onChange={e=>s(k,e.target.value)} {...(props||{})}/></Field>);
+  const chk=(k,label)=>(<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={!!S[k]} onChange={e=>s(k,e.target.checked)}/>{label}</label>);
+  const empSel=(k,label)=>(<Field label={label}>
+    <select className="form-input" value={S[k]||''} onChange={e=>s(k,e.target.value)}>
+      <option value="">-- Select person --</option>
+      {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+    </select>
+  </Field>);
+  const toggleOff=(i)=>s('off_days',(S.off_days||[]).includes(i)?(S.off_days||[]).filter(x=>x!==i):[...(S.off_days||[]),i]);
+
+  if(loading) return <Loading/>;
+
+  const r=Number(S.remind_days)||0, m=Number(S.manager_days)||0, d=Number(S.director_days)||0;
+  const preview=woaBoard(base,S).filter(x=>!x.complete).sort((a,b)=>a.daysLeft-b.daysLeft);
+  const previewRows=preview.map(x=>[
+    <strong>{x.wo.work_order_no}</strong>,
+    x.wo.scheme||'—',
+    fmt(x.balPkts),
+    x.wo.deadline,
+    licDaysText(x.daysLeft),
+    `${fmt(Math.ceil(x.bagsPerDay))} bags/day`,
+    `${fmt(x.stockBags)} / ${fmt(Math.ceil(x.balBags))} bags`,
+    <span style={{color:LIFT_STAGE_COL[x.stage],fontWeight:600}}>{WOA_STAGE_LABEL[x.stage]}</span>,
+    x.reasons.join('; ')||'—',
+  ]);
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Work order alerts</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--red)'}`}}>
+      {chk('enabled','Work order deadline alerts are ON (untick to switch every alert off; deadlines and planning figures still show)')}
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. Deadline entry</div>
+      <div className="form-grid">
+        {num('default_deadline_days','Default deadline (days after work order date)',{min:0})}
+      </div>
+      <div style={{marginTop:10}}>{chk('require_deadline','Deadline is compulsory when creating a work order')}</div>
+      <div className="dim" style={{fontSize:12}}>The default is pre-filled when a new work order form is opened. Set 0 for no pre-fill. The deadline can still be changed on each work order.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. When to alert (days before the deadline)</div>
+      <div className="form-grid">
+        {num('remind_days','Alert person in charge (days before deadline)',{min:1})}
+        {num('manager_days','Escalate to manager after (more days)',{min:0})}
+        {num('director_days','Escalate to Director after (more days)',{min:0})}
+      </div>
+      <div style={{marginTop:10,fontSize:12,color:'var(--blue)'}}>
+        Person in charge from {r} days left · manager from {r-m} days left · Director from {r-m-d} days left (a negative number means after the deadline).
+      </div>
+      <div style={{marginTop:10}}>
+        {chk('alert_overdue','Keep alerting after the deadline passes, until the work order is fully dispatched')}
+        {chk('overdue_to_director','Once overdue, go straight to the Director')}
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">3. Who gets alerted</div>
+      <div className="form-grid">
+        {empSel('person_id','Person in charge of dispatch')}
+        {empSel('manager_id','Manager (escalation)')}
+      </div>
+      <div style={{marginTop:10}}>{chk('notify_director','Alert every Director when escalation reaches the Director stage')}</div>
+      <div className="form-grid" style={{marginTop:10}}>
+        <Field label="Additional people to alert (Ctrl/Cmd-click to pick several)">
+          <select multiple size={6} className="form-input" value={(S.extra_ids||[]).map(String)} onChange={e=>s('extra_ids',Array.from(e.target.selectedOptions).map(o=>o.value))}>
+            {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+          </select>
+        </Field>
+        <Field label="Additional people start getting alerts from">
+          <select className="form-input" value={S.extra_from_stage} onChange={e=>s('extra_from_stage',Number(e.target.value))}>
+            <option value={1}>First alert (same time as person in charge)</option>
+            <option value={2}>Manager stage</option>
+            <option value={3}>Director stage</option>
+          </select>
+        </Field>
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>A person only sees alerts if their login is linked to their employee profile in the HR portal.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">4. Quantity rules</div>
+      <div className="form-grid">
+        {num('min_balance_pkts','Only alert if pending quantity is at least (packets)',{min:0})}
+        {num('tolerance_pct','Treat work order as complete when pending is within (% of allotted)',{min:0,step:'0.1'})}
+        {num('pace_lag_pct','Early warning if dispatched % is behind time used by more than (% points)',{min:0})}
+      </div>
+      <div style={{marginTop:10}}>{chk('pace_enabled','Behind-pace early warning: alert before the normal window if dispatch is slower than the time used since the work order date')}</div>
+      <div className="dim" style={{fontSize:12}}>Example: tolerance 1% means a 10,000 packet work order with 80 packets left is treated as done and stops alerting.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">5. Dispatch planning</div>
+      <div className="form-grid">
+        {num('buffer_days','Safety buffer (finish dispatch this many days before the deadline)',{min:0})}
+        {num('bags_per_truck','Average bags per truck',{min:0})}
+        {num('daily_capacity_bags','Maximum you can dispatch per day (bags, 0 = no limit)',{min:0})}
+      </div>
+      <div style={{marginTop:12}}>
+        <div className="form-label" style={{marginBottom:6}}>Weekly off days (not counted as dispatch days)</div>
+        <div style={{display:'flex',gap:14,flexWrap:'wrap'}}>
+          {LIFT_WEEKDAYS.map((n,i)=>(<label key={i} style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}>
+            <input type="checkbox" checked={(S.off_days||[]).includes(i)} onChange={()=>toggleOff(i)}/>{n}
+          </label>))}
+        </div>
+      </div>
+      <div style={{marginTop:12}}>{chk('risk_alert','Alert the person in charge early if the required daily dispatch is above your daily capacity')}</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">6. Production and stock cover</div>
+      <div style={{marginBottom:10}}>{chk('shortfall_alert','Alert when finished stock cannot cover the pending bags (and when the daily production needed is above capacity)')}</div>
+      <div className="form-grid">
+        {num('shortfall_days','Start the stock-shortfall alert when this many days are left',{min:0})}
+        {num('production_capacity_bags','Maximum you can produce per day for this scheme (bags, 0 = no limit)',{min:0})}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>Pending bags = pending packets ÷ packets per bag. Stock cover compares them with finished stock of the product for that scheme; the gap is what still has to be produced.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">7. Where alerts appear</div>
+      {chk('show_tasks','In My Tasks and the badge on the sidebar')}
+      {chk('show_dashboard','On the Dashboard alerts list (visible to everyone who opens the Dashboard)')}
+    </div>
+
+    <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:24,flexWrap:'wrap'}}>
+      <button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':'Save settings'}</button>
+      <button className="btn btn-ghost" onClick={reset}>Reset to defaults</button>
+      {msg&&<span style={{fontSize:12,color:'var(--green)'}}>{msg}</span>}
+    </div>
+
+    <div className="section-label">Live preview — your work orders with a deadline under these settings (unsaved changes included)</div>
+    <RTable head={['Work order','Scheme','Pending (pkts)','Deadline','Time left','Needed','Stock cover','Alert stage','Why']} rows={previewRows} empty="No open work orders with a deadline yet."/>
+  </div>);
+}
+
 function WorkOrderTracker(){
   const [workOrders,setWorkOrders]=useState([]);
   const [dispatches,setDispatches]=useState([]);
@@ -3625,9 +3991,11 @@ function WorkOrderTracker(){
   const [depotAllotments,setDepotAllotments]=useState({});
   const now=new Date();
   const [filterMonth,setFilterMonth]=useState(now.getMonth()+1);
+  const [S,setS]=useState(WOA_DEFAULTS);
+  const [board,setBoard]=useState({});
   const [filterYear,setFilterYear]=useState(now.getFullYear());
-  const eBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
-  const cBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
+  const eBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',deadline:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
+  const cBlank={work_order_no:'',work_order_date:today,scheme:'',batch_no:'',deadline:'',period_month:now.getMonth()+1,period_year:now.getFullYear()};
   const [cForm,setCForm]=useState(cBlank);
   const cf=(k,v)=>setCForm(p=>({...p,[k]:v}));
   const [eForm,setEForm]=useState(eBlank);
@@ -3643,6 +4011,8 @@ function WorkOrderTracker(){
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true).limit(1),
     ]);
     setWorkOrders(w||[]); setDispatches(d||[]); setFinishedProducts(fp||[]); setDepots(dep||[]);
+    const WS=await loadWoaSettings(); setS(WS);
+    try{ const base=await loadWoaBase(); const b=woaBoard(base,WS); setBoard(Object.fromEntries(b.map(x=>[x.wo.id,x]))); }catch(e){ console.error('Work order deadline data failed:',e.message); }
     setWheatMaterial((wm&&wm[0])||null); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -3652,9 +4022,11 @@ function WorkOrderTracker(){
 
   const saveCreate=async()=>{
     if(!cForm.work_order_no) return alert('Work order number required.');
+    if(S.require_deadline&&!cForm.deadline) return alert('Deadline is required.');
+    if(cForm.deadline&&cForm.deadline<cForm.work_order_date) return alert('The deadline cannot be before the work order date.');
     setSaving(true);
     const totalPkts=Object.values(depotAllotments).reduce((s,v)=>s+(Number(v)||0),0);
-    const {data,error}=await sb.from('work_orders').insert({...cForm, total_pkts:totalPkts}).select().single();
+    const {data,error}=await sb.from('work_orders').insert({...cForm, deadline:cForm.deadline||null, total_pkts:totalPkts}).select().single();
     if(error){alert(error.message);setSaving(false);return;}
 
     const allotRows=Object.entries(depotAllotments).filter(([,v])=>Number(v)>0).map(([depotId,v])=>({work_order_id:data.id, depot_id:depotId, allotted_pkts:Number(v)}));
@@ -3668,18 +4040,31 @@ function WorkOrderTracker(){
     load();
   };
 
+  const setDeadline=async(wo)=>{
+    const v=prompt('Deadline for '+wo.work_order_no+' (YYYY-MM-DD). Leave empty to clear:',wo.deadline||'');
+    if(v===null) return;
+    const dd=v.trim();
+    if(dd&&!/^\d{4}-\d{2}-\d{2}$/.test(dd)) return alert('Use the format YYYY-MM-DD, for example 2026-11-30.');
+    const {error}=await sb.from('work_orders').update({deadline:dd||null}).eq('id',wo.id);
+    if(error) return alert(error.message);
+    logActivity('Work Order Tracker','update',`${wo.work_order_no} deadline → ${dd||'cleared'}`);
+    load();
+  };
+
   const startEdit=(wo)=>{
     setEditingId(wo.id);
     setEForm({
-      work_order_no:wo.work_order_no, work_order_date:wo.work_order_date, scheme:wo.scheme, batch_no:wo.batch_no||'',
+      work_order_no:wo.work_order_no, work_order_date:wo.work_order_date, scheme:wo.scheme, batch_no:wo.batch_no||'', deadline:wo.deadline||'',
       period_month: wo.period_month||now.getMonth()+1, period_year: wo.period_year||now.getFullYear()
     });
   };
 
   const saveEdit=async()=>{
+    if(S.require_deadline&&!eForm.deadline) return alert('Deadline is required.');
+    if(eForm.deadline&&eForm.deadline<eForm.work_order_date) return alert('The deadline cannot be before the work order date.');
     setSaving(true);
     const {error}=await sb.from('work_orders').update({
-      work_order_no:eForm.work_order_no, work_order_date:eForm.work_order_date, scheme:eForm.scheme, batch_no:eForm.batch_no,
+      work_order_no:eForm.work_order_no, work_order_date:eForm.work_order_date, scheme:eForm.scheme, batch_no:eForm.batch_no, deadline:eForm.deadline||null,
       period_month:Number(eForm.period_month), period_year:Number(eForm.period_year)
     }).eq('id',editingId);
     if(error){alert(error.message);setSaving(false);return;}
@@ -3711,7 +4096,7 @@ function WorkOrderTracker(){
           {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
         </select>
         <select style={{width:90}} value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
-        <button className="btn btn-amber" onClick={()=>setShowCreate(v=>!v)}>+ Work order</button>
+        <button className="btn btn-amber" onClick={()=>{ if(!showCreate&&Number(S.default_deadline_days)>0) setCForm(p=>({...p,deadline:p.deadline||licShift(p.work_order_date||today,Number(S.default_deadline_days))})); setShowCreate(v=>!v); }}>+ Work order</button>
       </div>
     </div>
 
@@ -3722,6 +4107,7 @@ function WorkOrderTracker(){
           <Field label="Date"><input type="date" className="form-input" value={cForm.work_order_date} onChange={e=>cf('work_order_date',e.target.value)}/></Field>
           <Field label="Scheme"><select className="form-input" value={cForm.scheme} onChange={e=>cf('scheme',e.target.value)}><option value="">-- Select --</option>{schemeOptions.map(s=><option key={s}>{s}</option>)}</select></Field>
           <Field label="Batch no."><input className="form-input" value={cForm.batch_no} onChange={e=>cf('batch_no',e.target.value.toUpperCase())}/></Field>
+          <Field label={S.require_deadline?'Dispatch deadline ★':'Dispatch deadline'}><input type="date" className="form-input" min={cForm.work_order_date} value={cForm.deadline} onChange={e=>cf('deadline',e.target.value)}/></Field>
           <Field label="Assigned month">
             <select className="form-input" value={cForm.period_month} onChange={e=>cf('period_month',Number(e.target.value))}>
               {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
@@ -3760,6 +4146,7 @@ function WorkOrderTracker(){
               <Field label="Date"><input type="date" className="form-input" value={eForm.work_order_date} onChange={e=>ef('work_order_date',e.target.value)}/></Field>
               <Field label="Scheme"><input className="form-input" value={eForm.scheme} onChange={e=>ef('scheme',e.target.value)}/></Field>
               <Field label="Batch no."><input className="form-input" value={eForm.batch_no} onChange={e=>ef('batch_no',e.target.value)}/></Field>
+              <Field label={S.require_deadline?'Dispatch deadline ★':'Dispatch deadline'}><input type="date" className="form-input" min={eForm.work_order_date} value={eForm.deadline} onChange={e=>ef('deadline',e.target.value)}/></Field>
               <Field label="Assigned month">
                 <select className="form-input" value={eForm.period_month} onChange={e=>ef('period_month',e.target.value)}>
                   {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
@@ -3781,6 +4168,21 @@ function WorkOrderTracker(){
               <span className="badge badge-blue" style={{marginLeft:8}}>{wo.scheme}</span>
               <span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.work_order_date}</span>
               <button className="btn btn-ghost btn-sm" style={{marginLeft:10}} onClick={()=>startEdit(wo)}>Edit</button>
+              {(()=>{
+                const bi=board[wo.id];
+                const col=bi&&bi.daysLeft!==null&&bi.daysLeft<0?'var(--red)':bi?LIFT_STAGE_COL[bi.stage]:'var(--muted)';
+                return(<>
+                  {bi&&bi.complete?<span className="badge badge-green" style={{marginLeft:8}}>Complete</span>
+                    :wo.deadline&&bi?<span className="badge" style={{marginLeft:8,background:`color-mix(in srgb, ${col} 18%, transparent)`,color:col}}>⏰ {wo.deadline} · {licDaysText(bi.daysLeft)}</span>
+                    :<span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.deadline?`⏰ ${wo.deadline}`:'No deadline'}</span>}
+                  <button className="btn btn-ghost btn-sm" style={{marginLeft:6}} onClick={()=>setDeadline(wo)}>✎ deadline</button>
+                  {bi&&!bi.complete&&wo.deadline&&(<div style={{fontSize:12,marginTop:6,color:'var(--muted)'}}>
+                    Needs about {fmt(Math.ceil(bi.bagsPerDay))} bags/day{bi.trucksPerDay?` · ${bi.trucksPerDay} truck${bi.trucksPerDay===1?'':'s'}/day`:''} over {bi.workDays} working day{bi.workDays===1?'':'s'}.
+                    {' '}Stock: {fmt(bi.stockBags)} of {fmt(Math.ceil(bi.balBags))} pending bags{bi.shortBags>0?<strong style={{color:'var(--red)'}}> — {fmt(Math.ceil(bi.shortBags))} still to produce</strong>:' ✓ covered'}
+                    {bi.atRisk&&<strong style={{color:'var(--red)'}}> · ⚠ above daily dispatch capacity</strong>}
+                  </div>)}
+                </>);
+              })()}
             </div>
             <div style={{display:'flex',gap:16,fontFamily:'var(--mono)',fontSize:13}}>
               <span>Allotted: <strong>{fmt(wo.total_pkts)} pkts</strong></span>
@@ -4394,6 +4796,7 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
     </div>
     <RenewalAlerts employeeId={employeeId} role={role} onRenewed={onRenewed}/>
     <LiftingAlerts employeeId={employeeId} role={role}/>
+    <WoaAlerts employeeId={employeeId} role={role}/>
     <div className="stat-grid">
       <StatCard label="Open tasks" value={open.length} col="var(--blue)"/>
       <StatCard label="Overdue" value={overdue.length} col={overdue.length>0?'var(--red)':'var(--green)'}/>
@@ -5852,6 +6255,8 @@ function App(){
         const LS=await loadLiftSettings();
         const {data:lo}=await sb.from('lifting_orders').select('*');
         n+=liftAlertsFor(lo||[],LS,access.employee_id,access.role).length;
+        const WS=await loadWoaSettings();
+        if(WS.enabled&&WS.show_tasks) n+=woaAlertsFor(woaBoard(await loadWoaBase(),WS),WS,access.employee_id,access.role).length;
       }catch(e){}
       if(!cancelled&&!error) setRenewalCount(n);
     };
@@ -5901,6 +6306,7 @@ function App(){
         'cashbook-settings':<CashBookSettings/>,
     'depot-settings':<DepotSettings/>,
     'lifting-settings':<LiftingAlertSettings/>,
+    'workorder-settings':<WorkOrderAlertSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
     'job-cards':<JobCards/>,
