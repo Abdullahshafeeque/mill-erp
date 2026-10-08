@@ -4527,23 +4527,18 @@ function WorkOrderTracker(){
 
   const deleteWorkOrder=async(wo)=>{
   if(!allow('record.delete')) return alert('Your role cannot delete records.');
-  const {count}=await sb.from('supplyco_dispatches').select('id',{count:'exact',head:true}).eq('work_order_id',wo.id);
+  const {count,error:ce}=await sb.from('supplyco_dispatches').select('id',{count:'exact',head:true}).eq('work_order_id',wo.id);
+  if(ce) return alert('Could not check dispatches: '+ce.message);
   const n=count||0;
-  const msg=n>0
-    ?`Delete work order ${wo.work_order_no}?\n\n${n} dispatch entr${n===1?'y is':'ies are'} linked to it. The dispatches and stock stay as they are, but they will no longer be linked to any work order.\n\nThis cannot be undone.`
-    :`Delete work order ${wo.work_order_no} and its depot allotments? This cannot be undone.`;
-  if(!confirm(msg)) return;
+  if(n>0) return alert(`Work order ${wo.work_order_no} cannot be deleted.\n\n${n} dispatch entr${n===1?'y is':'ies are'} already recorded against it. Delete those dispatches in Supplyco Dispatch first (or edit them to point at a different work order), then try again.`);
+  if(!confirm(`Delete work order ${wo.work_order_no} and its depot allotments? This cannot be undone.`)) return;
   setSaving(true);
-  if(n>0){
-    const {error:ue}=await sb.from('supplyco_dispatches').update({work_order_id:null}).eq('work_order_id',wo.id);
-    if(ue){ alert('Could not unlink dispatches: '+ue.message); setSaving(false); return; }
-  }
   const {error:ae}=await sb.from('work_order_allotments').delete().eq('work_order_id',wo.id);
   if(ae){ alert('Could not delete allotments: '+ae.message); setSaving(false); return; }
   const {error}=await sb.from('work_orders').delete().eq('id',wo.id);
   setSaving(false);
   if(error) return alert('Could not delete: '+error.message);
-  logActivity('Work Order Tracker','delete',`Deleted work order ${wo.work_order_no} (${wo.scheme||'—'}, ${fmt(wo.total_pkts)} packets${n>0?`, ${n} dispatch(es) unlinked`:''})`);
+  logActivity('Work Order Tracker','delete',`Deleted work order ${wo.work_order_no} (${wo.scheme||'—'}, ${fmt(wo.total_pkts)} packets)`);
   load();
 };
 
