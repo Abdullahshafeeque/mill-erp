@@ -1293,6 +1293,7 @@ function PackingRules(){
     if(error) return alert(error.message);
     logActivity('Packing Rules','update',`Auto-deduction starts from ${startInput}`);
     setStartDate(startInput);
+    alert('Saved. Auto-deduction is active from '+startInput+'.');
   };
 
   const itemName=(id)=>{ const s=items.find(x=>String(x.id)===String(id)); return s?s.item_name:'(missing item)'; };
