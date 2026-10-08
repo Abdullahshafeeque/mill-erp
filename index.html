@@ -4525,6 +4525,28 @@ function WorkOrderTracker(){
     load();
   };
 
+  const deleteWorkOrder=async(wo)=>{
+  if(!allow('record.delete')) return alert('Your role cannot delete records.');
+  const {count}=await sb.from('supplyco_dispatches').select('id',{count:'exact',head:true}).eq('work_order_id',wo.id);
+  const n=count||0;
+  const msg=n>0
+    ?`Delete work order ${wo.work_order_no}?\n\n${n} dispatch entr${n===1?'y is':'ies are'} linked to it. The dispatches and stock stay as they are, but they will no longer be linked to any work order.\n\nThis cannot be undone.`
+    :`Delete work order ${wo.work_order_no} and its depot allotments? This cannot be undone.`;
+  if(!confirm(msg)) return;
+  setSaving(true);
+  if(n>0){
+    const {error:ue}=await sb.from('supplyco_dispatches').update({work_order_id:null}).eq('work_order_id',wo.id);
+    if(ue){ alert('Could not unlink dispatches: '+ue.message); setSaving(false); return; }
+  }
+  const {error:ae}=await sb.from('work_order_allotments').delete().eq('work_order_id',wo.id);
+  if(ae){ alert('Could not delete allotments: '+ae.message); setSaving(false); return; }
+  const {error}=await sb.from('work_orders').delete().eq('id',wo.id);
+  setSaving(false);
+  if(error) return alert('Could not delete: '+error.message);
+  logActivity('Work Order Tracker','delete',`Deleted work order ${wo.work_order_no} (${wo.scheme||'—'}, ${fmt(wo.total_pkts)} packets${n>0?`, ${n} dispatch(es) unlinked`:''})`);
+  load();
+};
+
   const startEdit=(wo)=>{
     setEditingId(wo.id);
     setEAllot(Object.fromEntries((wo.allots||[]).map(a=>[String(a.depot_id),String(a.allotted_pkts)])));
@@ -4715,6 +4737,7 @@ function WorkOrderTracker(){
               <span className="badge badge-blue" style={{marginLeft:8}}>{wo.scheme}</span>
               <span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.work_order_date}</span>
               <button className="btn btn-ghost btn-sm" style={{marginLeft:10}} onClick={()=>startEdit(wo)}>Edit</button>
+{allow('record.delete')&&<button className="btn btn-red btn-sm" style={{marginLeft:6}} onClick={()=>deleteWorkOrder(wo)} disabled={saving}>Delete</button>}
               {(()=>{
                 const bi=board[wo.id];
                 const col=bi&&bi.daysLeft!==null&&bi.daysLeft<0?'var(--red)':bi?LIFT_STAGE_COL[bi.stage]:'var(--muted)';
