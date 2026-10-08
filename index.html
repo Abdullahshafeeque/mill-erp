@@ -6624,7 +6624,8 @@ function StockCount({role,userEmail,onPending}){
 // LICENSES & RENEWALS
 // ══════════════════════════════════════════════════════════
 const LIC_CATEGORIES=['License','Certificate','Registration','Permit','Insurance','Compliance filing','Other'];
-const LIC_FREQUENCIES=['Monthly','Quarterly','Half-yearly','Annual','Every 2 years','Every 3 years','Every 5 years'];
+const LIC_FREQUENCIES=['Monthly','Quarterly','Half-yearly','Annual','Every 2 years'];
+const LIC_N_YEARS='Every N years';
 const LIC_BUCKET='license-docs';
 const LIC_STAGE_LABEL=['Not due yet','Person in charge alerted','Escalated to manager','Escalated to Director'];
 const LIC_STAGE_COL=['var(--green)','var(--amber)','#EA580C','var(--red)'];
@@ -6792,7 +6793,7 @@ function Licenses({role,userEmail,onChanged}){
   const [renewing,setRenewing]=useState(null);
   const [history,setHistory]=useState(null);
   const [viewerUrl,setViewerUrl]=useState(null);
-  const blank={name:'',category:'License',license_no:'',issuing_authority:'',frequency:'Annual',issue_date:'',expiry_date:'',assigned_to_id:'',manager_id:'',remind_days:30,manager_days:10,director_days:10,notes:''};
+  const blank={name:'',category:'License',license_no:'',issuing_authority:'',frequency:'Annual',freq_years:3,issue_date:'',expiry_date:'',assigned_to_id:'',manager_id:'',remind_days:30,manager_days:10,director_days:10,notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const changed=()=>{ if(onChanged) onChanged(); };
@@ -6814,7 +6815,7 @@ function Licenses({role,userEmail,onChanged}){
   const startAdd=()=>{ setEditingId(null); setForm(blank); setNewFiles([]); setFileKey(k=>k+1); setShowForm(true); };
   const startEdit=(l)=>{
     setEditingId(l.id);
-    setForm({name:l.name||'',category:l.category||'License',license_no:l.license_no||'',issuing_authority:l.issuing_authority||'',frequency:l.frequency||'Annual',issue_date:l.issue_date||'',expiry_date:l.expiry_date||'',assigned_to_id:l.assigned_to_id||'',manager_id:l.manager_id||'',remind_days:l.remind_days,manager_days:l.manager_days,director_days:l.director_days,notes:l.notes||''});
+    setForm({name:l.name||'',category:l.category||'License',license_no:l.license_no||'',issuing_authority:l.issuing_authority||'',...(()=>{const m=/^Every (\d+) years?$/.exec(l.frequency||''); return m&&Number(m[1])>=3?{frequency:LIC_N_YEARS,freq_years:Number(m[1])}:{frequency:l.frequency||'Annual',freq_years:3};})(),issue_date:l.issue_date||'',expiry_date:l.expiry_date||'',assigned_to_id:l.assigned_to_id||'',manager_id:l.manager_id||'',remind_days:l.remind_days,manager_days:l.manager_days,director_days:l.director_days,notes:l.notes||''});
     setNewFiles([]); setFileKey(k=>k+1); setShowForm(true);
   };
 
@@ -6824,6 +6825,7 @@ function Licenses({role,userEmail,onChanged}){
 
   const save=async()=>{
     if(!form.name.trim()) return alert('Name is required.');
+    if(form.frequency===LIC_N_YEARS&&(!Number.isInteger(Number(form.freq_years))||Number(form.freq_years)<1)) return alert('Enter the number of years as a whole number, 1 or more.');
     if(!form.expiry_date) return alert('Expiry date is required.');
     if(!form.assigned_to_id) return alert('Select the person in charge of renewing.');
     if(!form.manager_id) return alert('Select the manager the alert escalates to.');
@@ -6838,7 +6840,7 @@ function Licenses({role,userEmail,onChanged}){
     if(orig&&isDirector&&orig.expiry_date!==form.expiry_date&&!confirm(`You are changing the expiry date from ${orig.expiry_date} to ${form.expiry_date} directly, without a renewal document. Use "Renew" for real renewals; edit the date only to correct a typing mistake. Continue?`)) return;
     setSaving(true);
     const {data:{user}}=await sb.auth.getUser();
-    const payload={name:form.name.trim(),category:form.category,license_no:form.license_no.trim()||null,issuing_authority:form.issuing_authority.trim()||null,frequency:form.frequency,issue_date:form.issue_date||null,assigned_to_id:String(form.assigned_to_id),assigned_to_name:empNameById(form.assigned_to_id)||null,manager_id:String(form.manager_id),manager_name:empNameById(form.manager_id)||null,remind_days:r,manager_days:m,director_days:d,notes:form.notes.trim()||null};
+    const payload={name:form.name.trim(),category:form.category,license_no:form.license_no.trim()||null,issuing_authority:form.issuing_authority.trim()||null,frequency:form.frequency===LIC_N_YEARS?(Number(form.freq_years)===1?'Annual':`Every ${Number(form.freq_years)} years`):form.frequency,issue_date:form.issue_date||null,assigned_to_id:String(form.assigned_to_id),assigned_to_name:empNameById(form.assigned_to_id)||null,manager_id:String(form.manager_id),manager_name:empNameById(form.manager_id)||null,remind_days:r,manager_days:m,director_days:d,notes:form.notes.trim()||null};
     if(!editingId||isDirector) payload.expiry_date=form.expiry_date;
     if(editingId){
       const {error}=await sb.from('licenses').update(payload).eq('id',editingId);
@@ -7051,7 +7053,8 @@ function Licenses({role,userEmail,onChanged}){
               <Field label="Category"><select className="form-input" value={form.category} onChange={e=>f('category',e.target.value)}>{LIC_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
               <Field label="License / certificate no."><input className="form-input" value={form.license_no} onChange={e=>f('license_no',e.target.value)}/></Field>
               <Field label="Issuing authority"><input className="form-input" value={form.issuing_authority} onChange={e=>f('issuing_authority',e.target.value)}/></Field>
-              <Field label="Renews"><select className="form-input" value={form.frequency} onChange={e=>f('frequency',e.target.value)}>{LIC_FREQUENCIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+              <Field label="Renews"><select className="form-input" value={form.frequency} onChange={e=>f('frequency',e.target.value)}>{LIC_FREQUENCIES.map(c=><option key={c}>{c}</option>)}<option value={LIC_N_YEARS}>Every N years (enter number)</option></select></Field>
+{form.frequency===LIC_N_YEARS&&<Field label="Number of years ★"><input type="number" min="1" step="1" className="form-input" value={form.freq_years} onChange={e=>f('freq_years',e.target.value)}/></Field>}
               <Field label="Issue date"><input type="date" className="form-input" value={form.issue_date} onChange={e=>f('issue_date',e.target.value)}/></Field>
               <Field label={editingId&&!isDirector?'Expiry date (use Renew to change)':'Expiry date ★'}><input type="date" className="form-input" value={form.expiry_date} disabled={!!editingId&&!isDirector} onChange={e=>f('expiry_date',e.target.value)}/></Field>
             </div>
