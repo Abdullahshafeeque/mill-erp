@@ -181,7 +181,8 @@ const NAV = [
   { id:'private-inwards', label:'Private Inwards', icon:'🌿' },
   { id:'reconciliation', label:'Reconciliation', icon:'📊' },
   { id:'job-cards', label:'Job Cards', icon:'🛠️' },
-    { id:'licenses', label:'Licenses & Renewals', icon:'📑' },
+    { id:'recurring-jobs', label:'Recurring Jobs', icon:'🔁' },
+  { id:'licenses', label:'Licenses & Renewals', icon:'📑' },
   { section:'Inventory' },
   { id:'all-stock', label:'All Stock', icon:'📦' },
   { id:'store', label:'Store & Materials', icon:'🧰' },
@@ -208,7 +209,7 @@ const NAV = [
 const ALL_PAGES='*';
 const ROLE_PAGES={
   director:ALL_PAGES,
-  manager:['dashboard','timeline','production','dispatch','work-order-tracker','private-dispatch','lifting-orders','returns','fci-inwards','private-inwards','reconciliation','job-cards','licenses','all-stock','store','stock-count','ledger','reports','product-master','depot-settings','lifting-settings','workorder-settings','product-recipes','activity-log','my-tasks'],
+  manager:['dashboard','timeline','production','dispatch','work-order-tracker','private-dispatch','lifting-orders','returns','fci-inwards','private-inwards','reconciliation','job-cards','recurring-jobs','licenses','all-stock','store','stock-count','ledger','reports','product-master','depot-settings','lifting-settings','workorder-settings','product-recipes','activity-log','my-tasks'],
   accountant:['dashboard','timeline','reconciliation','all-stock','ledger','reports','my-tasks'],
   supervisor:['dashboard','timeline','production','returns','job-cards','all-stock','store','stock-count','my-tasks'],
   store:['dashboard','all-stock','store','stock-count','fci-inwards','private-inwards','my-tasks'],
@@ -4771,7 +4772,7 @@ const JOB_PRIORITIES=['Low','Medium','High','Urgent'];
 const PHOTO_RETENTION_DAYS=30;
 const PRIORITY_COL={Urgent:'var(--red)',High:'var(--amber)',Medium:'var(--blue)',Low:'var(--dim)'};
 const PRIORITY_BADGE={Urgent:'badge-red',High:'badge-amber',Medium:'badge-blue',Low:'badge-muted'};
-const STATUS_BADGE={Pending:'badge-muted','In Progress':'badge-amber',Done:'badge-green'};
+const STATUS_BADGE={Pending:'badge-muted','In Progress':'badge-amber','Awaiting Approval':'badge-blue',Done:'badge-green'};
 
 const daysUntil=(dateStr)=>{
   if(!dateStr) return null;
@@ -4823,7 +4824,7 @@ const empIsActive=(e)=>{
   return !['left','inactive','resigned','terminated','exited'].includes(s);
 };
 
-function JobCards(){
+function JobCards({employeeId,role,userEmail}){
   const [jobs,setJobs]=useState([]);
   const [photos,setPhotos]=useState({});
   const [loading,setLoading]=useState(true);
@@ -4841,7 +4842,7 @@ function JobCards(){
   const [viewerUrl,setViewerUrl]=useState(null);
   const [employees,setEmployees]=useState([]);
   const [empError,setEmpError]=useState('');
-  const blank={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to:'',deadline:'',est_cost:'',require_cost:false,require_notes:false,require_photo:false,assigned_to_id:''};
+  const blank={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to:'',deadline:'',est_cost:'',require_cost:false,require_notes:false,require_photo:false,assigned_to_id:'',due_time:'',requires_approval:false,approver_id:'',require_checklist:false,checklist_text:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -4883,17 +4884,20 @@ function JobCards(){
 
   const startEdit=(j)=>{
     setEditingId(j.id);
-    setForm({title:j.title||'',description:j.description||'',category:j.category||'Other',priority:j.priority||'Medium',location:j.location||'',assigned_to:j.assigned_to||'',assigned_to_id:j.assigned_to_id?String(j.assigned_to_id):(j.assigned_to?'__other__':''),deadline:j.deadline||'',est_cost:j.est_cost??'',require_cost:!!j.require_cost,require_notes:!!j.require_notes,require_photo:!!j.require_photo});
+    setForm({title:j.title||'',description:j.description||'',category:j.category||'Other',priority:j.priority||'Medium',location:j.location||'',assigned_to:j.assigned_to||'',assigned_to_id:j.assigned_to_id?String(j.assigned_to_id):(j.assigned_to?'__other__':''),deadline:j.deadline||'',est_cost:j.est_cost??'',require_cost:!!j.require_cost,require_notes:!!j.require_notes,require_photo:!!j.require_photo,due_time:j.due_time||'',requires_approval:!!j.requires_approval,approver_id:j.approver_id?String(j.approver_id):'',require_checklist:!!j.require_checklist,checklist_text:(j.checklist||[]).map(x=>x.t).join('\n')});
     setNewFiles([]); setFileKey(k=>k+1); setShowForm(true);
     window.scrollTo?.(0,0);
   };
 
   const saveJob=async()=>{
     if(!form.title.trim()) return alert('Job title is required.');
+    if(form.requires_approval&&!form.approver_id) return alert('Choose who approves this job.');
     setSaving(true);
     const {data:{user}}=await sb.auth.getUser();
-    const payload={title:form.title.trim(),description:form.description,category:form.category,priority:form.priority,location:form.location,assigned_to:form.assigned_to,assigned_to_id:(form.assigned_to_id&&form.assigned_to_id!=='__other__')?form.assigned_to_id:null,deadline:form.deadline||null,est_cost:form.est_cost===''?null:Number(form.est_cost),require_cost:!!form.require_cost,require_notes:!!form.require_notes,require_photo:!!form.require_photo};
+    const payload={title:form.title.trim(),description:form.description,category:form.category,priority:form.priority,location:form.location,assigned_to:form.assigned_to,assigned_to_id:(form.assigned_to_id&&form.assigned_to_id!=='__other__')?form.assigned_to_id:null,deadline:form.deadline||null,est_cost:form.est_cost===''?null:Number(form.est_cost),require_cost:!!form.require_cost,require_notes:!!form.require_notes,require_photo:!!form.require_photo,due_time:form.due_time||null,requires_approval:!!form.requires_approval,approver_id:form.requires_approval?String(form.approver_id):null,approver_name:form.requires_approval?(()=>{const e=employees.find(x=>String(x.id)===String(form.approver_id));return e?empName(e):null;})():null,require_checklist:!!form.require_checklist};
     let jobId=editingId;
+    const prevCl=(editingId&&(jobs.find(x=>x.id===editingId)||{}).checklist)||[];
+    payload.checklist=form.checklist_text.split('\n').map(s=>s.trim()).filter(Boolean).map(t=>({t,done:!!(prevCl.find(c=>c.t===t)||{}).done}));
     const orig=editingId?jobs.find(x=>x.id===editingId):null;
     const newKey=payload.assigned_to_id||payload.assigned_to||'';
     const oldKey=orig?(orig.assigned_to_id?String(orig.assigned_to_id):(orig.assigned_to||'')):'';
@@ -4913,14 +4917,14 @@ function JobCards(){
   };
 
   const setStatus=async(j,status)=>{
-    const upd=status==='Pending'?{status,completed_at:null,completed_by:null}:{status};
+    const upd=status==='Pending'?{status,completed_at:null,completed_by:null,approval_status:'none',approved_by:null,approved_at:null,submitted_at:null}:{status};
     const {error}=await sb.from('job_cards').update(upd).eq('id',j.id);
     if(error) return alert(error.message);
     logActivity('Job Cards','update',`${j.title} → ${status}`);
     load();
   };
 
-  const openDone=(j)=>{ setDoneJob(j); setDoneForm({notes:j.completion_notes||'',actual_cost:j.actual_cost??'',keep:false}); setDoneFiles([]); };
+  const openDone=(j)=>{ if(j.status==='Awaiting Approval') return alert('This job is already waiting for approval.'); if(j.require_checklist&&(j.checklist||[]).some(c=>!c.done)) return alert('Tick every checklist step before marking this job done.'); setDoneJob(j); setDoneForm({notes:j.completion_notes||'',actual_cost:j.actual_cost??'',keep:false}); setDoneFiles([]); };
 
   const confirmDone=async()=>{
     const missing=[];
@@ -4933,11 +4937,11 @@ function JobCards(){
     const {error}=await sb.from('job_cards').update({
       status:'Done', completed_at:new Date().toISOString(), completed_by:user?.email||null,
       completion_notes:doneForm.notes, actual_cost:doneForm.actual_cost===''?null:Number(doneForm.actual_cost),
-      keep_photos:!!doneForm.keep, photos_deleted:false
+      keep_photos:!!doneForm.keep, photos_deleted:false, ...jobCloseExtras(doneJob,user,employeeId,role)
     }).eq('id',doneJob.id);
     if(error){alert(error.message);setSaving(false);return;}
     if(doneFiles.length) await uploadPhotos(doneJob.id,doneFiles,'after');
-    logActivity('Job Cards','update',`Completed — ${doneJob.title}`);
+    logActivity('Job Cards','update',`${jobNeedsApproval(doneJob,employeeId,role)?'Submitted for approval':'Completed'} — ${doneJob.title}`);
     setSaving(false); setDoneJob(null); setDoneFiles([]); load();
   };
 
@@ -5030,6 +5034,7 @@ function JobCards(){
       <StatCard label="Overdue" value={overdue.length} col={overdue.length>0?'var(--red)':'var(--green)'}/>
       <StatCard label="Due in 3 days" value={dueSoon.length} col={dueSoon.length>0?'var(--amber)':'var(--green)'}/>
       <StatCard label="Done this month" value={doneThisMonth.length} col="var(--green)"/>
+      <StatCard label="Awaiting approval" value={jobs.filter(j=>j.status==='Awaiting Approval').length} col="var(--blue)"/>
     </div>
 
     {showForm&&(
@@ -5111,7 +5116,7 @@ function JobCards(){
     )}
 
     <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:12}}>
-      {['Open','Pending','In Progress','Done','All'].map(s=><button key={s} className={`btn btn-sm ${statusFilter===s?'btn-amber':'btn-ghost'}`} onClick={()=>setStatusFilter(s)}>{s}</button>)}
+      {['Open','Pending','In Progress','Awaiting Approval','Done','All'].map(s=><button key={s} className={`btn btn-sm ${statusFilter===s?'btn-amber':'btn-ghost'}`} onClick={()=>setStatusFilter(s)}>{s}</button>)}
       <select style={{width:130}} value={priorityFilter} onChange={e=>setPriorityFilter(e.target.value)}>
         <option value="All">All priorities</option>{JOB_PRIORITIES.map(p=><option key={p}>{p}</option>)}
       </select>
@@ -5154,12 +5159,14 @@ function JobCards(){
           {(j.assigned_to||j.assigned_to_id)&&<span>👤 {(()=>{const em=j.assigned_to_id?employees.find(x=>String(x.id)===String(j.assigned_to_id)):null;return em?empLabel(em):j.assigned_to;})()}</span>}
           {j.est_cost!=null&&<span>Est. ₹{fmt(j.est_cost)}</span>}
           {!isDone&&(j.require_cost||j.require_notes||j.require_photo)&&<span style={{color:'var(--blue)'}}>🔒 Needs: {[j.require_cost&&'cost',j.require_notes&&'notes',j.require_photo&&'photo'].filter(Boolean).join(', ')}</span>}
+          {jobMetaChips(j)}
           {isDone&&j.actual_cost!=null&&<span>Actual ₹{fmt(j.actual_cost)}</span>}
           <span>Created {j.created_at?.slice(0,10)}{j.created_by?` by ${j.created_by}`:''}</span>
         </div>
 
         <PhotoStrip list={before} label="Photos"/>
         <PhotoStrip list={after} label="After completion"/>
+        <JobExtras j={j} employeeId={employeeId} role={role} onChanged={load}/>
 
         {isDone&&(<div style={{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)',fontSize:12}}>
           <div style={{color:'var(--green)',fontWeight:500}}>✓ Completed {j.completed_at?.slice(0,10)}{j.completed_by?` by ${j.completed_by}`:''}</div>
@@ -5183,7 +5190,8 @@ function JobCards(){
     {doneJob&&(
       <div className="modal-overlay">
         <div className="card" style={{maxWidth:480,width:'100%',maxHeight:'90vh',overflowY:'auto'}}>
-          <div className="section-label">Mark job as done</div>
+          <div className="section-label">{jobNeedsApproval(doneJob,employeeId,role)?'Submit for approval':'Mark job as done'}</div>
+          {jobNeedsApproval(doneJob,employeeId,role)&&<div style={{fontSize:12,color:'var(--blue)',marginBottom:10}}>🛡 {doneJob.approver_name||'The approver'} must approve this before it is closed. It stays “Awaiting Approval” until then.</div>}
           <div style={{fontSize:14,marginBottom:14}}><strong>{doneJob.title}</strong></div>
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
             <Field label={doneJob.require_notes?'Completion notes ★':'Completion notes'}><textarea className="form-input" rows={3} value={doneForm.notes} onChange={e=>setDoneForm(p=>({...p,notes:e.target.value}))} placeholder="What was done, parts used, follow-ups…"/></Field>
@@ -5214,6 +5222,710 @@ function JobCards(){
 // MY TASKS (employee view)
 // ══════════════════════════════════════════════════════════
 const MY_WORK_NAV=[{section:'My Work'},{id:'my-tasks',label:'My Tasks',icon:'✅'}];
+
+// ══════════════════════════════════════════════════════════
+// RECURRING JOBS · APPROVALS · CHECKLISTS
+// ══════════════════════════════════════════════════════════
+const APPROVAL_DIRECTOR_OVERRIDE=true; // false = even the Director must wait for the named approver
+const RJ_DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const RJ_NTH=['','1st','2nd','3rd','4th','Last'];
+const rjD=(s)=>{ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
+const rjS=(dt)=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+const rjAdd=(s,n)=>{ const dt=rjD(s); dt.setDate(dt.getDate()+n); return rjS(dt); };
+const rjDim=(y,m)=>new Date(y,m,0).getDate();
+const rjDiff=(a,b)=>Math.round((rjD(b)-rjD(a))/86400000);
+const rjLabel=(s)=>rjD(s).toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});
+
+// Monthly / yearly: does this date match the day rule? (month_days: 0 = last day; or nth weekday)
+const rjMonthHit=(t,dt)=>{
+  const dim=rjDim(dt.getFullYear(),dt.getMonth()+1), dom=dt.getDate();
+  if(t.nth_mode){
+    if(dt.getDay()!==Number(t.nth_weekday)) return false;
+    const nth=Number(t.nth)||1;
+    return nth===5?dom+7>dim:Math.ceil(dom/7)===nth;
+  }
+  const md=(t.month_days&&t.month_days.length)?t.month_days:[rjD(t.start_date).getDate()];
+  return md.some(x=>x===0?dom===dim:Math.min(x,dim)===dom);
+};
+
+const rjMatches=(t,s)=>{
+  if(s<t.start_date||(t.end_date&&s>t.end_date)) return false;
+  if((t.skip_dates||[]).includes(s)) return false;
+  const dt=rjD(s), sd=rjD(t.start_date), n=Math.max(1,Number(t.interval_n)||1);
+  if(t.freq==='dates') return (t.custom_dates||[]).includes(s);
+  if(t.freq==='daily') return rjDiff(t.start_date,s)%n===0;
+  if(t.freq==='weekly'){
+    const days=(t.weekdays&&t.weekdays.length)?t.weekdays:[sd.getDay()];
+    if(!days.includes(dt.getDay())) return false;
+    const wk=(x)=>new Date(x.getFullYear(),x.getMonth(),x.getDate()-x.getDay());
+    return Math.round((wk(dt)-wk(sd))/604800000)%n===0;
+  }
+  if(t.freq==='monthly'){
+    const months=(dt.getFullYear()-sd.getFullYear())*12+dt.getMonth()-sd.getMonth();
+    if(months<0||months%n!==0) return false;
+    return rjMonthHit(t,dt);
+  }
+  if(t.freq==='yearly'){
+    const years=dt.getFullYear()-sd.getFullYear();
+    if(years<0||years%n!==0) return false;
+    if(dt.getMonth()+1!==(Number(t.year_month)||sd.getMonth()+1)) return false;
+    return rjMonthHit(t,dt);
+  }
+  return false;
+};
+
+// Off-day handling: move to next / previous working day, or skip the run.
+const rjShift=(t,s)=>{
+  const off=t.skip_weekdays||[];
+  if(!off.length||off.length>=7||!t.shift_rule||t.shift_rule==='none') return s;
+  let cur=s, guard=0;
+  while(off.includes(rjD(cur).getDay())&&guard<14){
+    if(t.shift_rule==='skip') return null;
+    cur=rjAdd(cur,t.shift_rule==='prev'?-1:1); guard++;
+  }
+  return cur;
+};
+
+const rjOccurrences=(t,from,to)=>{
+  const out=[], seen=new Set();
+  const times=(t.times&&t.times.length)?[...t.times].sort():[''];
+  let cur=from<t.start_date?t.start_date:from, guard=0;
+  const last=t.end_date&&t.end_date<to?t.end_date:to;
+  while(cur<=last&&guard<4000){
+    if(rjMatches(t,cur)){
+      const date=rjShift(t,cur);
+      if(date) times.forEach(tm=>{ const key=`${date}|${tm}`; if(!seen.has(key)){ seen.add(key); out.push({nominal:cur,date,time:tm,key}); } });
+    }
+    cur=rjAdd(cur,1); guard++;
+  }
+  return out.sort((a,b)=>a.key.localeCompare(b.key));
+};
+
+const rjPreview=(t,n)=>{
+  const from=today>t.start_date?today:t.start_date;
+  let list=rjOccurrences(t,from,rjAdd(from,400)).filter(o=>o.date>=today);
+  if(list.length<n) list=rjOccurrences(t,from,rjAdd(from,3700)).filter(o=>o.date>=today);
+  return list.slice(0,n);
+};
+
+const rjDescribe=(t)=>{
+  const n=Math.max(1,Number(t.interval_n)||1);
+  const times=(t.times&&t.times.length)?` at ${[...t.times].sort().join(', ')}`:'';
+  let s='';
+  if(t.freq==='dates') s=`On ${(t.custom_dates||[]).length} specific date${(t.custom_dates||[]).length===1?'':'s'}`;
+  else if(t.freq==='daily') s=n===1?'Every day':`Every ${n} days`;
+  else if(t.freq==='weekly') s=`${n===1?'Every week':`Every ${n} weeks`} on ${(t.weekdays||[]).slice().sort((a,b)=>(a||99)-(b||99)).map(x=>RJ_DOW[x]).join(', ')||'the start weekday'}`;
+  else {
+    const base=t.nth_mode?`the ${RJ_NTH[Number(t.nth)||1]} ${RJ_DOW[Number(t.nth_weekday)||0]}`:`day ${(t.month_days||[]).slice().sort((a,b)=>(a||99)-(b||99)).map(x=>x===0?'last':x).join(', ')||'(start date)'}`;
+    if(t.freq==='monthly') s=`${n===1?'Every month':`Every ${n} months`} on ${base}`;
+    else s=`${n===1?'Every year':`Every ${n} years`} in ${MONTH_NAMES[(Number(t.year_month)||rjD(t.start_date).getMonth()+1)-1]} on ${base}`;
+  }
+  return s+times;
+};
+
+// Creates every job card that is due. Safe to run from many browsers at once:
+// the unique index on (template_id, occurrence_key) rejects duplicates.
+async function runRecurringJobs(){
+  try{
+    const {data:tpls,error}=await sb.from('job_templates').select('*').eq('active',true);
+    if(error||!tpls||tpls.length===0) return 0;
+    const {data:openRows}=await sb.from('job_cards').select('template_id').in('template_id',tpls.map(t=>t.id)).neq('status','Done');
+    const openBy={};
+    (openRows||[]).forEach(r=>{ openBy[r.template_id]=(openBy[r.template_id]||0)+1; });
+    let created=0;
+    for(const t of tpls){
+      const horizon=rjAdd(today,Number(t.lead_days)||0);
+      const from=t.last_generated_date?rjAdd(t.last_generated_date,1):t.start_date;
+      if(from>horizon) continue;
+      let list=rjOccurrences(t,from,horizon).map(o=>(o.date<today&&o.nominal>=today)?{...o,date:today,key:`${today}|${o.time}`}:o);
+      const past=list.filter(o=>o.date<=today);
+      if(t.catchup!=='all'&&past.length>0){
+        const ld=past[past.length-1].date;
+        list=[...past.filter(o=>o.date===ld),...list.filter(o=>o.date>today)];
+      }
+      if(t.skip_if_open&&(openBy[t.id]||0)>0) list=[];
+      let have=0;
+      if(t.max_occurrences){
+        const {count}=await sb.from('job_cards').select('id',{count:'exact',head:true}).eq('template_id',t.id);
+        have=count||0;
+        list=list.slice(0,Math.max(0,Number(t.max_occurrences)-have));
+      }
+      list=list.slice(-60);
+      let inserted=0;
+      if(list.length){
+        const rows=list.map(o=>({
+          title:t.title,description:t.description||'',category:t.category||'Other',priority:t.priority||'Medium',location:t.location||'',
+          assigned_to_id:t.assigned_to_id||null,assigned_to:t.assigned_to||'',assigned_at:t.assigned_to_id?new Date().toISOString():null,
+          deadline:rjAdd(o.date,Number(t.due_after_days)||0),due_time:o.time||null,
+          est_cost:t.est_cost,require_cost:!!t.require_cost,require_notes:!!t.require_notes,require_photo:!!t.require_photo,require_checklist:!!t.require_checklist,
+          requires_approval:!!t.requires_approval,approver_id:t.requires_approval?t.approver_id:null,approver_name:t.requires_approval?t.approver_name:null,approval_status:'none',
+          checklist:(t.checklist||[]).map(x=>({t:String(x),done:false})),
+          status:'Pending',created_by:'Recurring schedule',template_id:t.id,occurrence_date:o.date,occurrence_key:o.key
+        }));
+        const {data:ins,error:ie}=await sb.from('job_cards').upsert(rows,{onConflict:'template_id,occurrence_key',ignoreDuplicates:true}).select('id');
+        if(ie){ console.error('Recurring job insert failed:',ie.message); continue; }
+        inserted=(ins||[]).length;
+      }
+      created+=inserted;
+      const upd={last_generated_date:horizon};
+      if((t.end_date&&horizon>=t.end_date)||(t.max_occurrences&&have+inserted>=Number(t.max_occurrences))||(t.freq==='dates'&&(t.custom_dates||[]).every(d=>d<=horizon))) upd.active=false;
+      await sb.from('job_templates').update(upd).eq('id',t.id);
+    }
+    if(created>0) logActivity('Recurring Jobs','create',`${created} recurring job card${created===1?'':'s'} generated`);
+    return created;
+  }catch(e){ console.error('Recurring generator failed:',e.message); return 0; }
+}
+
+// ── Approval rules ──
+const jobNeedsApproval=(j,employeeId,role)=>{
+  if(!j.requires_approval||!j.approver_id) return false;
+  if(String(j.approver_id)===String(employeeId||'')) return false;
+  if(APPROVAL_DIRECTOR_OVERRIDE&&role==='director') return false;
+  return true;
+};
+const jobCanApprove=(j,employeeId,role)=>j.status==='Awaiting Approval'&&(String(j.approver_id||'')===String(employeeId||'')||(APPROVAL_DIRECTOR_OVERRIDE&&role==='director'));
+// Extra columns merged into the "mark done" update (overrides status when approval is needed).
+const jobCloseExtras=(j,user,employeeId,role)=>{
+  if(!j.requires_approval) return {};
+  const nowIso=new Date().toISOString(), email=user?.email||null;
+  if(jobNeedsApproval(j,employeeId,role)) return {status:'Awaiting Approval',completed_at:null,completed_by:null,approval_status:'pending',approval_note:null,submitted_by:email,submitted_at:nowIso,approved_by:null,approved_at:null};
+  const viaOverride=String(j.approver_id||'')!==String(employeeId||'');
+  return {approval_status:'approved',approved_by:(email||'')+(viaOverride?' (director override)':''),approved_at:nowIso,submitted_by:email};
+};
+async function jobApprove(j,isOverride){
+  const {data:{user}}=await sb.auth.getUser();
+  const nowIso=new Date().toISOString(), email=user?.email||'';
+  const {data,error}=await sb.from('job_cards').update({status:'Done',approval_status:'approved',approved_by:email+(isOverride?' (director override)':''),approved_at:nowIso,completed_at:nowIso,completed_by:j.submitted_by||email}).eq('id',j.id).eq('status','Awaiting Approval').select();
+  if(error){ alert(error.message); return false; }
+  if(!data||data.length===0){ alert('This job is no longer waiting for approval.'); return false; }
+  logActivity('Job Cards','update',`Approved — ${j.title}`);
+  return true;
+}
+async function jobReject(j){
+  const why=window.prompt(`Send "${j.title}" back — tell the assignee what to fix (required):`);
+  if(!why||!why.trim()) return false;
+  const {data,error}=await sb.from('job_cards').update({status:'In Progress',approval_status:'rejected',approval_note:why.trim(),approved_by:null,approved_at:null,submitted_at:null,rejection_count:(Number(j.rejection_count)||0)+1}).eq('id',j.id).eq('status','Awaiting Approval').select();
+  if(error){ alert(error.message); return false; }
+  if(!data||data.length===0){ alert('This job is no longer waiting for approval.'); return false; }
+  logActivity('Job Cards','update',`Sent back — ${j.title}: ${why.trim()}`);
+  return true;
+}
+
+// Chips shown in a job card's meta row.
+const jobMetaChips=(j)=>{
+  const out=[];
+  if(j.template_id) out.push(<span key="rc" style={{color:'var(--purple)'}}>🔁 Recurring{j.occurrence_date?` · ${j.occurrence_date}`:''}</span>);
+  if(j.due_time){
+    const nowT=new Date().toTimeString().slice(0,5);
+    const late=j.status!=='Done'&&j.deadline&&(j.deadline<today||(j.deadline===today&&j.due_time<nowT));
+    out.push(<span key="dt" style={{color:late?'var(--red)':'var(--muted)',fontWeight:late?600:400}}>🕒 by {j.due_time}{late?' — overdue':''}</span>);
+  }
+  if(j.requires_approval) out.push(<span key="ap" style={{color:'var(--blue)'}}>🛡 Needs approval{j.approver_name?` (${j.approver_name})`:''}</span>);
+  return out;
+};
+
+// Checklist + approval panel, used inside job cards (Job Cards page and My Tasks).
+function JobExtras({j,employeeId,role,onChanged}){
+  const [busy,setBusy]=useState(false);
+  const cl=j.checklist||[];
+  const editable=cl.length>0&&j.status!=='Done'&&j.status!=='Awaiting Approval';
+  const canAct=jobCanApprove(j,employeeId,role);
+  const doneN=cl.filter(c=>c.done).length;
+  const toggle=async(i)=>{
+    if(!editable||busy) return;
+    setBusy(true);
+    const next=cl.map((c,idx)=>idx===i?{...c,done:!c.done}:c);
+    const {error}=await sb.from('job_cards').update({checklist:next}).eq('id',j.id);
+    setBusy(false);
+    if(error) return alert(error.message);
+    if(onChanged) onChanged();
+  };
+  const approve=async()=>{ setBusy(true); const ok=await jobApprove(j,String(j.approver_id||'')!==String(employeeId||'')); setBusy(false); if(ok&&onChanged) onChanged(); };
+  const reject=async()=>{ setBusy(true); const ok=await jobReject(j); setBusy(false); if(ok&&onChanged) onChanged(); };
+  return(<>
+    {cl.length>0&&(<div style={{marginTop:10}}>
+      <div className="form-label" style={{marginBottom:4}}>Checklist — {doneN}/{cl.length}{j.require_checklist?' (all required to close)':''}</div>
+      <div style={{height:4,background:'var(--border)',borderRadius:2,marginBottom:6,maxWidth:260}}>
+        <div style={{height:4,width:(doneN/cl.length*100)+'%',background:doneN===cl.length?'var(--green)':'var(--amber)',borderRadius:2}}/>
+      </div>
+      {cl.map((c,i)=>(<label key={i} style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:3,cursor:editable?'pointer':'default'}}>
+        <input type="checkbox" checked={!!c.done} disabled={!editable||busy} onChange={()=>toggle(i)}/>
+        <span style={{textDecoration:c.done?'line-through':'none',color:c.done?'var(--muted)':'inherit'}}>{c.t}</span>
+      </label>))}
+    </div>)}
+    {j.approval_status==='rejected'&&j.status!=='Done'&&j.status!=='Awaiting Approval'&&(
+      <div style={{marginTop:10,padding:'8px 12px',borderRadius:6,fontSize:12,background:'color-mix(in srgb, var(--red) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--red) 25%, transparent)'}}>
+        ↩ <strong>Sent back by the approver</strong>{Number(j.rejection_count)>1?` (${j.rejection_count} times)`:''}: {j.approval_note}
+      </div>
+    )}
+    {j.status==='Awaiting Approval'&&(
+      <div style={{marginTop:10,padding:'10px 12px',borderRadius:6,fontSize:12,background:'color-mix(in srgb, var(--blue) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--blue) 25%, transparent)'}}>
+        ⏳ Waiting for <strong>{j.approver_name||'the approver'}</strong> · submitted by {j.submitted_by||'—'}{j.submitted_at?` on ${new Date(j.submitted_at).toLocaleString('en-IN')}`:''}
+        {canAct&&(<div style={{display:'flex',gap:8,marginTop:8}}>
+          <button className="btn btn-green btn-sm" onClick={approve} disabled={busy}>✓ Approve &amp; close</button>
+          <button className="btn btn-red btn-sm" onClick={reject} disabled={busy}>↩ Send back</button>
+        </div>)}
+      </div>
+    )}
+    {j.status==='Done'&&j.approval_status==='approved'&&j.approved_by&&(
+      <div style={{marginTop:8,fontSize:12,color:'var(--green)'}}>🛡 Approved by {j.approved_by}{j.approved_at?` on ${j.approved_at.slice(0,10)}`:''}</div>
+    )}
+  </>);
+}
+
+// Top of My Tasks: everything waiting on this person's approval.
+function JobApprovalQueue({employeeId,role,onChanged}){
+  const [list,setList]=useState([]);
+  const [photos,setPhotos]=useState({});
+  const [viewerUrl,setViewerUrl]=useState(null);
+  const load=useCallback(async()=>{
+    const {data}=await sb.from('job_cards').select('*').eq('status','Awaiting Approval').order('submitted_at');
+    const mine=(data||[]).filter(j=>jobCanApprove(j,employeeId,role));
+    setList(mine);
+    const byJob={};
+    if(mine.length){
+      const {data:ph}=await sb.from('job_card_photos').select('*').in('job_id',mine.map(j=>j.id)).order('created_at');
+      const paths=(ph||[]).map(p=>p.storage_path);
+      const urlMap={};
+      if(paths.length){
+        const {data:signed}=await sb.storage.from('job-photos').createSignedUrls(paths,3600);
+        (signed||[]).forEach(s=>{ if(s.signedUrl) urlMap[s.path]=s.signedUrl; });
+      }
+      (ph||[]).forEach(p=>{ (byJob[p.job_id]=byJob[p.job_id]||[]).push({...p,url:urlMap[p.storage_path]}); });
+    }
+    setPhotos(byJob);
+  },[employeeId,role]);
+  useEffect(()=>{load();},[load]);
+  if(list.length===0) return null;
+  return(<div style={{marginBottom:24}}>
+    <div className="section-label">Waiting for your approval ({list.length})</div>
+    {list.map(j=>(<div key={j.id} className="card" style={{marginBottom:12,borderLeft:'4px solid var(--blue)'}}>
+      <div style={{fontSize:15,fontWeight:600}}>🛡 {j.title}</div>
+      <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{[j.category,j.priority,j.location,j.assigned_to&&('Assigned to '+j.assigned_to)].filter(Boolean).join(' · ')}</div>
+      {j.completion_notes&&<div style={{fontSize:13,marginTop:6,whiteSpace:'pre-wrap'}}>{j.completion_notes}</div>}
+      {j.actual_cost!=null&&<div style={{fontSize:12,marginTop:4}}>Actual cost ₹{fmt(j.actual_cost)}</div>}
+      {(photos[j.id]||[]).length>0&&(<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+        {(photos[j.id]||[]).map(p=>(<img key={p.id} src={p.url} alt="" onClick={()=>p.url&&setViewerUrl(p.url)} style={{width:76,height:76,objectFit:'cover',borderRadius:6,border:'1px solid var(--border)',cursor:'pointer',background:'var(--surface2)'}}/>))}
+      </div>)}
+      <JobExtras j={j} employeeId={employeeId} role={role} onChanged={()=>{ load(); if(onChanged) onChanged(); }}/>
+    </div>))}
+    {viewerUrl&&(<div className="modal-overlay" onClick={()=>setViewerUrl(null)} style={{cursor:'zoom-out'}}>
+      <img src={viewerUrl} alt="" style={{maxWidth:'100%',maxHeight:'92vh',borderRadius:8}}/>
+    </div>)}
+  </div>);
+}
+
+// ── Recurring Jobs page ──
+const RJ_BLANK={title:'',description:'',category:'Maintenance',priority:'Medium',location:'',assigned_to_id:'',est_cost:'',
+  require_cost:false,require_notes:false,require_photo:false,require_checklist:false,requires_approval:false,approver_id:'',checklist_text:'',
+  freq:'weekly',interval_n:1,weekdays:[1],month_days:[1],nth_mode:false,nth:1,nth_weekday:1,year_month:'',custom_dates:[],times:[],
+  start_date:today,end_date:'',max_occurrences:'',lead_days:0,due_after_days:0,skip_weekdays:[0],shift_rule:'none',skip_dates:[],
+  skip_if_open:false,catchup:'latest',active:true};
+const RJ_PRESETS=[
+  {label:'Every day',set:{freq:'daily',interval_n:1}},
+  {label:'Mon–Fri',set:{freq:'weekly',interval_n:1,weekdays:[1,2,3,4,5]}},
+  {label:'Every Monday',set:{freq:'weekly',interval_n:1,weekdays:[1]}},
+  {label:'Every 2 weeks',set:{freq:'weekly',interval_n:2,weekdays:[1]}},
+  {label:'1st of month',set:{freq:'monthly',interval_n:1,nth_mode:false,month_days:[1]}},
+  {label:'Last day of month',set:{freq:'monthly',interval_n:1,nth_mode:false,month_days:[0]}},
+  {label:'1st & 15th',set:{freq:'monthly',interval_n:1,nth_mode:false,month_days:[1,15]}},
+  {label:'Every quarter',set:{freq:'monthly',interval_n:3,nth_mode:false,month_days:[1]}},
+  {label:'Every 6 months',set:{freq:'monthly',interval_n:6,nth_mode:false,month_days:[1]}},
+  {label:'Every year',set:{freq:'yearly',interval_n:1,nth_mode:false,month_days:[1]}},
+];
+const rjTplFromForm=(F)=>({...F,interval_n:Math.max(1,Number(F.interval_n)||1),start_date:F.start_date||today,end_date:F.end_date||null,nth:Number(F.nth)||1,nth_weekday:Number(F.nth_weekday)||0,year_month:F.year_month===''?null:Number(F.year_month)});
+const rjFormFromTpl=(t)=>({...RJ_BLANK,
+  title:t.title||'',description:t.description||'',category:t.category||'Maintenance',priority:t.priority||'Medium',location:t.location||'',
+  assigned_to_id:t.assigned_to_id?String(t.assigned_to_id):'',est_cost:t.est_cost??'',
+  require_cost:!!t.require_cost,require_notes:!!t.require_notes,require_photo:!!t.require_photo,require_checklist:!!t.require_checklist,
+  requires_approval:!!t.requires_approval,approver_id:t.approver_id?String(t.approver_id):'',checklist_text:(t.checklist||[]).join('\n'),
+  freq:t.freq||'weekly',interval_n:t.interval_n||1,weekdays:t.weekdays||[],month_days:t.month_days||[],nth_mode:!!t.nth_mode,nth:t.nth||1,nth_weekday:t.nth_weekday??1,
+  year_month:t.year_month||'',custom_dates:t.custom_dates||[],times:t.times||[],start_date:t.start_date||today,end_date:t.end_date||'',
+  max_occurrences:t.max_occurrences??'',lead_days:t.lead_days||0,due_after_days:t.due_after_days||0,skip_weekdays:t.skip_weekdays||[],
+  shift_rule:t.shift_rule||'none',skip_dates:t.skip_dates||[],skip_if_open:!!t.skip_if_open,catchup:t.catchup||'latest',active:t.active!==false});
+
+function RecurringJobs({role,userEmail}){
+  const [tpls,setTpls]=useState([]);
+  const [jobs,setJobs]=useState([]);
+  const [employees,setEmployees]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [filter,setFilter]=useState('Active');
+  const [search,setSearch]=useState('');
+  const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const [form,setForm]=useState(RJ_BLANK);
+  const [dateAdd,setDateAdd]=useState('');
+  const [skipAdd,setSkipAdd]=useState('');
+  const [timeAdd,setTimeAdd]=useState('');
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const tog=(k,v)=>setForm(p=>{ const a=p[k]||[]; return {...p,[k]:(a.includes(v)?a.filter(x=>x!==v):[...a,v]).sort((x,y)=>(x||99)-(y||99))}; });
+  const preview=React.useMemo(()=>showForm?rjPreview(rjTplFromForm(form),8):[],[showForm,JSON.stringify(form)]);
+
+  const load=useCallback(async()=>{
+    setLoading(true); setErr('');
+    try{
+      const [{data:t,error:te},{data:e},j]=await Promise.all([
+        sb.from('job_templates').select('*').order('created_at',{ascending:false}),
+        sb.from(EMP_TABLE).select('*').range(0,4999),
+        fetchAllRows((a,b)=>sb.from('job_cards').select('id,template_id,status,deadline,completed_at').not('template_id','is',null).order('id').range(a,b)),
+      ]);
+      if(te) throw new Error(te.message+' — have you run the SQL from the setup step?');
+      setTpls(t||[]); setEmployees(e||[]); setJobs(j||[]);
+    }catch(ex){ setErr(ex.message||String(ex)); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const empNameOf=(id)=>{ const e=employees.find(x=>String(x.id)===String(id)); return e?empName(e):''; };
+  const activeEmps=employees.filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b)));
+  const close=()=>{ setShowForm(false); setEditingId(null); setForm(RJ_BLANK); };
+  const openNew=()=>{ setEditingId(null); setForm(RJ_BLANK); setShowForm(true); };
+  const openEdit=(t)=>{ setEditingId(t.id); setForm(rjFormFromTpl(t)); setShowForm(true); };
+  const duplicate=(t)=>{ setEditingId(null); setForm({...rjFormFromTpl(t),title:t.title+' (copy)',start_date:today}); setShowForm(true); };
+
+  const save=async()=>{
+    const F=form;
+    if(!F.title.trim()) return alert('Give the job a title.');
+    if(F.freq==='weekly'&&F.weekdays.length===0) return alert('Pick at least one weekday.');
+    if((F.freq==='monthly'||F.freq==='yearly')&&!F.nth_mode&&F.month_days.length===0) return alert('Pick at least one day of the month.');
+    if(F.freq==='dates'&&F.custom_dates.length===0) return alert('Add at least one date.');
+    if(F.requires_approval&&!F.approver_id) return alert('Choose who approves this job.');
+    if(F.end_date&&F.start_date&&F.end_date<F.start_date) return alert('The end date is before the start date.');
+    if(F.max_occurrences!==''&&(!Number.isInteger(Number(F.max_occurrences))||Number(F.max_occurrences)<1)) return alert('Maximum runs must be a whole number, 1 or more.');
+    const ld=Number(F.lead_days), da=Number(F.due_after_days);
+    if(!Number.isInteger(ld)||ld<0||!Number.isInteger(da)||da<0) return alert('Lead days and due-after days must be whole numbers, 0 or more.');
+    if(rjPreview(rjTplFromForm(F),1).length===0&&!confirm('This schedule has no upcoming runs (check the dates, end date and skip rules). Save anyway?')) return;
+    if(!F.assigned_to_id&&!confirm('Nobody is assigned, so the generated jobs will be unassigned. Save anyway?')) return;
+    setSaving(true);
+    const {data:{user}}=await sb.auth.getUser();
+    const row={
+      title:F.title.trim(),description:F.description.trim()||null,category:F.category,priority:F.priority,location:F.location.trim()||null,
+      assigned_to_id:F.assigned_to_id||null,assigned_to:empNameOf(F.assigned_to_id)||null,est_cost:F.est_cost===''?null:Number(F.est_cost),
+      require_cost:!!F.require_cost,require_notes:!!F.require_notes,require_photo:!!F.require_photo,require_checklist:!!F.require_checklist,
+      requires_approval:!!F.requires_approval,approver_id:F.requires_approval?String(F.approver_id):null,approver_name:F.requires_approval?(empNameOf(F.approver_id)||null):null,
+      checklist:F.checklist_text.split('\n').map(s=>s.trim()).filter(Boolean),
+      freq:F.freq,interval_n:Math.max(1,Number(F.interval_n)||1),weekdays:F.weekdays,month_days:F.month_days,nth_mode:!!F.nth_mode,nth:Number(F.nth)||1,nth_weekday:Number(F.nth_weekday)||0,
+      year_month:F.year_month===''?null:Number(F.year_month),custom_dates:F.custom_dates,times:F.times,
+      start_date:F.start_date||today,end_date:F.end_date||null,max_occurrences:F.max_occurrences===''?null:Number(F.max_occurrences),
+      lead_days:ld,due_after_days:da,skip_weekdays:F.skip_weekdays,shift_rule:F.shift_rule,skip_dates:F.skip_dates,
+      skip_if_open:!!F.skip_if_open,catchup:F.catchup,active:!!F.active
+    };
+    const res=editingId?await sb.from('job_templates').update(row).eq('id',editingId):await sb.from('job_templates').insert({...row,created_by:user?.email||userEmail||null});
+    if(res.error){ alert(res.error.message); setSaving(false); return; }
+    logActivity('Recurring Jobs',editingId?'update':'create',`${editingId?'Edited':'New'} schedule — ${row.title} (${rjDescribe(rjTplFromForm(F))})`);
+    setSaving(false); close();
+    const n=await runRecurringJobs();
+    await load();
+    if(n>0) alert(`${n} job card${n===1?'':'s'} created right away from this schedule.`);
+  };
+
+  const toggleActive=async(t)=>{
+    const upd={active:!t.active};
+    if(!t.active){ const y=rjAdd(today,-1); if(!t.last_generated_date||t.last_generated_date<y) upd.last_generated_date=y; }
+    const {error}=await sb.from('job_templates').update(upd).eq('id',t.id);
+    if(error) return alert(error.message);
+    logActivity('Recurring Jobs','update',`${t.active?'Paused':'Resumed'} — ${t.title}`);
+    if(!t.active) await runRecurringJobs();
+    load();
+  };
+  const remove=async(t)=>{
+    if(!confirm(`Delete the schedule "${t.title}"?\n\nJob cards it already created stay as normal jobs. No new ones will be made.`)) return;
+    const {error}=await sb.from('job_templates').delete().eq('id',t.id);
+    if(error) return alert(error.message);
+    logActivity('Recurring Jobs','delete',`Deleted schedule — ${t.title}`);
+    load();
+  };
+  const genNow=async()=>{
+    const n=await runRecurringJobs();
+    await load();
+    alert(n>0?`${n} job card${n===1?'':'s'} created.`:'Nothing new was due. Every schedule is up to date.');
+  };
+  const skipNext=async(t)=>{
+    const nxt=rjPreview(t,40).find(o=>o.date>(t.last_generated_date||''));
+    if(!nxt) return alert('There is no upcoming run that has not been created yet. If the next card already exists, delete that card in Job Cards instead.');
+    if(!confirm(`Skip the run on ${rjLabel(nxt.nominal)}? No job card will be created for that date.`)) return;
+    const {error}=await sb.from('job_templates').update({skip_dates:[...(t.skip_dates||[]),nxt.nominal]}).eq('id',t.id);
+    if(error) return alert(error.message);
+    logActivity('Recurring Jobs','update',`Skipped ${nxt.nominal} — ${t.title}`);
+    load();
+  };
+
+  const statsOf=(id)=>{
+    const rows=jobs.filter(r=>r.template_id===id);
+    const done=rows.filter(r=>r.status==='Done');
+    const onTime=done.filter(r=>r.completed_at&&r.deadline&&rjS(new Date(r.completed_at))<=r.deadline).length;
+    return {total:rows.length,done:done.length,open:rows.length-done.length,overdue:rows.filter(r=>r.status!=='Done'&&r.deadline&&r.deadline<today).length,rate:done.length?Math.round(onTime/done.length*100):null};
+  };
+  const chips=(arr,onRemove,fmtFn)=>(<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+    {arr.map(v=>(<span key={String(v)} className="badge badge-blue" style={{display:'inline-flex',gap:6,alignItems:'center'}}>{fmtFn?fmtFn(v):v}<span style={{cursor:'pointer'}} onClick={()=>onRemove(v)}>✕</span></span>))}
+  </div>);
+
+  if(loading) return <Loading/>;
+
+  const q=search.trim().toLowerCase();
+  const visible=tpls.filter(t=>{
+    if(filter==='Active'&&!t.active) return false;
+    if(filter==='Paused'&&t.active) return false;
+    if(q&&!`${t.title} ${t.assigned_to||''} ${t.location||''} ${t.category||''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const allStats=tpls.map(t=>statsOf(t.id));
+  const openAll=allStats.reduce((s,x)=>s+x.open,0), overdueAll=allStats.reduce((s,x)=>s+x.overdue,0);
+  const unitWord=({daily:'days',weekly:'weeks',monthly:'months',yearly:'years'})[form.freq];
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Mill Operations</div>
+        <div className="page-title">Recurring jobs</div>
+      </div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        <button className="btn btn-ghost" onClick={genNow}>↻ Generate due jobs now</button>
+        <button className="btn btn-amber" onClick={openNew}>+ New schedule</button>
+      </div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load schedules" sub={err}/>}
+
+    <div className="stat-grid">
+      <StatCard label="Active schedules" value={tpls.filter(t=>t.active).length} col="var(--blue)"/>
+      <StatCard label="Paused / ended" value={tpls.filter(t=>!t.active).length} col="var(--muted)"/>
+      <StatCard label="Open recurring jobs" value={openAll} col="var(--amber)"/>
+      <StatCard label="Overdue" value={overdueAll} col={overdueAll>0?'var(--red)':'var(--green)'}/>
+    </div>
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:12}}>
+      {['Active','Paused','All'].map(s=><button key={s} className={`btn btn-sm ${filter===s?'btn-amber':'btn-ghost'}`} onClick={()=>setFilter(s)}>{s}</button>)}
+      <input style={{width:220}} placeholder="Search schedules…" value={search} onChange={e=>setSearch(e.target.value)}/>
+    </div>
+
+    {visible.length===0&&<div className="card"><Empty msg="No schedules in this view. Click “+ New schedule”."/></div>}
+
+    {visible.map(t=>{
+      const st=statsOf(t.id);
+      const next=rjPreview(t,3);
+      return(<div key={t.id} className="card" style={{marginBottom:14,borderLeft:`4px solid ${t.active?'var(--purple)':'var(--border2)'}`,opacity:t.active?1:0.75}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:240}}>
+            <div style={{fontSize:16,fontWeight:600}}>🔁 {t.title}</div>
+            <div style={{fontSize:13,marginTop:4,color:'var(--purple)',fontWeight:500}}>{rjDescribe(t)}</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+              <span className="badge badge-blue">{t.category}</span>
+              <span className="badge badge-muted">{t.priority}</span>
+              {!t.active&&<span className="badge badge-muted">Paused / ended</span>}
+              {t.requires_approval&&<span className="badge badge-amber">🛡 Approval: {t.approver_name||'—'}</span>}
+              {(t.checklist||[]).length>0&&<span className="badge badge-muted">☑ {(t.checklist||[]).length} steps</span>}
+            </div>
+          </div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'flex-start'}}>
+            {t.active&&<button className="btn btn-ghost btn-sm" onClick={()=>skipNext(t)}>Skip next</button>}
+            <button className="btn btn-ghost btn-sm" onClick={()=>toggleActive(t)}>{t.active?'Pause':'Resume'}</button>
+            <button className="btn btn-blue btn-sm" onClick={()=>openEdit(t)}>Edit</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>duplicate(t)}>Duplicate</button>
+            <button className="btn btn-red btn-sm" onClick={()=>remove(t)}>✕</button>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:10,fontSize:12,color:'var(--muted)'}}>
+          <span>👤 {t.assigned_to||'Unassigned'}</span>
+          {t.location&&<span>📍 {t.location}</span>}
+          {Number(t.lead_days)>0&&<span>Created {t.lead_days} day{t.lead_days===1?'':'s'} ahead</span>}
+          {Number(t.due_after_days)>0&&<span>Due {t.due_after_days} day{t.due_after_days===1?'':'s'} after</span>}
+          {t.end_date&&<span>Ends {t.end_date}</span>}
+          {t.max_occurrences&&<span>Max {t.max_occurrences} runs</span>}
+          {t.last_generated_date&&<span>Generated through {t.last_generated_date}</span>}
+        </div>
+        <div style={{fontSize:12,marginTop:8}}>
+          <strong>Next:</strong> {next.length===0?'no upcoming runs':next.map(o=>rjLabel(o.date)+(o.time?' · '+o.time:'')).join('  |  ')}
+        </div>
+        <div style={{display:'flex',gap:18,flexWrap:'wrap',marginTop:10,fontSize:12}}>
+          <span>Created: <strong>{st.total}</strong></span>
+          <span style={{color:'var(--green)'}}>Done: <strong>{st.done}</strong></span>
+          <span style={{color:'var(--amber)'}}>Open: <strong>{st.open}</strong></span>
+          <span style={{color:st.overdue>0?'var(--red)':'var(--muted)'}}>Overdue: <strong>{st.overdue}</strong></span>
+          <span>On-time rate: <strong>{st.rate===null?'—':st.rate+'%'}</strong></span>
+        </div>
+      </div>);
+    })}
+
+    {showForm&&(<div className="modal-overlay">
+      <div style={{maxWidth:820,width:'100%',maxHeight:'92vh',overflowY:'auto'}}>
+        <FormCard title={editingId?'Edit recurring schedule':'New recurring schedule'} col="var(--purple)" onSave={save} onCancel={close} saving={saving}>
+          <div className="section-label">1. The job</div>
+          <div className="form-grid">
+            <Field label="Job title ★"><input className="form-input" value={form.title} onChange={e=>f('title',e.target.value)} placeholder="e.g. Weekly roller mill lubrication"/></Field>
+            <Field label="Category"><select className="form-input" value={form.category} onChange={e=>f('category',e.target.value)}>{JOB_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
+            <Field label="Priority"><select className="form-input" value={form.priority} onChange={e=>f('priority',e.target.value)}>{JOB_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select></Field>
+            <Field label="Location / section"><input className="form-input" value={form.location} onChange={e=>f('location',e.target.value)}/></Field>
+            <Field label="Assigned to">
+              <select className="form-input" value={form.assigned_to_id} onChange={e=>f('assigned_to_id',e.target.value)}>
+                <option value="">-- Unassigned --</option>
+                {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+              </select>
+            </Field>
+            <Field label="Estimated cost (₹)"><input type="number" className="form-input" value={form.est_cost} onChange={e=>f('est_cost',e.target.value)}/></Field>
+          <Field label="Due time (optional)"><input type="time" className="form-input" value={form.due_time} onChange={e=>f('due_time',e.target.value)}/></Field>
+          <Field label="Needs approval to close?">
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13}}>
+              <input type="checkbox" checked={form.requires_approval} onChange={e=>f('requires_approval',e.target.checked)}/> Yes — a specific person must approve
+            </label>
+          </Field>
+          {form.requires_approval&&<Field label="Approver ★">
+            <select className="form-input" value={form.approver_id} onChange={e=>f('approver_id',e.target.value)}>
+              <option value="">-- Select approver --</option>
+              {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+            </select>
+          </Field>}
+          <div style={{gridColumn:'1 / -1'}}>
+            <Field label="Checklist (one step per line, optional)"><textarea className="form-input" rows={3} value={form.checklist_text} onChange={e=>f('checklist_text',e.target.value)} placeholder={'Check oil level\nGrease bearings\nClean guard'}/></Field>
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginTop:6}}>
+              <input type="checkbox" checked={form.require_checklist} onChange={e=>f('require_checklist',e.target.checked)}/> Every step must be ticked before the job can be closed
+            </label>
+          </div>
+          </div>
+          <div style={{marginTop:12}}><Field label="Instructions"><textarea className="form-input" rows={2} value={form.description} onChange={e=>f('description',e.target.value)}/></Field></div>
+
+          <div className="divider"/>
+          <div className="section-label">2. When it repeats</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+            {RJ_PRESETS.map(pr=><button key={pr.label} type="button" className="btn btn-ghost btn-sm" onClick={()=>setForm(p=>({...p,...pr.set}))}>{pr.label}</button>)}
+          </div>
+          <div className="form-grid">
+            <Field label="Repeats">
+              <select className="form-input" value={form.freq} onChange={e=>f('freq',e.target.value)}>
+                <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+                <option value="yearly">Yearly</option><option value="dates">On specific dates</option>
+              </select>
+            </Field>
+            {form.freq!=='dates'&&<Field label={`Every N ${unitWord}`}><input type="number" min="1" className="form-input" value={form.interval_n} onChange={e=>f('interval_n',e.target.value)}/></Field>}
+            <Field label="Starts on"><input type="date" className="form-input" value={form.start_date} onChange={e=>f('start_date',e.target.value)}/></Field>
+            <Field label="Ends on (optional)"><input type="date" className="form-input" value={form.end_date} min={form.start_date} onChange={e=>f('end_date',e.target.value)}/></Field>
+            <Field label="Stop after N runs (optional)"><input type="number" min="1" className="form-input" value={form.max_occurrences} onChange={e=>f('max_occurrences',e.target.value)}/></Field>
+          </div>
+
+          {form.freq==='weekly'&&(<div style={{marginTop:12}}>
+            <div className="form-label" style={{marginBottom:6}}>On these days</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {RJ_DOW.map((n,i)=><button key={i} type="button" className={`btn btn-sm ${form.weekdays.includes(i)?'btn-amber':'btn-ghost'}`} onClick={()=>tog('weekdays',i)}>{n}</button>)}
+            </div>
+          </div>)}
+
+          {(form.freq==='monthly'||form.freq==='yearly')&&(<div style={{marginTop:12}}>
+            <div className="form-grid">
+              {form.freq==='yearly'&&<Field label="In month">
+                <select className="form-input" value={form.year_month} onChange={e=>f('year_month',e.target.value)}>
+                  <option value="">Same month as start date</option>
+                  {MONTH_NAMES.map((n,i)=><option key={i+1} value={i+1}>{n}</option>)}
+                </select>
+              </Field>}
+              <Field label="Pick the day by">
+                <select className="form-input" value={form.nth_mode?'nth':'dom'} onChange={e=>f('nth_mode',e.target.value==='nth')}>
+                  <option value="dom">Date (e.g. 1st, 15th, last day)</option>
+                  <option value="nth">Weekday (e.g. 2nd Tuesday)</option>
+                </select>
+              </Field>
+              {form.nth_mode&&<Field label="Which"><select className="form-input" value={form.nth} onChange={e=>f('nth',e.target.value)}>{[1,2,3,4,5].map(n=><option key={n} value={n}>{RJ_NTH[n]}</option>)}</select></Field>}
+              {form.nth_mode&&<Field label="Weekday"><select className="form-input" value={form.nth_weekday} onChange={e=>f('nth_weekday',e.target.value)}>{RJ_DOW.map((n,i)=><option key={i} value={i}>{n}</option>)}</select></Field>}
+            </div>
+            {!form.nth_mode&&(<div style={{marginTop:10}}>
+              <div className="form-label" style={{marginBottom:6}}>On these dates of the month (31 runs on the last day in shorter months)</div>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                {Array.from({length:31},(_,i)=>i+1).map(d=><button key={d} type="button" className={`btn btn-sm ${form.month_days.includes(d)?'btn-amber':'btn-ghost'}`} style={{minWidth:36,padding:'4px 0'}} onClick={()=>tog('month_days',d)}>{d}</button>)}
+                <button type="button" className={`btn btn-sm ${form.month_days.includes(0)?'btn-amber':'btn-ghost'}`} onClick={()=>tog('month_days',0)}>Last day</button>
+              </div>
+            </div>)}
+          </div>)}
+
+          {form.freq==='dates'&&(<div style={{marginTop:12}}>
+            <div className="form-label" style={{marginBottom:6}}>Run on these dates</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <input type="date" className="form-input" style={{width:170}} value={dateAdd} onChange={e=>setDateAdd(e.target.value)}/>
+              <button type="button" className="btn btn-blue btn-sm" onClick={()=>{ if(!dateAdd) return; if(!form.custom_dates.includes(dateAdd)) f('custom_dates',[...form.custom_dates,dateAdd].sort()); setDateAdd(''); }}>+ Add date</button>
+            </div>
+            {chips(form.custom_dates,(v)=>f('custom_dates',form.custom_dates.filter(x=>x!==v)),rjLabel)}
+          </div>)}
+
+          <div style={{marginTop:12}}>
+            <div className="form-label" style={{marginBottom:6}}>At these times (optional — one job card per time; leave empty for a whole-day job)</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <input type="time" className="form-input" style={{width:140}} value={timeAdd} onChange={e=>setTimeAdd(e.target.value)}/>
+              <button type="button" className="btn btn-blue btn-sm" onClick={()=>{ if(!timeAdd) return; if(!form.times.includes(timeAdd)) f('times',[...form.times,timeAdd].sort()); setTimeAdd(''); }}>+ Add time</button>
+            </div>
+            {chips(form.times,(v)=>f('times',form.times.filter(x=>x!==v)))}
+          </div>
+
+          <div className="divider"/>
+          <div className="section-label">3. Timing rules</div>
+          <div className="form-grid">
+            <Field label="Create the card this many days before it is due"><input type="number" min="0" className="form-input" value={form.lead_days} onChange={e=>f('lead_days',e.target.value)}/></Field>
+            <Field label="Deadline = run date + N days"><input type="number" min="0" className="form-input" value={form.due_after_days} onChange={e=>f('due_after_days',e.target.value)}/></Field>
+            <Field label="If a run falls on an off day">
+              <select className="form-input" value={form.shift_rule} onChange={e=>f('shift_rule',e.target.value)}>
+                <option value="none">Run anyway</option><option value="next">Move to the next working day</option>
+                <option value="prev">Move to the previous working day</option><option value="skip">Skip that run</option>
+              </select>
+            </Field>
+            <Field label="If the mill was closed / app not opened for days">
+              <select className="form-input" value={form.catchup} onChange={e=>f('catchup',e.target.value)}>
+                <option value="latest">Create only the latest missed run</option><option value="all">Create every missed run (max 60)</option>
+              </select>
+            </Field>
+          </div>
+          {form.shift_rule!=='none'&&(<div style={{marginTop:10}}>
+            <div className="form-label" style={{marginBottom:6}}>Off days</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {RJ_DOW.map((n,i)=><button key={i} type="button" className={`btn btn-sm ${form.skip_weekdays.includes(i)?'btn-red':'btn-ghost'}`} onClick={()=>tog('skip_weekdays',i)}>{n}</button>)}
+            </div>
+          </div>)}
+          <div style={{marginTop:10}}>
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13}}>
+              <input type="checkbox" checked={form.skip_if_open} onChange={e=>f('skip_if_open',e.target.checked)}/> Don’t create a new card while the previous one is still open
+            </label>
+          </div>
+          <div style={{marginTop:10}}>
+            <div className="form-label" style={{marginBottom:6}}>Skip these dates (holidays, shutdowns)</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <input type="date" className="form-input" style={{width:170}} value={skipAdd} onChange={e=>setSkipAdd(e.target.value)}/>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={()=>{ if(!skipAdd) return; if(!form.skip_dates.includes(skipAdd)) f('skip_dates',[...form.skip_dates,skipAdd].sort()); setSkipAdd(''); }}>+ Add</button>
+            </div>
+            {chips(form.skip_dates,(v)=>f('skip_dates',form.skip_dates.filter(x=>x!==v)),rjLabel)}
+          </div>
+
+          <div className="divider"/>
+          <div className="section-label">4. Completion rules</div>
+          <div style={{display:'flex',gap:18,flexWrap:'wrap',fontSize:13,marginBottom:12}}>
+            <label style={{display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={form.require_cost} onChange={e=>f('require_cost',e.target.checked)}/> Actual cost</label>
+            <label style={{display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={form.require_notes} onChange={e=>f('require_notes',e.target.checked)}/> Completion notes</label>
+            <label style={{display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={form.require_photo} onChange={e=>f('require_photo',e.target.checked)}/> After photo</label>
+            <label style={{display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={form.require_checklist} onChange={e=>f('require_checklist',e.target.checked)}/> Every checklist step ticked</label>
+          </div>
+          <Field label="Checklist (one step per line, optional)"><textarea className="form-input" rows={3} value={form.checklist_text} onChange={e=>f('checklist_text',e.target.value)} placeholder={'Check oil level\nGrease bearings\nClean guard'}/></Field>
+          <div className="form-grid" style={{marginTop:12}}>
+            <Field label="Needs approval to close?">
+              <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13}}>
+                <input type="checkbox" checked={form.requires_approval} onChange={e=>f('requires_approval',e.target.checked)}/> Yes — a specific person must approve
+              </label>
+            </Field>
+            {form.requires_approval&&<Field label="Approver ★">
+              <select className="form-input" value={form.approver_id} onChange={e=>f('approver_id',e.target.value)}>
+                <option value="">-- Select approver --</option>
+                {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+              </select>
+            </Field>}
+          </div>
+
+          <div className="divider"/>
+          <div className="section-label">Preview</div>
+          <div style={{fontSize:13,color:'var(--purple)',fontWeight:500,marginBottom:6}}>{rjDescribe(rjTplFromForm(form))}</div>
+          {preview.length===0
+            ?<div style={{fontSize:12,color:'var(--red)'}}>No upcoming runs with these settings.</div>
+            :<div style={{fontSize:12}}>{preview.map((o,i)=><div key={i}>{rjLabel(o.date)}{o.time?` · ${o.time}`:''}{Number(form.due_after_days)>0?` → due ${rjLabel(rjAdd(o.date,Number(form.due_after_days)))}`:''}</div>)}</div>}
+        </FormCard>
+      </div>
+    </div>)}
+  </div>);
+}
 
 const jobDeadlineLabel=(j)=>{
   if(!j.deadline) return null;
@@ -5255,7 +5967,8 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
     setLoading(true); setLoadError('');
     const {data:j,error}=await sb.from('job_cards').select('*').eq('assigned_to_id',String(employeeId)).order('created_at',{ascending:false});
     if(error){ setLoadError(error.message); setLoading(false); return; }
-    if(onCount) onCount((j||[]).filter(x=>x.status!=='Done').length);
+    const {count:apN}=await sb.from('job_cards').select('id',{count:'exact',head:true}).eq('approver_id',String(employeeId)).eq('status','Awaiting Approval');
+    if(onCount) onCount((j||[]).filter(x=>x.status!=='Done'&&x.status!=='Awaiting Approval').length+(apN||0));
     const ids=(j||[]).map(x=>x.id);
     let ph=[];
     if(ids.length){
@@ -5286,7 +5999,7 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
     load();
   };
 
-  const openDone=(j)=>{ setDoneJob(j); setDoneForm({notes:'',actual_cost:''}); setDoneFiles([]); };
+  const openDone=(j)=>{ if(j.status==='Awaiting Approval') return alert('This task is already waiting for approval.'); if(j.require_checklist&&(j.checklist||[]).some(c=>!c.done)) return alert('Tick every checklist step before marking this task done.'); setDoneJob(j); setDoneForm({notes:'',actual_cost:''}); setDoneFiles([]); };
 
   const confirmDone=async()=>{
     const missing=[];
@@ -5299,11 +6012,11 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
     const {error}=await sb.from('job_cards').update({
       status:'Done', completed_at:new Date().toISOString(), completed_by:user?.email||null,
       completion_notes:doneForm.notes, actual_cost:doneForm.actual_cost===''?null:Number(doneForm.actual_cost),
-      keep_photos:false, photos_deleted:false
+      keep_photos:false, photos_deleted:false, ...jobCloseExtras(doneJob,user,employeeId,role)
     }).eq('id',doneJob.id).eq('assigned_to_id',String(employeeId));
     if(error){ alert(error.message); setSaving(false); return; }
     if(doneFiles.length) await uploadJobPhotos(doneJob.id,doneFiles,'after');
-    logActivity('My Tasks','update',`Completed — ${doneJob.title}`);
+    logActivity('My Tasks','update',`${jobNeedsApproval(doneJob,employeeId,role)?'Submitted for approval':'Completed'} — ${doneJob.title}`);
     setSaving(false); setDoneJob(null); setDoneFiles([]); load();
   };
 
@@ -5343,6 +6056,7 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
     <RenewalAlerts employeeId={employeeId} role={role} onRenewed={onRenewed}/>
     <LiftingAlerts employeeId={employeeId} role={role}/>
     <WoaAlerts employeeId={employeeId} role={role}/>
+    <JobApprovalQueue employeeId={employeeId} role={role} onChanged={load}/>
     <div className="stat-grid">
       <StatCard label="Open tasks" value={open.length} col="var(--blue)"/>
       <StatCard label="Overdue" value={overdue.length} col={overdue.length>0?'var(--red)':'var(--green)'}/>
@@ -5385,10 +6099,12 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
           {j.location&&<span>📍 {j.location}</span>}
           <span>Assigned {(j.assigned_at||j.created_at||'').slice(0,10)}</span>
           {!isDone&&(j.require_cost||j.require_notes||j.require_photo)&&<span style={{color:'var(--blue)'}}>🔒 To finish you must add: {[j.require_cost&&'cost',j.require_notes&&'notes',j.require_photo&&'after photo'].filter(Boolean).join(', ')}</span>}
+          {jobMetaChips(j)}
         </div>
 
         {renderPhotos(before,'Photos')}
         {renderPhotos(after,'After completion')}
+        <JobExtras j={j} employeeId={employeeId} role={role} onChanged={load}/>
 
         {isDone&&(<div style={{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)',fontSize:12}}>
           <div style={{color:'var(--green)',fontWeight:500}}>✓ Completed {j.completed_at?.slice(0,10)}</div>
@@ -5400,7 +6116,8 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
     {doneJob&&(
       <div className="modal-overlay">
         <div className="card" style={{maxWidth:480,width:'100%',maxHeight:'90vh',overflowY:'auto'}}>
-          <div className="section-label">Mark task as done</div>
+          <div className="section-label">{jobNeedsApproval(doneJob,employeeId,role)?'Submit for approval':'Mark task as done'}</div>
+          {jobNeedsApproval(doneJob,employeeId,role)&&<div style={{fontSize:12,color:'var(--blue)',marginBottom:10}}>🛡 {doneJob.approver_name||'The approver'} must approve this before it is closed. It stays “Awaiting Approval” until then.</div>}
           <div style={{fontSize:14,marginBottom:14}}><strong>{doneJob.title}</strong></div>
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
             <Field label={doneJob.require_notes?'Completion notes ★':'Completion notes'}><textarea className="form-input" rows={3} value={doneForm.notes} onChange={e=>setDoneForm(p=>({...p,notes:e.target.value}))} placeholder="What was done…"/></Field>
@@ -6762,6 +7479,15 @@ function App(){
   const [pendingCounts,setPendingCounts]=useState(0);
     const [renewalCount,setRenewalCount]=useState(0);
   const [renewalTick,setRenewalTick]=useState(0);
+  const [jobsTick,setJobsTick]=useState(0);
+  useEffect(()=>{
+    if(!access||!access.role||access.role==='pending') return;
+    let cancelled=false;
+    const tick=async()=>{ const n=await runRecurringJobs(); if(!cancelled&&n>0) setJobsTick(x=>x+1); };
+    tick();
+    const t=setInterval(tick,30*60*1000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role]);
   useEffect(()=>{
     if(!access||access.role!=='director'){ setPendingCounts(0); return; }
     let cancelled=false;
@@ -6783,7 +7509,9 @@ function App(){
     if(!access||!access.employee_id){ setMyOpenCount(null); return; }
     let cancelled=false;
     const fetchCount=async()=>{
-      const {count,error}=await sb.from('job_cards').select('id',{count:'exact',head:true}).eq('assigned_to_id',String(access.employee_id)).neq('status','Done');
+      const {count:c0,error}=await sb.from('job_cards').select('id',{count:'exact',head:true}).eq('assigned_to_id',String(access.employee_id)).neq('status','Done').neq('status','Awaiting Approval');
+      const {count:c1}=await sb.from('job_cards').select('id',{count:'exact',head:true}).eq('approver_id',String(access.employee_id)).eq('status','Awaiting Approval');
+      const count=(c0||0)+(c1||0);
       if(!cancelled&&!error) setMyOpenCount(count||0);
     };
     fetchCount();
@@ -6831,7 +7559,7 @@ function App(){
   const firstName=displayName.split(' ')[0];
   const activeTab=canSeePage(access.role,tab)?tab:'my-tasks';
   const navItems=[...MY_WORK_NAV,...visibleNav(access.role)];
-  const myTasksView=<MyTasks employeeId={access.employee_id} onCount={setMyOpenCount} role={access.role} onRenewed={()=>setRenewalTick(x=>x+1)}/>;
+  const myTasksView=<MyTasks key={'mt'+jobsTick} employeeId={access.employee_id} onCount={setMyOpenCount} role={access.role} onRenewed={()=>setRenewalTick(x=>x+1)}/>;
 
   const VIEWS={
     'dashboard':<Dashboard name={firstName}/>,
@@ -6857,7 +7585,8 @@ function App(){
     'whatsapp-settings':<WhatsAppSettings/>,
     'product-recipes':<ProductRecipes/>,
     'activity-log':<ActivityLog/>,
-    'job-cards':<JobCards/>,
+    'job-cards':<JobCards key={'jc'+jobsTick} employeeId={access.employee_id} role={access.role} userEmail={user.email}/>,
+    'recurring-jobs':<RecurringJobs role={access.role} userEmail={user.email}/>,
         'licenses':<Licenses role={access.role} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
     'my-tasks':myTasksView,
     'reports':<Reports/>,
