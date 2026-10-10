@@ -225,7 +225,7 @@ const ROLE_ACTIONS={
   'record.delete':['director','manager'],
 };
 let CUR_ROLE='';
-const canSeePage=(role,id)=>{ const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
+const canSeePage=(role,id)=>{ if(id==='org-chart') return true; const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
 const can=(role,action)=>(ROLE_ACTIONS[action]||[]).includes(role);
 const allow=(action)=>can(CUR_ROLE,action);
 const visibleNav=(role)=>{
@@ -5239,7 +5239,7 @@ function JobCards({employeeId,role,userEmail}){
 // ══════════════════════════════════════════════════════════
 // MY TASKS (employee view)
 // ══════════════════════════════════════════════════════════
-const MY_WORK_NAV=[{section:'My Work'},{id:'my-tasks',label:'My Tasks',icon:'✅'}];
+const MY_WORK_NAV=[{section:'My Work'},{id:'my-tasks',label:'My Tasks',icon:'✅'},{id:'org-chart',label:'Roles & Responsibilities',icon:'🧭'}];
 
 // ══════════════════════════════════════════════════════════
 // RECURRING JOBS · APPROVALS · CHECKLISTS
@@ -7476,6 +7476,230 @@ function TaskBadge({n,compact}){
   return <span className={`task-badge ${cls}${compact?' compact':''}`} title={tip}>{label}</span>;
 }
 
+// ══════════════════════════════════════════════════════════
+// ROLES & RESPONSIBILITIES (org chart built from HR portal posts)
+// ══════════════════════════════════════════════════════════
+function OrgChart({role,employeeId}){
+  const isDirector=role==='director';
+  const [posts,setPosts]=useState([]);
+  const [emps,setEmps]=useState([]);
+  const [rows,setRows]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [sel,setSel]=useState(null);
+  const [editing,setEditing]=useState(false);
+  const [draft,setDraft]=useState({purpose:'',resp:''});
+  const [parentPick,setParentPick]=useState('TOP');
+  const [saving,setSaving]=useState(false);
+  const [hist,setHist]=useState([]);
+  const [find,setFind]=useState('');
+
+  const load=useCallback(async()=>{
+    const [p,e,o]=await Promise.all([
+      sb.from('posts').select('id,name').order('name'),
+      sb.from(EMP_TABLE).select('*').range(0,4999),
+      sb.from('org_positions').select('*'),
+    ]);
+    const bad=p.error||e.error||o.error;
+    setErr(bad?bad.message+' — have you run the SQL for this section?':'');
+    setPosts(p.data||[]);
+    setEmps((e.data||[]).filter(empIsActive));
+    setRows(o.data||[]);
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  useEffect(()=>{
+    if(!sel){ setHist([]); return; }
+    sb.from('org_history').select('*').eq('post_id',String(sel)).order('changed_at',{ascending:false}).limit(6).then(({data})=>setHist(data||[]));
+  },[sel,rows]);
+
+  if(loading) return <Loading/>;
+
+  const postById={}; posts.forEach(p=>{postById[String(p.id)]=p;});
+  const rowById={}; rows.forEach(r=>{rowById[r.post_id]=r;});
+  const live=(id)=>!!(id&&postById[id]&&rowById[id]&&rowById[id].placed);
+  const parentOf=(id)=>(rowById[id]&&rowById[id].parent_post_id)||null;
+  const allIds=posts.map(p=>String(p.id));
+  const placedIds=allIds.filter(live);
+  const kids=(pid)=>placedIds.filter(id=>parentOf(id)===pid).sort((a,b)=>postById[a].name.localeCompare(postById[b].name));
+  const top=kids(null);
+  const orphans=placedIds.filter(id=>parentOf(id)&&!live(parentOf(id)));
+  const unplaced=allIds.filter(id=>!live(id)).sort((a,b)=>postById[a].name.localeCompare(postById[b].name));
+  const holdersOf=(id)=>emps.filter(e=>postById[id]&&e.post===postById[id].name);
+  const chainOf=(id)=>{ const out=[]; let cur=parentOf(id),n=0; while(cur&&n<50){ out.push(cur); cur=parentOf(cur); n++; } return out; };
+  const descOf=(id,seen=new Set())=>{ kids(id).forEach(k=>{ if(!seen.has(k)){ seen.add(k); descOf(k,seen); } }); return seen; };
+
+  const me=emps.find(e=>String(e.id)===String(employeeId));
+  const myPost=me?posts.find(p=>p.name===me.post):null;
+  const myPostId=myPost?String(myPost.id):null;
+  const canEdit=(id)=>isDirector||(!!myPostId&&chainOf(id).includes(myPostId));
+
+  const pick=(id)=>{
+    setSel(id); setEditing(false);
+    const par=parentOf(id);
+    setParentPick(par&&live(par)?par:'TOP');
+  };
+  const startEdit=(id)=>{ const r=rowById[id]||{}; setDraft({purpose:r.purpose||'',resp:r.responsibilities||''}); setEditing(true); };
+
+  const saveResp=async(id)=>{
+    setSaving(true);
+    const {error}=await sb.rpc('org_set_responsibilities',{p_post:id,p_purpose:draft.purpose.trim(),p_resp:draft.resp.trim()});
+    setSaving(false);
+    if(error) return alert(error.message);
+    logActivity('Roles & Responsibilities','update',`Responsibilities edited — ${postById[id].name}`);
+    setEditing(false); await load();
+  };
+  const saveParent=async(id,placed)=>{
+    setSaving(true);
+    const parent=parentPick==='TOP'?null:parentPick;
+    const {error}=await sb.rpc('org_set_parent',{p_post:id,p_parent:parent,p_placed:placed});
+    setSaving(false);
+    if(error) return alert(error.message);
+    logActivity('Roles & Responsibilities','update',placed?`${postById[id].name} placed under ${parent?postById[parent].name:'the Director'}`:`${postById[id].name} removed from the chart`);
+    await load();
+  };
+
+  const q=find.trim().toLowerCase();
+  const matches=q?emps.filter(e=>`${empName(e)} ${empCode(e)}`.toLowerCase().includes(q)).slice(0,8):[];
+
+  const node=(id,depth,seen)=>{
+    if(seen.has(id)||depth>12) return null;
+    const s2=new Set(seen); s2.add(id);
+    const hs=holdersOf(id);
+    return(<div key={id}>
+      <div onClick={()=>pick(id)} style={{marginLeft:depth*18,padding:'7px 10px',marginBottom:4,border:'1px solid var(--border)',borderLeft:`3px solid ${hs.length?'var(--blue)':'var(--amber)'}`,borderRadius:6,background:sel===id?'color-mix(in srgb, var(--blue) 10%, var(--surface))':'var(--surface)',cursor:'pointer',display:'flex',justifyContent:'space-between',gap:8}}>
+        <span><strong>{postById[id].name}</strong>{id===myPostId&&<span className="badge badge-green" style={{marginLeft:6}}>you</span>}</span>
+        <span className="dim" style={{fontSize:12,whiteSpace:'nowrap'}}>{hs.length?`${hs.length} ${hs.length===1?'person':'people'}`:'Vacant'}</span>
+      </div>
+      {kids(id).map(k=>node(k,depth+1,s2))}
+    </div>);
+  };
+
+  const detail=()=>{
+    if(!sel||!postById[sel]) return <div className="card"><Empty msg="Click a position to see where it sits in the organisation and what it is responsible for."/></div>;
+    const p=postById[sel], r=rowById[sel]||{};
+    const placed=live(sel);
+    const hs=holdersOf(sel);
+    const above=chainOf(sel).map(id=>postById[id]?postById[id].name:'(removed post)').reverse();
+    const below=placed?kids(sel):[];
+    const blocked=descOf(sel); blocked.add(sel);
+    const parentOptions=placedIds.filter(id=>!blocked.has(id)).sort((a,b)=>postById[a].name.localeCompare(postById[b].name));
+    const mayEdit=canEdit(sel);
+    return(<div className="card">
+      <div style={{fontSize:18,fontWeight:600}}>{p.name}</div>
+      <div style={{fontSize:13,marginTop:6,color:'var(--purple)'}}>
+        {placed?['Director / Management',...above,p.name].join('  →  '):'Not placed in the chart yet'}
+      </div>
+      {placed&&above.includes('(removed post)')&&<div style={{fontSize:12,color:'var(--red)',marginTop:4}}>⚠ A post above this one was removed in the HR portal. The Director needs to move this position.</div>}
+
+      <div className="form-label" style={{marginTop:14,marginBottom:4}}>People in this position ({hs.length})</div>
+      {hs.length===0?<span className="badge badge-amber">Vacant</span>:(
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {hs.map(e=><span key={e.id} className="badge badge-blue">{empLabel(e)}{e.staff_type==='contract'?' · contract':''}</span>)}
+        </div>
+      )}
+
+      {below.length>0&&(<>
+        <div className="form-label" style={{marginTop:14,marginBottom:4}}>Positions reporting to this one</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {below.map(id=><button key={id} className="btn btn-ghost btn-sm" onClick={()=>pick(id)}>{postById[id].name}</button>)}
+        </div>
+      </>)}
+
+      <div className="divider"/>
+      {editing?(<>
+        <Field label="Purpose of this position (one or two lines)">
+          <textarea className="form-input" rows={2} value={draft.purpose} onChange={e=>setDraft(d=>({...d,purpose:e.target.value}))}/>
+        </Field>
+        <div style={{height:10}}/>
+        <Field label="Responsibilities (one per line)">
+          <textarea className="form-input" rows={8} value={draft.resp} onChange={e=>setDraft(d=>({...d,resp:e.target.value}))}/>
+        </Field>
+        <div className="form-actions">
+          <button className="btn btn-green" onClick={()=>saveResp(sel)} disabled={saving}>{saving?'Saving…':'Save'}</button>
+          <button className="btn btn-ghost" onClick={()=>setEditing(false)}>Cancel</button>
+        </div>
+      </>):(<>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+          <div className="form-label" style={{marginBottom:0}}>Purpose and responsibilities</div>
+          {mayEdit&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(sel)}>Edit</button>}
+        </div>
+        {r.purpose?<div style={{fontSize:13,marginTop:8,whiteSpace:'pre-wrap'}}>{r.purpose}</div>:null}
+        {r.responsibilities?<div style={{fontSize:13,marginTop:8,whiteSpace:'pre-wrap'}}>{r.responsibilities}</div>
+          :<div className="dim" style={{fontSize:13,marginTop:8}}>No responsibilities written yet.{mayEdit?' Click Edit to add them.':''}</div>}
+        {!mayEdit&&<div className="dim" style={{fontSize:11,marginTop:8}}>Only people in positions above this one (and the Director) can edit this.</div>}
+        {r.updated_by&&<div className="dim" style={{fontSize:11,marginTop:6}}>Last changed by {r.updated_by}{r.updated_at?` on ${new Date(r.updated_at).toLocaleString('en-IN')}`:''}</div>}
+      </>)}
+
+      {isDirector&&(<>
+        <div className="divider"/>
+        <div className="form-label" style={{marginBottom:6}}>Hierarchy (Director only)</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+          <select style={{minWidth:220}} value={parentPick} onChange={e=>setParentPick(e.target.value)}>
+            <option value="TOP">Reports directly to the Director</option>
+            {parentOptions.map(id=><option key={id} value={id}>Reports to: {postById[id].name}</option>)}
+          </select>
+          <button className="btn btn-amber btn-sm" onClick={()=>saveParent(sel,true)} disabled={saving}>{placed?'Move':'Place in chart'}</button>
+          {placed&&<button className="btn btn-red btn-sm" onClick={()=>saveParent(sel,false)} disabled={saving}>Remove from chart</button>}
+        </div>
+      </>)}
+
+      {hist.length>0&&(<>
+        <div className="divider"/>
+        <div className="form-label" style={{marginBottom:6}}>Recent changes</div>
+        {hist.map(h=>(<div key={h.id} className="dim" style={{fontSize:12,marginBottom:3}}>
+          {new Date(h.changed_at).toLocaleString('en-IN')} · {h.changed_by||'—'} · {h.kind==='hierarchy'?'hierarchy changed':'responsibilities edited'}
+        </div>))}
+      </>)}
+    </div>);
+  };
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">My Work</div>
+      <div className="page-title">Roles &amp; responsibilities</div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
+    {myPost&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid var(--green)'}}>
+      <div style={{fontSize:13}}>Your position: <strong>{myPost.name}</strong>{rowById[myPostId]&&rowById[myPostId].placed?'':' (not placed in the chart yet)'}</div>
+      <button className="btn btn-ghost btn-sm" style={{marginTop:8}} onClick={()=>pick(myPostId)}>See my role</button>
+    </div>}
+    {isDirector&&unplaced.length>0&&<Alert type="amber" icon="⚠" title={`${unplaced.length} post${unplaced.length===1?'':'s'} not placed in the chart yet`} sub="They are listed under the chart. Click one, then choose who it reports to."/>}
+    {isDirector&&orphans.length>0&&<Alert type="red" icon="⚠" title={`${orphans.length} position${orphans.length===1?'':'s'} report to a post that was removed in the HR portal`} sub="They are listed under “Needs attention” below. Move each one under a valid position."/>}
+
+    <div className="two-col" style={{alignItems:'start'}}>
+      <div>
+        <input style={{width:'100%',marginBottom:10}} placeholder="Find a person…" value={find} onChange={e=>setFind(e.target.value)}/>
+        {matches.map(e=>{ const pp=posts.find(x=>x.name===e.post); return(
+          <div key={e.id} className="card" style={{padding:'8px 12px',marginBottom:6,cursor:pp?'pointer':'default'}} onClick={()=>pp&&pick(String(pp.id))}>
+            <strong>{empLabel(e)}</strong> <span className="dim">· {e.post||'—'}</span>
+          </div>); })}
+        {q&&matches.length===0&&<div className="dim" style={{fontSize:12,marginBottom:8}}>No one found.</div>}
+
+        <div className="section-label" style={{marginTop:q?12:0}}>Organisation chart</div>
+        <div style={{padding:'7px 10px',marginBottom:4,border:'1px solid var(--border)',borderLeft:'3px solid var(--purple)',borderRadius:6,background:'var(--surface2)'}}><strong>Director / Management</strong></div>
+        {top.length===0&&<div className="dim" style={{fontSize:13,marginLeft:18}}>{isDirector?'Nothing placed yet. Click a post below to start.':'The chart has not been set up yet.'}</div>}
+        {top.map(id=>node(id,1,new Set()))}
+
+        {isDirector&&orphans.length>0&&(<>
+          <div className="section-label" style={{marginTop:20,color:'var(--red)'}}>Needs attention</div>
+          {orphans.map(id=><div key={id} onClick={()=>pick(id)} style={{padding:'7px 10px',marginBottom:4,border:'1px solid var(--border)',borderLeft:'3px solid var(--red)',borderRadius:6,cursor:'pointer',background:'var(--surface)'}}>⚠ <strong>{postById[id].name}</strong></div>)}
+        </>)}
+
+        {isDirector&&unplaced.length>0&&(<>
+          <div className="section-label" style={{marginTop:20}}>Not placed in the chart</div>
+          {unplaced.map(id=><div key={id} onClick={()=>pick(id)} style={{padding:'7px 10px',marginBottom:4,border:'1px solid var(--border)',borderLeft:'3px solid var(--amber)',borderRadius:6,cursor:'pointer',background:sel===id?'color-mix(in srgb, var(--blue) 10%, var(--surface))':'var(--surface)',display:'flex',justifyContent:'space-between'}}>
+            <strong>{postById[id].name}</strong><span className="dim" style={{fontSize:12}}>{holdersOf(id).length} people</span>
+          </div>)}
+        </>)}
+      </div>
+      <div>{detail()}</div>
+    </div>
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -7610,6 +7834,7 @@ function App(){
     'recurring-jobs':<RecurringJobs role={access.role} userEmail={user.email}/>,
         'licenses':<Licenses role={access.role} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
     'my-tasks':myTasksView,
+        'org-chart':<OrgChart role={access.role} employeeId={access.employee_id}/>,
     'reports':<Reports/>,
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
   };
