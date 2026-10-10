@@ -104,6 +104,21 @@
   @keyframes tbShine{0%{left:-60%}55%,100%{left:130%}}
   @keyframes tbPulse{0%{box-shadow:0 0 0 0 rgba(16,185,129,.55)}70%{box-shadow:0 0 0 7px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
   @keyframes tbWarn{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.6);transform:scale(1)}50%{box-shadow:0 0 0 6px rgba(220,38,38,0);transform:scale(1.12)}}
+ .oc-child{position:relative;padding-left:22px;padding-bottom:6px;}
+.oc-child::before{content:'';position:absolute;left:0;top:0;bottom:0;border-left:2px solid var(--border2);}
+.oc-child:last-child::before{bottom:auto;height:20px;}
+.oc-child::after{content:'';position:absolute;left:0;top:19px;width:18px;border-top:2px solid var(--border2);}
+.oc-children{margin-left:12px;margin-top:6px;}
+.oc-card{display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--oc,#2563EB);border-radius:8px;cursor:pointer;transition:all .12s;}
+.oc-card:hover{border-color:var(--border2);box-shadow:0 1px 5px rgba(0,0,0,.08);}
+.oc-card.sel{background:color-mix(in srgb, var(--blue) 10%, var(--surface));border-color:var(--blue);border-left-color:var(--oc,#2563EB);}
+.oc-tog{width:20px;height:20px;border-radius:4px;border:1px solid var(--border2);background:var(--surface2);color:var(--muted);font-size:14px;line-height:1;padding:0;flex-shrink:0;}
+.oc-tog:hover{color:var(--text);border-color:var(--muted);}
+.oc-spacer{width:20px;flex-shrink:0;}
+.oc-name{font-weight:600;font-size:13px;flex:1;min-width:0;}
+.oc-pill{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);white-space:nowrap;}
+.oc-pill.vac{background:color-mix(in srgb, var(--amber) 15%, transparent);color:var(--amber);border-color:color-mix(in srgb, var(--amber) 35%, transparent);}
+.oc-pill.more{background:color-mix(in srgb, var(--blue) 10%, transparent);color:var(--blue);border-color:color-mix(in srgb, var(--blue) 30%, transparent);}
   .drawer-overlay{display:none;}
   @media(max-width:700px){
     .app{flex-direction:column;height:100vh;height:100dvh;}
@@ -7516,6 +7531,7 @@ function OrgChart({role,employeeId,visible,onVisible}){
     if(!sel){ setHist([]); return; }
     sb.from('org_history').select('*').eq('post_id',String(sel)).order('changed_at',{ascending:false}).limit(6).then(({data})=>setHist(data||[]));
   },[sel,rows]);
+  const [expanded,setExpanded]=useState(null); // null = default (top two levels open)
 
   if(loading) return <Loading/>;
 
@@ -7538,11 +7554,21 @@ function OrgChart({role,employeeId,visible,onVisible}){
   const myPostId=myPost?String(myPost.id):null;
   const canEdit=(id)=>isDirector||(!!myPostId&&chainOf(id).includes(myPostId));
 
-  const pick=(id)=>{
-    setSel(id); setEditing(false);
-    const par=parentOf(id);
-    setParentPick(par&&live(par)?par:'TOP');
-  };
+const walk=(fn)=>{ const go=(id,d,seen)=>{ if(seen.has(id)) return; seen.add(id); fn(id,d); kids(id).forEach(k=>go(k,d+1,seen)); }; top.forEach(t=>go(t,1,new Set())); };
+const materialize=()=>{ if(expanded) return {...expanded}; const m={}; walk((id,d)=>{ if(d<2) m[id]=true; }); return m; };
+const isOpen=(id,d)=>expanded?!!expanded[id]:d<2;
+const toggle=(id)=>{ const m=materialize(); m[id]=!m[id]; setExpanded(m); };
+const expandAll=()=>{ const m={}; walk(id=>{ m[id]=true; }); setExpanded(m); };
+const collapseAll=()=>setExpanded({});
+const headcount=(id)=>{ let n=0; const s=descOf(id); s.add(id); s.forEach(x=>{ n+=holdersOf(x).length; }); return n; };
+const OC_COLS=['#7C3AED','#2563EB','#0891B2','#059669','#D97706'];
+
+const pick=(id)=>{
+  setSel(id); setEditing(false);
+  const par=parentOf(id);
+  setParentPick(par&&live(par)?par:'TOP');
+  const m=materialize(); chainOf(id).forEach(a=>{ m[a]=true; }); setExpanded(m);
+};
   const startEdit=(id)=>{ const r=rowById[id]||{}; setDraft({purpose:r.purpose||'',resp:r.responsibilities||''}); setEditing(true); };
 
   const saveResp=async(id)=>{
@@ -7575,18 +7601,26 @@ function OrgChart({role,employeeId,visible,onVisible}){
   const q=find.trim().toLowerCase();
   const matches=q?emps.filter(e=>`${empName(e)} ${empCode(e)}`.toLowerCase().includes(q)).slice(0,8):[];
 
-  const node=(id,depth,seen)=>{
-    if(seen.has(id)||depth>12) return null;
-    const s2=new Set(seen); s2.add(id);
-    const hs=holdersOf(id);
-    return(<div key={id}>
-      <div onClick={()=>pick(id)} style={{marginLeft:depth*18,padding:'7px 10px',marginBottom:4,border:'1px solid var(--border)',borderLeft:`3px solid ${hs.length?'var(--blue)':'var(--amber)'}`,borderRadius:6,background:sel===id?'color-mix(in srgb, var(--blue) 10%, var(--surface))':'var(--surface)',cursor:'pointer',display:'flex',justifyContent:'space-between',gap:8}}>
-        <span><strong>{postById[id].name}</strong>{id===myPostId&&<span className="badge badge-green" style={{marginLeft:6}}>you</span>}</span>
-        <span className="dim" style={{fontSize:12,whiteSpace:'nowrap'}}>{hs.length?`${hs.length} ${hs.length===1?'person':'people'}`:'Vacant'}</span>
-      </div>
-      {kids(id).map(k=>node(k,depth+1,s2))}
-    </div>);
-  };
+const node=(id,depth,seen)=>{
+  if(seen.has(id)||depth>12) return null;
+  const s2=new Set(seen); s2.add(id);
+  const hs=holdersOf(id), ks=kids(id), open=isOpen(id,depth);
+  const col=hs.length===0?'#D97706':OC_COLS[depth%OC_COLS.length];
+  const below=ks.length>0?headcount(id)-hs.length:0;
+  return(<div key={id}>
+    <div className={`oc-card${sel===id?' sel':''}`} style={{'--oc':col}} onClick={()=>pick(id)}>
+      {ks.length>0
+        ?<button className="oc-tog" onClick={e=>{ e.stopPropagation(); toggle(id); }}>{open?'−':'+'}</button>
+        :<span className="oc-spacer"/>}
+      <span className="oc-name">{postById[id].name}{id===myPostId&&<span className="badge badge-green" style={{marginLeft:6}}>you</span>}</span>
+      {ks.length>0&&!open&&<span className="oc-pill more" title="People in positions below this one">+{below} below</span>}
+      {hs.length===0?<span className="oc-pill vac">Vacant</span>:<span className="oc-pill">{hs.length} {hs.length===1?'person':'people'}</span>}
+    </div>
+    {ks.length>0&&open&&<div className="oc-children">
+      {ks.map(k=><div key={k} className="oc-child">{node(k,depth+1,s2)}</div>)}
+    </div>}
+  </div>);
+};
 
   const detail=()=>{
     if(!sel||!postById[sel]) return <div className="card"><Empty msg="Click a position to see where it sits in the organisation and what it is responsible for."/></div>;
@@ -7698,10 +7732,21 @@ function OrgChart({role,employeeId,visible,onVisible}){
           </div>); })}
         {q&&matches.length===0&&<div className="dim" style={{fontSize:12,marginBottom:8}}>No one found.</div>}
 
-        <div className="section-label" style={{marginTop:q?12:0}}>Organisation chart</div>
-        <div style={{padding:'7px 10px',marginBottom:4,border:'1px solid var(--border)',borderLeft:'3px solid var(--purple)',borderRadius:6,background:'var(--surface2)'}}><strong>Director / Management</strong></div>
-        {top.length===0&&<div className="dim" style={{fontSize:13,marginLeft:18}}>{isDirector?'Nothing placed yet. Click a post below to start.':'The chart has not been set up yet.'}</div>}
-        {top.map(id=>node(id,1,new Set()))}
+<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:q?12:0,marginBottom:10,flexWrap:'wrap',gap:8}}>
+  <div className="section-label" style={{marginBottom:0}}>Organisation chart</div>
+  <div style={{display:'flex',gap:6}}>
+    <button className="btn btn-ghost btn-sm" onClick={expandAll}>Expand all</button>
+    <button className="btn btn-ghost btn-sm" onClick={collapseAll}>Collapse all</button>
+  </div>
+</div>
+<div className="oc-card" style={{'--oc':'#7C3AED',cursor:'default',background:'var(--surface2)'}}>
+  <span className="oc-spacer"/>
+  <span className="oc-name">Director / Management</span>
+</div>
+{top.length===0&&<div className="dim" style={{fontSize:13,marginTop:10}}>{isDirector?'Nothing placed yet. Click a post below to start.':'The chart has not been set up yet.'}</div>}
+<div className="oc-children">
+  {top.map(id=><div key={id} className="oc-child">{node(id,1,new Set())}</div>)}
+</div>
 
         {isDirector&&orphans.length>0&&(<>
           <div className="section-label" style={{marginTop:20,color:'var(--red)'}}>Needs attention</div>
