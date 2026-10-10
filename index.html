@@ -119,6 +119,8 @@
 .oc-pill{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);white-space:nowrap;}
 .oc-pill.vac{background:color-mix(in srgb, var(--amber) 15%, transparent);color:var(--amber);border-color:color-mix(in srgb, var(--amber) 35%, transparent);}
 .oc-pill.more{background:color-mix(in srgb, var(--blue) 10%, transparent);color:var(--blue);border-color:color-mix(in srgb, var(--blue) 30%, transparent);}
+  .sd-banner{padding:16px 28px 0;max-width:1150px;}
+  @media(max-width:700px){.sd-banner{padding:12px 14px 0;}}
   .drawer-overlay{display:none;}
   @media(max-width:700px){
     .app{flex-direction:column;height:100vh;height:100dvh;}
@@ -198,6 +200,7 @@ const NAV = [
   { id:'job-cards', label:'Job Cards', icon:'🛠️' },
     { id:'recurring-jobs', label:'Recurring Jobs', icon:'🔁' },
   { id:'licenses', label:'Licenses & Renewals', icon:'📑' },
+  { id:'shutdowns', label:'Maintenance Shutdown', icon:'🔧' },
   { section:'Inventory' },
   { id:'all-stock', label:'All Stock', icon:'📦' },
   { id:'store', label:'Store & Materials', icon:'🧰' },
@@ -213,6 +216,7 @@ const NAV = [
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
     { id:'cashbook-settings', label:'Cash Book Settings', icon:'🧾' },
   { id:'depot-settings', label:'Depots', icon:'🏢' },
+  { id:'shutdown-settings', label:'Shutdown Settings', icon:'🧯' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
   { id:'whatsapp-settings', label:'WhatsApp Alerts', icon:'💬' },
@@ -243,7 +247,8 @@ const ROLE_ACTIONS={
 };
 let CUR_ROLE='';
 let ORG_VISIBLE=false;
-const canSeePage=(role,id)=>{ if(id==='org-chart') return role==='director'||ORG_VISIBLE; const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
+let SD_ALLOWED=false;
+const canSeePage=(role,id)=>{ if(id==='shutdowns') return !!role&&role!=='pending'&&(role!=='viewer'||SD_ALLOWED); if(id==='org-chart') return role==='director'||ORG_VISIBLE; const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
 const can=(role,action)=>(ROLE_ACTIONS[action]||[]).includes(role);
 const allow=(action)=>can(CUR_ROLE,action);
 const visibleNav=(role)=>{
@@ -841,7 +846,9 @@ function Production(){
     return netClosing(prior.opening_bags,prior.production_bags,prior.date,productId);
   };
 
-  const startEntry=()=>{
+  const startEntry=async()=>{
+    const sh=nextEntryDate?await sdShutdownOn(nextEntryDate):null;
+    if(sh&&!confirm(`${nextEntryDate} falls inside the planned maintenance shutdown "${sh.title}".\n\nNormally you should record "No production" for this day.\n\nEnter production anyway?`)) return;
     if(!nextEntryDate) return;
     const init={};
     finishedProducts.forEach(p=>{
@@ -2356,6 +2363,7 @@ function Dispatch(){
     if(!dForm.invoice_no||!dForm.depot_name||!dForm.qty_bags||!dForm.scheme) return alert('Scheme, invoice, depot and quantity required.');
     const prod=productForScheme(dForm.scheme);
     if(!prod) return alert(`No finished product found matching scheme "${dForm.scheme}" — check Product Master.`);
+    if(!(await sdGuardDispatch(dForm.date,prod,dForm.qty_bags))) return;
     setSaving(true);
     const row={date:dForm.date,invoice_no:dForm.invoice_no,delivery_order_no:dForm.delivery_order_no,work_order_id:dForm.work_order_id||null,scheme:dForm.scheme,product_id:prod.id,batch_no:dForm.batch_no,depot_name:dForm.depot_name,district:dForm.district,qty_bags:Number(dForm.qty_bags),vehicle_no:dForm.vehicle_no,notes:dForm.notes};
     const {data,error}=await sb.from('supplyco_dispatches').insert(row).select('*, product:product_id(*)').single();
@@ -2509,6 +2517,7 @@ function PrivateDispatch(){
 
   const save=async()=>{
     if(!form.party_name||!form.product_id||!form.qty) return alert('Party name, product and quantity required.');
+    if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
     setSaving(true);
     const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:Number(form.qty),qty_kg:isRaw?Number(form.qty):null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes};
     const {data,error}=await sb.from('private_dispatches').insert(row).select('*, product:product_id(*)').single();
@@ -3513,6 +3522,7 @@ function Dashboard({name}){
       <div className="section-label">Alerts</div>
       <LiftingDashboardAlerts/>
       <WoaDashboardAlerts/>
+      <ShutdownDashboardAlerts/>
       {stockAlerts.map(r=>(
         <Alert key={r.product.id} type="amber" icon="⚠" title={`${r.product.product_name} — ${fmt(r.qty)} bags, within watch range`} sub={`Between min (${fmt(r.product.min_stock_alert)}) and max (${fmt(r.product.max_stock_alert)})`}/>
       ))}
@@ -4075,6 +4085,7 @@ const TL_TYPES={
   workorder:{label:'Work orders',icon:'📊',col:'var(--blue)',page:'work-order-tracker'},
   license:{label:'Licenses',icon:'📑',col:'var(--purple)',page:'licenses'},
   job:{label:'Job cards',icon:'🛠️',col:'var(--green)',page:'job-cards'},
+  shutdown:{label:'Shutdowns',icon:'🔧',col:'var(--red)',page:'shutdowns'},
 };
 const tlDaysText=(it)=>it.done?'Complete':it.daysLeft<0?`Overdue by ${-it.daysLeft} day${-it.daysLeft===1?'':'s'}`:it.daysLeft===0?'Due today':`${it.daysLeft} day${it.daysLeft===1?'':'s'} left`;
 const tlColor=(it)=>it.done?'var(--green)':it.daysLeft<0?'var(--red)':it.stage>=1?LIFT_STAGE_COL[it.stage]:TL_TYPES[it.type].col;
@@ -4123,6 +4134,18 @@ async function loadTimelineItems(){
       sub:[j.priority,j.status,j.assigned_to&&('Assigned: '+j.assigned_to),j.location].filter(Boolean).join(' · '),extra:''});
   });
 
+  try{
+    const {data:sds}=await sb.from('shutdowns').select('*').in('status',['Proposed','Approved']);
+    (sds||[]).forEach(s=>{
+      const n=Math.min(120,Number(s.est_days)||1);
+      for(let i=0;i<n;i++){
+        const d=licShift(s.start_date,i), dl=daysUntil(d);
+        items.push({key:'S'+s.id+d,type:'shutdown',date:d,daysLeft:dl,stage:0,done:dl<0,
+          title:`${s.title}${n>1?` · day ${i+1}/${n}`:''}`,
+          sub:(s.status==='Proposed'?'Awaiting approval':'Approved')+' · mill shutdown',extra:i===0?(s.work_scope||''):''});
+      }
+    });
+  }catch(e){}
   return {items,off:LS.off_days||[]};
 }
 
@@ -4135,7 +4158,7 @@ function TimelineCalendar({onGo}){
   const [loading,setLoading]=useState(true);
   const [err,setErr]=useState('');
   const [sel,setSel]=useState(today);
-  const [show,setShow]=useState({lifting:true,workorder:true,license:true,job:true,done:false});
+  const [show,setShow]=useState({lifting:true,workorder:true,license:true,job:true,shutdown:true,done:false});
 
   const load=useCallback(async()=>{
     setLoading(true); setErr('');
@@ -5985,7 +6008,7 @@ async function uploadJobPhotos(jobId,files,stage){
   }
 }
 
-function MyTasks({employeeId,onCount,role,onRenewed}){
+function MyTasks({employeeId,onCount,role,onRenewed,onGo}){
   const [jobs,setJobs]=useState([]);
   const [photos,setPhotos]=useState({});
   const [loading,setLoading]=useState(true);
@@ -6089,6 +6112,7 @@ function MyTasks({employeeId,onCount,role,onRenewed}){
       <div className="page-label">My Work{who?` · ${who.name}${who.emp_code?` (${who.emp_code})`:''}`:''}</div>
       <div className="page-title">My tasks</div>
     </div>
+    <ShutdownTasks employeeId={employeeId} role={role} onChanged={onRenewed} onGo={onGo}/>
     <RenewalAlerts employeeId={employeeId} role={role} onRenewed={onRenewed}/>
     <LiftingAlerts employeeId={employeeId} role={role}/>
     <WoaAlerts employeeId={employeeId} role={role}/>
@@ -7765,6 +7789,836 @@ const node=(id,depth,seen)=>{
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// MAINTENANCE SHUTDOWN — planning, approval, precautions, alerts
+// ══════════════════════════════════════════════════════════
+const SD_SETTING_KEY='shutdown_settings';
+const SD_DEPTS=[
+  {k:'production',label:'Production',icon:'⚙'},
+  {k:'dispatch',label:'Dispatch & sales',icon:'🚛'},
+  {k:'store',label:'Store, stock & inwards',icon:'🧰'},
+  {k:'accounts',label:'Accounts',icon:'₹'},
+  {k:'quality',label:'Quality / lab',icon:'🧪'},
+  {k:'labour',label:'Labour & safety',icon:'👷'},
+];
+const SD_DEFAULTS={
+  enabled:true,
+  initiator_ids:[], approver_ids:[], dept_ids:{},
+  min_notice_days:5, max_days:30, remind_days:14,
+  notify_director_on_proposal:true,
+  off_days:[0],
+  lookback_days:30, safety_pct:10, max_extra_prod_pct:25,
+  restart_ramp_days:1, restart_wheat_days:2,
+  lift_buffer_days:3, license_buffer_days:15,
+  show_dashboard:true, show_tasks:true
+};
+const SD_AREA_DEPT={production:'production','job-cards':'production','recurring-jobs':'production',dispatch:'dispatch','private-dispatch':'dispatch','work-order-tracker':'dispatch',returns:'dispatch','fci-inwards':'store','private-inwards':'store','lifting-orders':'store',store:'store','all-stock':'store','stock-count':'store',ledger:'accounts'};
+const SD_ADVICE={
+  production:{pre:'Stock must be built up before the stop. Make sure every maintenance job is created and assigned.',live:'The mill is stopped. Record "No production" for each shutdown day — do not enter production.'},
+  dispatch:{pre:'Keep stock reserved for the shutdown period and tell depots and private parties the dates.',live:'No new production. Dispatch only from stock on hand and check stock before every dispatch.'},
+  store:{pre:'Check wheat cover for the restart, order spares and low items, and plan the physical stock count.',live:'Wheat is not being consumed. Inwards can continue; issue spares carefully and use the time for a stock count.'},
+  accounts:{pre:'Arrange cash for contractor and spares payments; complete licence renewals falling due.',live:'The cash book runs as normal; expect contractor and spares payments.'},
+};
+
+async function loadShutdownSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',SD_SETTING_KEY).maybeSingle();
+  let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  return {...SD_DEFAULTS,...saved};
+}
+
+const sdIds=(a)=>(a||[]).map(String);
+const sdEnd=(s)=>licShift(s.start_date,(Number(s.est_days)||1)-1);
+const sdMe=(S,employeeId,role)=>{
+  const me=(employeeId===null||employeeId===undefined)?'':String(employeeId);
+  const dir=role==='director';
+  const initiator=!!me&&sdIds(S.initiator_ids).includes(me);
+  const approver=!!me&&sdIds(S.approver_ids).includes(me);
+  return {me,dir,initiator,approver,canInitiate:dir||initiator,canApprove:dir||approver,
+    depts:SD_DEPTS.filter(d=>!!me&&sdIds((S.dept_ids||{})[d.k]).includes(me)).map(d=>d.k)};
+};
+const sdOwn=(s,m)=>!!m.me&&String(s.proposed_by_id||'')===m.me;
+
+const sdState=(s)=>{
+  const end=sdEnd(s);
+  if(s.status==='Proposed') return {k:'proposed',label:daysUntil(s.start_date)<0?'Awaiting approval — start date has passed':'Awaiting manager approval',col:'var(--amber)'};
+  if(s.status==='Rejected') return {k:'rejected',label:'Rejected',col:'var(--red)'};
+  if(s.status==='Cancelled') return {k:'cancelled',label:'Cancelled by Director',col:'var(--red)'};
+  if(s.status==='Completed') return {k:'done',label:'Completed',col:'var(--green)'};
+  const dTo=daysUntil(s.start_date);
+  if(dTo>0) return {k:'upcoming',label:`Approved · starts in ${dTo} day${dTo===1?'':'s'}`,col:'var(--blue)',daysTo:dTo};
+  const dEnd=daysUntil(end);
+  if(dEnd>=0) return {k:'live',label:`In progress · day ${-dTo+1} of ${s.est_days}`,col:'var(--red)'};
+  return {k:'overrun',label:`Past expected end by ${-dEnd} day${-dEnd===1?'':'s'} — confirm restart`,col:'var(--red)'};
+};
+const sdWinEnd=(s)=>{ const e=sdEnd(s); return (sdState(s).k==='overrun'&&today>e)?today:e; };
+
+// ── data loaders (short cache so banners on every page stay cheap) ──
+const SD_ROWS={t:0,v:null};
+const SD_CACHE={t:0,p:null};
+const sdBust=()=>{ SD_ROWS.t=0; SD_CACHE.t=0; };
+async function sdLoadRows(force){
+  if(!force&&SD_ROWS.v&&Date.now()-SD_ROWS.t<20000) return SD_ROWS.v;
+  const [{data:r,error},S]=await Promise.all([sb.from('shutdowns').select('*').order('start_date',{ascending:false}),loadShutdownSettings()]);
+  const v={rows:error?[]:(r||[]),S,error:error?error.message:''};
+  SD_ROWS.t=Date.now(); SD_ROWS.v=v; return v;
+}
+async function sdLoadNotices(){
+  const {data,error}=await sb.from('shutdown_notices').select('*').is('read_at',null).order('created_at',{ascending:false}).limit(30);
+  return error?[]:(data||[]);
+}
+async function sdShutdownOn(date){
+  const {rows,S}=await sdLoadRows();
+  if(!S.enabled) return null;
+  return rows.find(s=>s.status==='Approved'&&date>=s.start_date&&date<=sdWinEnd(s))||null;
+}
+async function sdGuardDispatch(date,product,qty){
+  try{
+    const sh=await sdShutdownOn(date);
+    if(!sh||!product) return true;
+    const {data:s}=await sb.from('current_stock').select('qty_bags').eq('product_id',product.id).maybeSingle();
+    const have=Number(s?.qty_bags||0), want=Number(qty)||0;
+    if(want>have) return confirm(`Maintenance shutdown "${sh.title}" is on and nothing is being produced.\n\nStock of ${product.product_name} is only ${fmt(have)} bags, but you are dispatching ${fmt(want)}.\n\nContinue anyway?`);
+    return true;
+  }catch(e){ return true; }
+}
+async function sdTaskCount(employeeId,role){
+  const {rows,S}=await sdLoadRows();
+  if(!S.enabled||S.show_tasks===false) return 0;
+  const m=sdMe(S,employeeId,role);
+  const notices=await sdLoadNotices();
+  let n=notices.filter(x=>!(x.kind==='proposed'&&m.approver)).length;
+  rows.forEach(s=>{
+    if(m.approver&&s.status==='Proposed'&&!sdOwn(s,m)) n++;
+    if(s.status==='Approved'){
+      n+=m.depts.filter(d=>(s.precautions||[]).some(p=>p.dept===d&&!p.done)).length;
+      if((m.approver||m.initiator)&&sdState(s).k==='overrun') n++;
+    }
+  });
+  return n;
+}
+
+async function sdLoadContext(force){
+  if(!force&&SD_CACHE.p&&Date.now()-SD_CACHE.t<60000) return SD_CACHE.p;
+  const S=(await sdLoadRows()).S;
+  const lb=Math.max(7,Number(S.lookback_days)||30);
+  const from=licShift(today,-lb);
+  const [prods,cs,logs,sdisp,pdisp,woBase,lo,lic,ss,store,recipes,lines]=await Promise.all([
+    sb.from('product_master').select('*').then(repMust),
+    sb.from('current_stock').select('*').then(repMust),
+    fetchAllRows((a,b)=>sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',from).lte('date',today).order('date').order('id').range(a,b)),
+    fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('id,date,product_id,qty_bags').gte('date',from).lte('date',today).order('id').range(a,b)),
+    fetchAllRows((a,b)=>sb.from('private_dispatches').select('id,date,product_id,qty_bags').gte('date',from).lte('date',today).order('id').range(a,b)),
+    loadWoaBase().catch(()=>[]),
+    sb.from('lifting_orders').select('*, material:material_id(*)').then(repMust),
+    sb.from('licenses').select('*').eq('status','Active').then(repMust),
+    sb.from('raw_material_scheme_stock').select('*').then(repMust),
+    sb.from('store_stock').select('*').then(repMust),
+    sb.from('product_recipes').select('*').then(repMust),
+    sb.from('recipe_lines').select('*').then(repMust),
+  ]);
+  const off=S.off_days||[];
+  const wd=Math.max(1,liftWorkingDays(from,today,off));
+  const prodDates=new Set(), prodSum={}, dispSum={};
+  logs.forEach(r=>{ const b=Number(r.production_bags)||0; if(b>0){ prodDates.add(r.date); const k=String(r.product_id); prodSum[k]=(prodSum[k]||0)+b; } });
+  [...sdisp,...pdisp].forEach(r=>{ const k=String(r.product_id); dispSum[k]=(dispSum[k]||0)+(Number(r.qty_bags)||0); });
+  const pdays=Math.max(1,prodDates.size);
+  const fin=prods.filter(p=>!p.is_raw_material&&p.is_active!==false&&p.include_in_production_log!==false);
+  const stock={}; cs.forEach(r=>{ stock[String(r.product_id)]=Number(r.qty_bags)||0; });
+  const avgProd={}, avgDisp={};
+  fin.forEach(p=>{ const k=String(p.id); avgProd[k]=(prodSum[k]||0)/pdays; avgDisp[k]=(dispSum[k]||0)/wd; });
+  const y=computeYield(logs,recipes,lines,prods);
+  const gpd={}; Object.keys(y.schemes).forEach(k=>{ if(y.schemes[k].grain>0) gpd[k]=y.schemes[k].grain/Math.max(1,y.dates.length); });
+  const wheat={}; ss.forEach(r=>{ wheat[r.scheme]=(wheat[r.scheme]||0)+Number(r.qty_kg||0); });
+  const p={S,off,fin,stock,avgProd,avgDisp,gpd,wheat,woBase,lo,lic,store,lookback:lb};
+  SD_CACHE.t=Date.now(); SD_CACHE.p=p; return p;
+}
+
+// working production days from..to, minus the shutdown, with restart days at half output
+const sdProdDays=(from,to,off,sS,sE,ramp)=>{
+  const hardTo=licShift(today,400); if(to>hardTo) to=hardTo;
+  const rampEnd=licShift(sE,ramp); let n=0;
+  for(let c=from;c<=to;c=licShift(c,1)){
+    if((off||[]).includes(rjD(c).getDay())) continue;
+    if(c>=sS&&c<=sE) continue;
+    n+=(ramp>0&&c>sE&&c<=rampEnd)?0.5:1;
+  }
+  return n;
+};
+
+// The planner. Everything is an estimate from the last N days' averages and is worked out live.
+function sdPlan(sd,ctx){
+  const S=ctx.S, off=ctx.off;
+  const start=sd.start_date, days=Math.max(1,Number(sd.est_days)||1);
+  const end=licShift(start,days-1), restart=licShift(end,1);
+  const ramp=Math.max(0,Number(S.restart_ramp_days)||0);
+  const safety=1+(Number(S.safety_pct)||0)/100, cap=1+(Number(S.max_extra_prod_pct)||0)/100;
+  const NONE='9999-12-30';
+  const preDays=sdProdDays(today,licShift(start,-1),off,NONE,NONE,0);
+  const shutWD=liftWorkingDays(start,end,off);
+
+  const prodRows=[];
+  ctx.fin.forEach(p=>{
+    const k=String(p.id), pr=ctx.avgProd[k]||0, dp=ctx.avgDisp[k]||0, st=ctx.stock[k]||0;
+    if(pr===0&&dp===0&&st===0) return;
+    const atStart=Math.max(0,st+(pr-dp)*preDays);
+    const demand=dp*shutWD*safety;
+    let cum=0, woShort=0; const wos=[];
+    ctx.woBase.filter(b=>b.ctx.productName===p.product_name&&Number(b.wo.total_pkts)>0)
+      .sort((a,b)=>a.wo.deadline.localeCompare(b.wo.deadline)).forEach(b=>{
+        const ppb=Number(b.ctx.ppb)||1;
+        const bal=Math.max(0,Number(b.wo.total_pkts)-(Number(b.ctx.sentBags)||0)*ppb)/ppb;
+        if(bal<=0.5) return;
+        cum+=bal;
+        const dl=b.wo.deadline;
+        const withSd=st+pr*sdProdDays(today,dl,off,start,end,ramp);
+        const base=st+pr*sdProdDays(today,dl,off,NONE,NONE,0);
+        const short=cum-withSd, shortBase=cum-base;
+        if(short>0) woShort=Math.max(woShort,short);
+        wos.push({id:b.wo.id,no:b.wo.work_order_no,scheme:b.wo.scheme,deadline:dl,bags:bal,supply:withSd,short:Math.max(0,short),caused:short>0&&shortBase<=0,inWin:dl>=start&&dl<=end});
+      });
+    const need=Math.max(demand-atStart,woShort,0);
+    const reqPerDay=preDays>0?need/preDays:(need>0?Infinity:0);
+    let level='ok';
+    if(need>0.5) level=(preDays>0&&pr>0&&reqPerDay<=pr*(cap-1))?'build':'risk';
+    prodRows.push({p,pr,dp,st,atStart,demand,need,reqPerDay,level,wos});
+  });
+
+  const rDays=Math.max(1,ramp)+Math.max(0,Number(S.restart_wheat_days)||0);
+  const wheatRows=Object.keys(ctx.gpd).sort().map(scheme=>{
+    const g=ctx.gpd[scheme], now=ctx.wheat[scheme]||0;
+    const atStart=Math.max(0,now-g*preDays), need=g*rDays;
+    const pending=ctx.lo.filter(o=>o.scheme===scheme).reduce((s,o)=>s+Math.max(0,Number(o.allotted_kg)-Number(o.lifted_kg)),0);
+    return {scheme,now,atStart,need,pending,level:atStart>=need?'ok':(atStart+pending>=need?'watch':'risk')};
+  });
+  const lb2=Math.max(0,Number(S.lift_buffer_days)||0);
+  const liftHits=ctx.lo.filter(o=>o.deadline&&o.deadline>=start&&o.deadline<=licShift(end,lb2)&&(Number(o.allotted_kg)-Number(o.lifted_kg))>Number(o.allotted_kg)*0.01)
+    .map(o=>({o,bal:Number(o.allotted_kg)-Number(o.lifted_kg),inWin:o.deadline<=end}));
+  const licHits=ctx.lic.filter(l=>l.expiry_date&&l.expiry_date>=start&&l.expiry_date<=licShift(end,Math.max(0,Number(S.license_buffer_days)||0)));
+  const storeLow=ctx.store.filter(i=>Number(i.min_qty)>0&&Number(i.qty)<=Number(i.min_qty));
+
+  const woRisk=prodRows.reduce((s,r)=>s+r.wos.filter(w=>w.short>0&&w.caused).length,0);
+  const woWin=prodRows.reduce((s,r)=>s+r.wos.filter(w=>w.inWin).length,0);
+  const nRisk=prodRows.filter(r=>r.level==='risk').length+wheatRows.filter(w=>w.level==='risk').length+woRisk;
+  const nWatch=prodRows.filter(r=>r.level==='build').length+wheatRows.filter(w=>w.level==='watch').length+woWin+liftHits.length+licHits.length+(storeLow.length?1:0);
+  return {S,start,end,restart,days,preDays,shutWD,prodRows,wheatRows,liftHits,licHits,storeLow,nRisk,nWatch,lookback:ctx.lookback,level:nRisk>0?'risk':nWatch>0?'watch':'ok'};
+}
+
+// Turns the plan into concrete tasks for each department (stored when the manager approves).
+function sdBuildPrecautions(sd,plan){
+  const out=[]; let i=0;
+  const add=(dept,text)=>out.push({id:'a'+(++i),dept,text,done:false,auto:true});
+  const rng=`${plan.start} to ${plan.end}`;
+  plan.prodRows.filter(r=>r.need>0.5).forEach(r=>add('production',`Build stock of ${r.p.product_name}: about ${fmt(Math.ceil(r.need))} extra bags before ${plan.start}${isFinite(r.reqPerDay)?` (around ${fmt(Math.ceil(r.pr+r.reqPerDay))} bags/day instead of the usual ${fmt(Math.round(r.pr))})`:' — there is no production time left, so tell the Manager now'}.`));
+  add('production',`Enter "No production" in the Production log for every shutdown day (${rng}); do not enter production on those dates.`);
+  add('production',`Create job cards with checklists for all maintenance work and assign them before ${plan.start}.`);
+  add('production',`Restart plan: run at reduced load for the first ${Math.max(1,Number(plan.S.restart_ramp_days)||1)} day(s) after ${plan.end}; clear and clean the line and do a test run before full production.`);
+  plan.prodRows.filter(r=>r.dp>0).forEach(r=>add('dispatch',`${r.p.product_name}: keep about ${fmt(Math.ceil(r.demand))} bags reserved for the shutdown (about ${fmt(Math.round(r.dp))} bags/day is normally dispatched). Expected stock when the mill stops: ${fmt(Math.round(r.atStart))} bags.`));
+  plan.prodRows.forEach(r=>r.wos.filter(w=>w.inWin||w.short>0).forEach(w=>add('dispatch',`Work order ${w.no} (${w.scheme||'—'}, ${fmt(Math.ceil(w.bags))} bags pending) has deadline ${w.deadline}${w.inWin?', inside the shutdown — dispatch it before '+plan.start+' or from stock':''}${w.short>0?`; stock may fall ${fmt(Math.ceil(w.short))} bags short`:''}.`)));
+  add('dispatch',`Inform depots and private parties about the shutdown (${rng}) and agree dispatch priorities. Check stock before every dispatch while the mill is stopped.`);
+  plan.wheatRows.filter(w=>w.level!=='ok').forEach(w=>add('store',`Wheat ${w.scheme}: ${repMt(w.atStart)} MT expected at restart but about ${repMt(w.need)} MT is needed for the restart week${w.pending>0?` (${repMt(w.pending)} MT still to lift on lifting orders)`:''}. Arrange lifting or purchase.`));
+  plan.liftHits.forEach(x=>add('store',`Lifting order ${x.o.order_no} (${fmtMT(x.bal)} still to lift) has deadline ${x.o.deadline}${x.inWin?' — inside the shutdown. Lift before '+licShift(plan.start,-1)+' or keep inwards staffed':' — just after restart'}.`));
+  if(plan.storeLow.length) add('store',`Order before the shutdown (at or below minimum): ${plan.storeLow.map(i=>i.item_name).join(', ')}.`);
+  add('store','Collect and issue spare parts, lubricants and electricals for the maintenance jobs before the start date.');
+  add('store','Do a physical stock count of wheat and finished goods on the last production day (Stock Count) so book and physical stock agree before the stop.');
+  add('store','Wheat inwards may continue during the shutdown — keep receiving and weighing staffed.');
+  add('accounts','Arrange cash/bank for contractor and spares payments during the shutdown; the cash book continues as normal.');
+  plan.licHits.forEach(l=>add('accounts',`${l.name} expires ${l.expiry_date}, during or just after the shutdown — complete the renewal before ${plan.start}.`));
+  add('quality','Test and record the last batch before the stop and keep retained samples.');
+  add('quality',`After restart, hold the first batch until it passes tests before it is released for dispatch.`);
+  add('labour','Confirm which staff are needed during the shutdown; plan leave or alternate work for idle staff and contractors. Attendance continues as normal.');
+  add('labour','Safety briefing for the maintenance team: lock-out / tag-out, hot work, work at height, confined-space entry.');
+  add('labour','Confirm contractors, welders and electricians and arrange their gate passes.');
+  return out;
+}
+
+function sdValidate(f,S,rows,editingId,isDir){
+  const errors=[], warnings=[];
+  const days=Number(f.est_days);
+  if(!String(f.title||'').trim()) errors.push('Give the shutdown a title.');
+  if(!String(f.work_scope||'').trim()) errors.push('Describe the maintenance work (what will be done).');
+  const dateOk=/^\d{4}-\d{2}-\d{2}$/.test(f.start_date||'');
+  if(!dateOk) errors.push('Choose the start date.');
+  else{
+    const d=daysUntil(f.start_date);
+    if(d<0) errors.push('The start date is in the past.');
+    else{
+      const minN=Number(S.min_notice_days)||0;
+      if(d<minN) (isDir?warnings:errors).push(`A shutdown needs at least ${minN} days notice (this one starts in ${d}).${isDir?' You can override this as Director.':''}`);
+      if((S.off_days||[]).includes(rjD(f.start_date).getDay())) warnings.push('The start date is a weekly off day, so there is no production that day anyway. Is that what you intend?');
+    }
+  }
+  const maxD=Number(S.max_days)||30;
+  if(!Number.isInteger(days)||days<1) errors.push('Enter the approximate number of days (a whole number, 1 or more).');
+  else if(days>maxD) (isDir?warnings:errors).push(`A shutdown can be at most ${maxD} days.${isDir?' You can override this as Director.':' For longer, ask the Director.'}`);
+  if(dateOk&&Number.isInteger(days)&&days>=1){
+    const end=licShift(f.start_date,days-1);
+    rows.filter(r=>r.id!==editingId&&(r.status==='Proposed'||r.status==='Approved')).forEach(r=>{
+      if(f.start_date<=sdWinEnd(r)&&r.start_date<=end) errors.push(`Overlaps "${r.title}" (${r.start_date} to ${sdWinEnd(r)}).`);
+    });
+  }
+  return {errors,warnings};
+}
+
+// ── notification + workflow actions ──
+async function sdNotify(sd,kind,message,audience){
+  const {error}=await sb.rpc('sd_notify',{p_sd:sd.id,p_kind:kind,p_msg:message,p_audience:audience});
+  if(error){ console.error('Shutdown notification failed:',error.message); alert('Saved, but the notification could not be sent: '+error.message); }
+  return !error;
+}
+async function sdApprove(sd){
+  let plan=null;
+  try{ plan=sdPlan(sd,await sdLoadContext(true)); }catch(e){ console.error('Plan failed:',e.message); }
+  const msg=`Approve the shutdown "${sd.title}" (${sd.start_date} to ${sdEnd(sd)})?\n\nThe Director will be notified, and precaution tasks are created for every department.`+(plan&&plan.nRisk>0?`\n\n⚠ The planner found ${plan.nRisk} stock/supply risk${plan.nRisk===1?'':'s'} (see the plan on the Shutdowns page).`:'');
+  if(!confirm(msg)) return false;
+  const {data:{user}}=await sb.auth.getUser();
+  const keep=(sd.precautions||[]).filter(p=>!p.auto);
+  const {data,error}=await sb.from('shutdowns').update({
+    status:'Approved',decided_by:user?.email||null,decided_at:new Date().toISOString(),decision_note:null,
+    precautions:[...(plan?sdBuildPrecautions(sd,plan):[]),...keep],
+    plan_snapshot:plan?{level:plan.level,nRisk:plan.nRisk,nWatch:plan.nWatch,at:new Date().toISOString()}:null
+  }).eq('id',sd.id).eq('status','Proposed').select();
+  if(error){ alert(error.message); return false; }
+  if(!data||!data.length){ alert('This shutdown is no longer waiting for approval.'); return false; }
+  const s2=data[0];
+  logActivity('Shutdowns','update',`Approved — ${s2.title} (${s2.start_date} to ${sdEnd(s2)})`);
+  await sdNotify(s2,'approved',`Maintenance shutdown "${s2.title}" was approved by ${user?.email||'the manager'}: the mill stops ${s2.start_date} and is expected to restart ${licShift(sdEnd(s2),1)} (${s2.est_days} days).${plan&&plan.nRisk?` The planner shows ${plan.nRisk} supply risk(s).`:''} Unless the Director cancels it, it goes ahead as planned.`,['director','proposer']);
+  await sdNotify(s2,'precautions',`Precaution tasks were created for the maintenance shutdown ${s2.start_date} to ${sdEnd(s2)}. Please open My Tasks and complete your department's items before the start date.`,['dept']);
+  sdBust(); return true;
+}
+async function sdReject(sd){
+  const why=window.prompt(`Reject "${sd.title}" — tell the Miller why (required):`);
+  if(!why||!why.trim()) return false;
+  const {data:{user}}=await sb.auth.getUser();
+  const {data,error}=await sb.from('shutdowns').update({status:'Rejected',decided_by:user?.email||null,decided_at:new Date().toISOString(),decision_note:why.trim()}).eq('id',sd.id).eq('status','Proposed').select();
+  if(error){ alert(error.message); return false; }
+  if(!data||!data.length){ alert('This shutdown is no longer waiting for approval.'); return false; }
+  logActivity('Shutdowns','update',`Rejected — ${sd.title}: ${why.trim()}`);
+  await sdNotify(data[0],'rejected',`Maintenance shutdown "${sd.title}" was not approved: ${why.trim()}. You can revise it and submit again.`,['proposer']);
+  sdBust(); return true;
+}
+async function sdCancel(sd){
+  const st=sdState(sd);
+  const why=window.prompt(`Cancel the ENTIRE shutdown "${sd.title}" (${sd.start_date} to ${sdEnd(sd)})?${st.k==='live'?'\nIt is IN PROGRESS — the mill should resume immediately.':''}\nThe Miller, Manager and departments will be notified.\n\nReason (required):`);
+  if(!why||!why.trim()) return false;
+  if(!confirm('Cancel this shutdown? This cannot be undone.')) return false;
+  const {data:{user}}=await sb.auth.getUser();
+  const {data,error}=await sb.from('shutdowns').update({status:'Cancelled',cancelled_by:user?.email||null,cancelled_at:new Date().toISOString(),cancel_reason:why.trim()}).eq('id',sd.id).in('status',['Proposed','Approved']).select();
+  if(error){ alert(error.message); return false; }
+  if(!data||!data.length){ alert('This shutdown can no longer be cancelled.'); return false; }
+  logActivity('Shutdowns','update',`Cancelled by Director — ${sd.title}: ${why.trim()}`);
+  await sdNotify(data[0],'cancelled',`The Director has CANCELLED the maintenance shutdown "${sd.title}" (${sd.start_date} to ${sdEnd(sd)}). Reason: ${why.trim()}. Carry on with normal production and dispatch; precaution tasks no longer apply.`,['proposer','initiator','approver','dept']);
+  sdBust(); return true;
+}
+async function sdClose(sd){
+  const v=window.prompt(`Last day of the shutdown "${sd.title}" (the mill restarts the next day), format YYYY-MM-DD:`,today<=sdEnd(sd)?today:sdEnd(sd));
+  if(v===null) return false;
+  const d=v.trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)||d<sd.start_date||d>today){ alert('Enter a date between the start date and today, e.g. '+today); return false; }
+  const {data:{user}}=await sb.auth.getUser();
+  const {data,error}=await sb.from('shutdowns').update({status:'Completed',actual_end_date:d,closed_by:user?.email||null,closed_at:new Date().toISOString()}).eq('id',sd.id).eq('status','Approved').select();
+  if(error){ alert(error.message); return false; }
+  if(!data||!data.length){ alert('This shutdown is already closed.'); return false; }
+  logActivity('Shutdowns','update',`Completed — ${sd.title} (last shutdown day ${d})`);
+  await sdNotify(data[0],'completed',`Maintenance shutdown "${sd.title}" is over — last shutdown day ${d}. Resume production from ${licShift(d,1)}; hold the first batch for testing and consider a stock count.`,['director','approver','initiator','dept']);
+  sdBust(); return true;
+}
+async function sdExtend(sd){
+  const v=window.prompt(`Extend "${sd.title}" by how many more days?`,'1');
+  if(v===null) return false;
+  const n=Number(v);
+  if(!Number.isInteger(n)||n<1||n>60){ alert('Enter a whole number of days between 1 and 60.'); return false; }
+  const why=window.prompt('Reason for the extension (required):');
+  if(!why||!why.trim()) return false;
+  const {data:{user}}=await sb.auth.getUser();
+  const newDays=Number(sd.est_days)+n;
+  const rev=[...(sd.revisions||[]),{at:new Date().toISOString(),by:user?.email||null,kind:'extended',from:`${sd.est_days} days`,to:`${newDays} days`,reason:why.trim()}];
+  const {data,error}=await sb.from('shutdowns').update({est_days:newDays,revisions:rev}).eq('id',sd.id).eq('status','Approved').select();
+  if(error){ alert(error.message); return false; }
+  if(!data||!data.length){ alert('This shutdown can no longer be extended.'); return false; }
+  logActivity('Shutdowns','update',`Extended by ${n} day(s) — ${sd.title}: ${why.trim()}`);
+  await sdNotify(data[0],'extended',`Maintenance shutdown "${sd.title}" has been EXTENDED by ${n} day(s): new expected restart ${licShift(sdEnd(data[0]),1)}. Reason: ${why.trim()}. The Director can still cancel it.`,['director','approver','initiator','dept']);
+  sdBust(); return true;
+}
+async function sdTick(sd,itemId,done){
+  const {data:cur,error}=await sb.from('shutdowns').select('precautions').eq('id',sd.id).single();
+  if(error){ alert(error.message); return false; }
+  const {data:{user}}=await sb.auth.getUser();
+  const next=(cur.precautions||[]).map(p=>p.id===itemId?{...p,done,done_by:done?(user?.email||null):null,done_at:done?new Date().toISOString():null}:p);
+  const {error:e2}=await sb.from('shutdowns').update({precautions:next}).eq('id',sd.id);
+  if(e2){ alert(e2.message); return false; }
+  sdBust(); return true;
+}
+async function sdAddItem(sd,dept,text){
+  const {data:cur,error}=await sb.from('shutdowns').select('precautions').eq('id',sd.id).single();
+  if(error){ alert(error.message); return false; }
+  const next=[...(cur.precautions||[]),{id:'m'+Date.now(),dept,text,done:false,auto:false}];
+  const {error:e2}=await sb.from('shutdowns').update({precautions:next}).eq('id',sd.id);
+  if(e2){ alert(e2.message); return false; }
+  sdBust(); return true;
+}
+
+// ── UI pieces ──
+function SdPlanView({plan}){
+  if(!plan) return null;
+  const col={ok:'var(--green)',build:'var(--amber)',watch:'var(--amber)',risk:'var(--red)'};
+  const woRows=[]; plan.prodRows.forEach(r=>r.wos.forEach(w=>{ if(w.inWin||w.short>0) woRows.push([<strong>{w.no}</strong>,r.p.product_name,w.deadline,fmt(Math.ceil(w.bags)),fmt(Math.round(w.supply)),w.short>0?fmt(Math.ceil(w.short)):'—',<span style={{color:w.short>0?'var(--red)':'var(--amber)',fontWeight:600}}>{w.short>0?(w.caused?'Short because of the shutdown':'Short'):'Deadline inside shutdown'}</span>]); }));
+  return(<div style={{marginTop:12}}>
+    <Alert type={plan.level==='risk'?'red':plan.level==='watch'?'amber':'green'} icon={plan.level==='ok'?'✓':'⚠'}
+      title={plan.level==='risk'?`${plan.nRisk} supply risk${plan.nRisk===1?'':'s'} found${plan.nWatch?` and ${plan.nWatch} item${plan.nWatch===1?'':'s'} to watch`:''}`:plan.level==='watch'?`${plan.nWatch} item${plan.nWatch===1?'':'s'} to watch — stock looks manageable`:'No supply problems found'}
+      sub={`Mill stops ${plan.start}, expected restart ${plan.restart} · ${plan.days} day${plan.days===1?'':'s'}, ${plan.shutWD} working day${plan.shutWD===1?'':'s'} · ${plan.preDays} production day${plan.preDays===1?'':'s'} left before the stop. Estimates use the last ${plan.lookback} days' averages.`}/>
+    <div className="section-label" style={{marginTop:12}}>Finished stock during the shutdown (bags)</div>
+    <RTable head={['Product','Stock now','Expected at start','Needed during shutdown','Extra to build','Production needed','Status']} empty="No finished-goods history yet."
+      rows={plan.prodRows.map(r=>[<strong>{r.p.product_name}</strong>,fmt(Math.round(r.st)),fmt(Math.round(r.atStart)),fmt(Math.ceil(r.demand)),r.need>0.5?fmt(Math.ceil(r.need)):'—',r.need>0.5?(isFinite(r.reqPerDay)?fmt(Math.ceil(r.pr+r.reqPerDay))+'/day':'no time left'):'—',<span style={{color:col[r.level],fontWeight:600}}>{r.level==='ok'?'Covered':r.level==='build'?'Build stock':'At risk'}</span>])}/>
+    {woRows.length>0&&<><div className="section-label" style={{marginTop:16}}>Supplyco work orders affected (bags)</div>
+      <RTable head={['Work order','Product','Deadline','Pending','Stock + production by deadline','Short','Note']} rows={woRows}/></>}
+    {plan.wheatRows.length>0&&<><div className="section-label" style={{marginTop:16}}>Wheat cover for the restart (MT)</div>
+      <RTable head={['Scheme','Stock now','At restart','Needed for restart','Still to lift','Status']}
+        rows={plan.wheatRows.map(w=>[<strong>{w.scheme}</strong>,repMt(w.now),repMt(w.atStart),repMt(w.need),repMt(w.pending),<span style={{color:col[w.level],fontWeight:600}}>{w.level==='ok'?'Enough':w.level==='watch'?'Enough if lifting is done':'Short'}</span>])}/></>}
+    {(plan.liftHits.length>0||plan.licHits.length>0||plan.storeLow.length>0)&&<div className="card" style={{marginTop:16,borderLeft:'3px solid var(--amber)'}}>
+      <div className="section-label">Also check</div>
+      {plan.liftHits.map(x=><div key={x.o.id} style={{fontSize:13,marginBottom:4}}>🚛 Lifting order <strong>{x.o.order_no}</strong> ({x.o.scheme}) — {fmtMT(x.bal)} still to lift, deadline {x.o.deadline}{x.inWin?' (inside the shutdown — lift before '+licShift(plan.start,-1)+')':' (just after restart)'}</div>)}
+      {plan.licHits.map(l=><div key={l.id} style={{fontSize:13,marginBottom:4}}>📑 <strong>{l.name}</strong> expires {l.expiry_date} — renew before the shutdown</div>)}
+      {plan.storeLow.length>0&&<div style={{fontSize:13}}>🧰 At or below minimum in store: {plan.storeLow.map(i=>i.item_name).join(', ')} — order spares and consumables before the stop</div>}
+    </div>}
+  </div>);
+}
+
+function SdActions({sd,m,onChanged,onEdit}){
+  const [busy,setBusy]=useState(false);
+  const st=sdState(sd);
+  const run=async(fn)=>{ setBusy(true); try{ const ok=await fn(); if(ok!==false&&onChanged) onChanged(); }finally{ setBusy(false); } };
+  const canDecide=m.canApprove&&!(sdOwn(sd,m)&&!m.dir);
+  const active=st.k==='live'||st.k==='overrun';
+  return(<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+    {sd.status==='Proposed'&&canDecide&&<>
+      <button className="btn btn-green btn-sm" disabled={busy} onClick={()=>run(()=>sdApprove(sd))}>✓ Approve{m.dir&&!m.approver?' (Director)':''}</button>
+      <button className="btn btn-red btn-sm" disabled={busy} onClick={()=>run(()=>sdReject(sd))}>Reject</button>
+    </>}
+    {onEdit&&m.canInitiate&&(sd.status==='Proposed'||sd.status==='Rejected'||(sd.status==='Approved'&&!active))&&
+      <button className="btn btn-blue btn-sm" disabled={busy} onClick={()=>onEdit(sd)}>{sd.status==='Rejected'?'Revise & resubmit':'Change dates'}</button>}
+    {sd.status==='Approved'&&active&&(m.canInitiate||m.canApprove)&&<>
+      <button className="btn btn-amber btn-sm" disabled={busy} onClick={()=>run(()=>sdExtend(sd))}>Extend</button>
+      <button className="btn btn-green btn-sm" disabled={busy} onClick={()=>run(()=>sdClose(sd))}>Mill restarted — close</button>
+    </>}
+    {m.dir&&(sd.status==='Proposed'||sd.status==='Approved')&&<button className="btn btn-red btn-sm" disabled={busy} onClick={()=>run(()=>sdCancel(sd))}>Cancel shutdown</button>}
+  </div>);
+}
+
+function SdChecklist({sd,m,onChanged}){
+  const [busy,setBusy]=useState(false);
+  const [dept,setDept]=useState(SD_DEPTS[0].k);
+  const [text,setText]=useState('');
+  const pre=sd.precautions||[];
+  const canTick=(d)=>m.dir||m.approver||m.depts.includes(d);
+  const canAdd=m.dir||m.approver||m.initiator;
+  const run=async(fn)=>{ setBusy(true); const ok=await fn(); setBusy(false); if(ok!==false&&onChanged) onChanged(); };
+  if(pre.length===0&&!canAdd) return null;
+  return(<div style={{marginTop:14}}>
+    <div className="section-label">Department precautions — {pre.filter(p=>p.done).length}/{pre.length} done</div>
+    {SD_DEPTS.map(d=>{
+      const items=pre.filter(p=>p.dept===d.k); if(!items.length) return null;
+      const dn=items.filter(p=>p.done).length;
+      return(<div key={d.k} style={{marginBottom:10,padding:'8px 12px',border:'1px solid var(--border)',borderLeft:`3px solid ${dn===items.length?'var(--green)':'var(--amber)'}`,borderRadius:6}}>
+        <div style={{fontWeight:600,fontSize:13,marginBottom:4}}>{d.icon} {d.label} <span className="dim" style={{fontWeight:400}}>({dn}/{items.length})</span></div>
+        {items.map(p=>(<label key={p.id} style={{display:'flex',gap:8,alignItems:'flex-start',fontSize:13,marginBottom:4,cursor:canTick(d.k)?'pointer':'default'}}>
+          <input type="checkbox" style={{marginTop:3}} checked={!!p.done} disabled={busy||!canTick(d.k)} onChange={e=>run(()=>sdTick(sd,p.id,e.target.checked))}/>
+          <span style={{textDecoration:p.done?'line-through':'none',color:p.done?'var(--muted)':'inherit'}}>{p.text}{p.done&&p.done_by&&<span className="dim" style={{fontSize:11}}> — {p.done_by}</span>}</span>
+        </label>))}
+      </div>);
+    })}
+    {canAdd&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+      <select style={{width:190}} value={dept} onChange={e=>setDept(e.target.value)}>{SD_DEPTS.map(d=><option key={d.k} value={d.k}>{d.label}</option>)}</select>
+      <input style={{flex:1,minWidth:200}} placeholder="Add a custom task…" value={text} onChange={e=>setText(e.target.value)}/>
+      <button className="btn btn-ghost btn-sm" disabled={busy||!text.trim()} onClick={()=>run(async()=>{ const ok=await sdAddItem(sd,dept,text.trim()); if(ok) setText(''); return ok; })}>+ Add</button>
+    </div>}
+  </div>);
+}
+
+function Shutdowns({role,employeeId,userEmail,onChanged}){
+  const [rows,setRows]=useState([]);
+  const [S,setS]=useState(SD_DEFAULTS);
+  const [ctx,setCtx]=useState(null);
+  const [emps,setEmps]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
+  const [saving,setSaving]=useState(false);
+  const [confirmGo,setConfirmGo]=useState(false);
+  const [open,setOpen]=useState(null);
+  const [filter,setFilter]=useState('Current');
+  const blank={title:'Planned maintenance shutdown',start_date:'',est_days:'3',reason:'',work_scope:''};
+  const [form,setForm]=useState(blank);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    sdBust();
+    const v=await sdLoadRows(true);
+    setRows(v.rows); setS(v.S); setErr(v.error?v.error+' — have you run the SQL for this section?':'');
+    const {data:e}=await sb.from(EMP_TABLE).select('*').range(0,4999);
+    setEmps(e||[]);
+    try{ setCtx(await sdLoadContext(true)); }catch(ex){ console.error('Shutdown planner data failed:',ex.message); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+  const changed=()=>{ load(); if(onChanged) onChanged(); };
+
+  const m=sdMe(S,employeeId,role);
+  const v=sdValidate(form,S,rows,editingId,m.dir);
+  const previewOk=!!ctx&&/^\d{4}-\d{2}-\d{2}$/.test(form.start_date)&&Number(form.est_days)>=1&&Number(form.est_days)<=120;
+  const preview=React.useMemo(()=>previewOk?sdPlan({start_date:form.start_date,est_days:Number(form.est_days)},ctx):null,[previewOk,form.start_date,form.est_days,ctx]);
+
+  const close=()=>{ setShowForm(false); setEditingId(null); setConfirmGo(false); setForm(blank); };
+  const startEdit=(s)=>{ setEditingId(s.id); setForm({title:s.title,start_date:s.start_date,est_days:String(s.est_days),reason:s.reason||'',work_scope:s.work_scope||''}); setShowForm(true); };
+  const trySubmit=()=>{
+    if(v.errors.length) return alert('Please fix:\n\n• '+v.errors.join('\n• '));
+    if(v.warnings.length&&!confirm('Please note:\n\n• '+v.warnings.join('\n• ')+'\n\nContinue?')) return;
+    setConfirmGo(true);
+  };
+
+  const doSave=async()=>{
+    setSaving(true);
+    const {data:{user}}=await sb.auth.getUser();
+    const me=emps.find(x=>String(x.id)===m.me);
+    const who=me?empName(me):(user?.email||'Someone');
+    const payload={title:form.title.trim(),reason:form.reason.trim()||null,work_scope:form.work_scope.trim(),start_date:form.start_date,est_days:Number(form.est_days)};
+    if(editingId){
+      const orig=rows.find(x=>x.id===editingId);
+      const rev=[...(orig.revisions||[]),{at:new Date().toISOString(),by:user?.email||null,kind:'revised',from:`${orig.start_date} · ${orig.est_days} days`,to:`${payload.start_date} · ${payload.est_days} days`}];
+      const {data,error}=await sb.from('shutdowns').update({...payload,status:'Proposed',decided_by:null,decided_at:null,decision_note:null,revisions:rev}).eq('id',editingId).select().single();
+      if(error){ alert(error.message); setSaving(false); return; }
+      logActivity('Shutdowns','update',`Revised — ${data.title}: ${data.start_date}, ${data.est_days} days (needs approval again)`);
+      await sdNotify(data,'revised',`${who} revised the maintenance shutdown "${data.title}": now ${data.start_date} to ${sdEnd(data)} (${data.est_days} days). It needs manager approval again.`,['approver','director']);
+    }else{
+      const {data,error}=await sb.from('shutdowns').insert({...payload,status:'Proposed',proposed_by:user?.email||userEmail||null,proposed_by_id:m.me||null,proposed_by_name:who}).select().single();
+      if(error){ alert(error.message); setSaving(false); return; }
+      logActivity('Shutdowns','create',`Planned — ${data.title}: ${data.start_date}, ${data.est_days} days`);
+      await sdNotify(data,'proposed',`${who} has planned a maintenance shutdown "${data.title}": the mill stops ${data.start_date} for about ${data.est_days} days (to ${sdEnd(data)}). Awaiting manager approval.`,S.notify_director_on_proposal===false?['approver']:['approver','director']);
+    }
+    setSaving(false); close(); changed();
+  };
+
+  if(loading) return <Loading/>;
+
+  const cur=(s)=>['proposed','upcoming','live','overrun'].includes(sdState(s).k);
+  const visible=rows.filter(s=>filter==='All'||(filter==='Current'?cur(s):!cur(s)))
+    .sort((a,b)=>filter==='Past'?b.start_date.localeCompare(a.start_date):a.start_date.localeCompare(b.start_date));
+  const live=rows.filter(s=>['live','overrun'].includes(sdState(s).k)).length;
+  const waiting=rows.filter(s=>s.status==='Proposed').length;
+  const nextUp=rows.filter(s=>sdState(s).k==='upcoming').sort((a,b)=>a.start_date.localeCompare(b.start_date))[0];
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Mill Operations</div>
+        <div className="page-title">Maintenance shutdown</div>
+      </div>
+      {m.canInitiate&&<button className="btn btn-amber" onClick={()=>{ setEditingId(null); setForm(blank); setShowForm(true); }}>+ Plan a shutdown</button>}
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load shutdowns" sub={err}/>}
+    {!S.enabled&&<Alert type="amber" icon="⏸" title="Shutdown alerts are switched off" sub="The Director can switch them on in Settings → Shutdown Settings."/>}
+    {!m.canInitiate&&!m.canApprove&&<div className="dim" style={{fontSize:12,marginBottom:12}}>You can view shutdown plans. Only people assigned by the Director can plan or approve one.</div>}
+
+    <div className="stat-grid">
+      <StatCard label="In progress" value={live} col={live>0?'var(--red)':'var(--green)'}/>
+      <StatCard label="Awaiting approval" value={waiting} col={waiting>0?'var(--amber)':'var(--green)'}/>
+      <StatCard label="Next shutdown" value={nextUp?nextUp.start_date:'—'} sub={nextUp?sdState(nextUp).label:'none planned'} col="var(--blue)"/>
+    </div>
+
+    <div style={{display:'flex',gap:8,marginBottom:12}}>
+      {['Current','Past','All'].map(x=><button key={x} className={`btn btn-sm ${filter===x?'btn-amber':'btn-ghost'}`} onClick={()=>setFilter(x)}>{x}</button>)}
+    </div>
+
+    {visible.length===0&&<div className="card"><Empty msg="No shutdowns in this view."/></div>}
+
+    {visible.map(sd=>{
+      const st=sdState(sd), isOpen=open===sd.id;
+      const pre=sd.precautions||[];
+      const planLive=ctx&&(sd.status==='Proposed'||sd.status==='Approved')?sdPlan(sd,ctx):null;
+      return(<div key={sd.id} className="card" style={{marginBottom:14,borderLeft:`4px solid ${st.col}`}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:240}}>
+            <div style={{fontSize:16,fontWeight:600}}>🔧 {sd.title}</div>
+            <div style={{fontSize:13,marginTop:4,color:st.col,fontWeight:500}}>{st.label}</div>
+            <div style={{fontSize:13,marginTop:4}}>{cashDayLabel(sd.start_date)} → {cashDayLabel(sdEnd(sd))} <span className="dim">· {sd.est_days} day{sd.est_days===1?'':'s'}{sd.actual_end_date?` · actual last day ${sd.actual_end_date}`:''}</span></div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+              {planLive&&<span className={`badge ${planLive.level==='risk'?'badge-red':planLive.level==='watch'?'badge-amber':'badge-green'}`}>{planLive.level==='risk'?`${planLive.nRisk} supply risk${planLive.nRisk===1?'':'s'}`:planLive.level==='watch'?`${planLive.nWatch} to watch`:'Supply OK'}</span>}
+              {sd.status==='Approved'&&pre.length>0&&<span className="badge badge-blue">Precautions {pre.filter(p=>p.done).length}/{pre.length}</span>}
+            </div>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:8,alignItems:'flex-end'}}>
+            <SdActions sd={sd} m={m} onChanged={changed} onEdit={startEdit}/>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setOpen(isOpen?null:sd.id)}>{isOpen?'Hide details':'Plan & details'}</button>
+          </div>
+        </div>
+
+        <div style={{fontSize:12,color:'var(--muted)',marginTop:8}}>Planned by {sd.proposed_by_name||sd.proposed_by||'—'}{sd.proposed_at?` on ${sd.proposed_at.slice(0,10)}`:''}{sd.decided_by?` · ${sd.status==='Rejected'?'rejected':'approved'} by ${sd.decided_by}`:''}{sd.cancelled_by?` · cancelled by ${sd.cancelled_by}`:''}</div>
+        {sd.decision_note&&<div style={{fontSize:12,marginTop:4,color:'var(--red)'}}>Rejected: {sd.decision_note}</div>}
+        {sd.cancel_reason&&<div style={{fontSize:12,marginTop:4,color:'var(--red)'}}>Cancelled: {sd.cancel_reason}</div>}
+
+        {isOpen&&<div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)'}}>
+          {sd.work_scope&&<div style={{fontSize:13,whiteSpace:'pre-wrap'}}><strong>Work to be done:</strong> {sd.work_scope}</div>}
+          {sd.reason&&<div style={{fontSize:13,marginTop:6,whiteSpace:'pre-wrap'}}><strong>Reason:</strong> {sd.reason}</div>}
+          {(sd.revisions||[]).length>0&&<div style={{marginTop:8}}>{sd.revisions.map((r,i)=><div key={i} className="dim" style={{fontSize:12}}>{(r.at||'').slice(0,10)} · {r.by||'—'} · {r.kind}: {r.from} → {r.to}{r.reason?` (${r.reason})`:''}</div>)}</div>}
+          {planLive&&<SdPlanView plan={planLive}/>}
+          {(sd.status==='Approved'||sd.status==='Completed')&&<SdChecklist sd={sd} m={m} onChanged={changed}/>}
+        </div>}
+      </div>);
+    })}
+
+    {showForm&&<div className="modal-overlay"><div style={{maxWidth:900,width:'100%',maxHeight:'92vh',overflowY:'auto'}}>
+      <FormCard title={editingId?'Change shutdown dates':'Plan a maintenance shutdown'} col="var(--amber)" onSave={trySubmit} onCancel={close} saving={saving}>
+        <div className="form-grid">
+          <Field label="Title ★"><input className="form-input" value={form.title} onChange={e=>f('title',e.target.value)}/></Field>
+          <Field label="Shutdown starts on ★"><input type="date" className="form-input" min={today} value={form.start_date} onChange={e=>f('start_date',e.target.value)}/></Field>
+          <Field label="Approximate number of days ★"><input type="number" min="1" className="form-input" value={form.est_days} onChange={e=>f('est_days',e.target.value)}/></Field>
+        </div>
+        {/^\d{4}-\d{2}-\d{2}$/.test(form.start_date)&&Number(form.est_days)>=1&&<div style={{marginTop:10,fontSize:13,color:'var(--blue)'}}>
+          Mill stops <strong>{cashDayLabel(form.start_date)}</strong> · expected last day <strong>{cashDayLabel(licShift(form.start_date,Number(form.est_days)-1))}</strong> · restart <strong>{licShift(form.start_date,Number(form.est_days))}</strong>
+        </div>}
+        <div style={{marginTop:12}}><Field label="Work to be done ★"><textarea className="form-input" rows={3} value={form.work_scope} onChange={e=>f('work_scope',e.target.value)} placeholder="e.g. Replace roller mill rolls, re-align sifters, panel servicing"/></Field></div>
+        <div style={{marginTop:12}}><Field label="Reason (optional)"><input className="form-input" value={form.reason} onChange={e=>f('reason',e.target.value)}/></Field></div>
+        {(v.errors.length>0||v.warnings.length>0)&&<div style={{marginTop:12}}>
+          {v.errors.map((x,i)=><div key={'e'+i} style={{fontSize:12,color:'var(--red)'}}>✕ {x}</div>)}
+          {v.warnings.map((x,i)=><div key={'w'+i} style={{fontSize:12,color:'var(--amber)'}}>⚠ {x}</div>)}
+        </div>}
+        {preview?<SdPlanView plan={preview}/>:<div className="dim" style={{fontSize:12,marginTop:12}}>Enter the start date and days to see what this shutdown would do to stock, work orders and wheat.</div>}
+      </FormCard>
+    </div></div>}
+
+    {confirmGo&&<div className="modal-overlay" style={{zIndex:1100}}>
+      <div className="card" style={{maxWidth:460,width:'100%'}}>
+        <div className="section-label">Confirm the start date</div>
+        <div style={{fontSize:15,marginBottom:6}}>The mill will stop on</div>
+        <div style={{fontSize:20,fontWeight:700,color:'var(--amber)'}}>{cashDayLabel(form.start_date)}</div>
+        <div style={{fontSize:13,marginTop:6}}>in {daysUntil(form.start_date)} day{daysUntil(form.start_date)===1?'':'s'}, for about <strong>{form.est_days} day{Number(form.est_days)===1?'':'s'}</strong> (until {cashDayLabel(licShift(form.start_date,Number(form.est_days)-1))}).</div>
+        <div className="dim" style={{fontSize:12,marginTop:8}}>The Manager will be asked to approve and the Director will be informed. Departments will get precaution tasks once it is approved.</div>
+        <div className="form-actions">
+          <button className="btn btn-green" onClick={doSave} disabled={saving}>{saving?'Submitting…':'Yes, the dates are correct — submit'}</button>
+          <button className="btn btn-ghost" onClick={()=>setConfirmGo(false)} disabled={saving}>Go back</button>
+        </div>
+      </div>
+    </div>}
+  </div>);
+}
+
+// Top of My Tasks
+function ShutdownTasks({employeeId,role,onChanged,onGo}){
+  const [rows,setRows]=useState([]);
+  const [S,setS]=useState(null);
+  const [notices,setNotices]=useState([]);
+  const load=useCallback(async()=>{ sdBust(); const v=await sdLoadRows(true); setRows(v.rows); setS(v.S); setNotices(await sdLoadNotices()); },[]);
+  useEffect(()=>{load();},[load]);
+  const changed=()=>{ load(); if(onChanged) onChanged(); };
+  if(!S||!S.enabled||S.show_tasks===false) return null;
+  const m=sdMe(S,employeeId,role);
+  const notes=notices.filter(n=>!(n.kind==='proposed'&&m.approver));
+  const approvals=m.approver?rows.filter(s=>s.status==='Proposed'&&!sdOwn(s,m)):[];
+  const overrun=(m.approver||m.initiator)?rows.filter(s=>s.status==='Approved'&&sdState(s).k==='overrun'):[];
+  const dirList=m.dir?rows.filter(s=>s.status==='Approved'&&['upcoming','live'].includes(sdState(s).k)):[];
+  const mine=[]; rows.filter(s=>s.status==='Approved').forEach(s=>(s.precautions||[]).forEach(p=>{ if(!p.done&&m.depts.includes(p.dept)) mine.push({s,p}); }));
+  if(!notes.length&&!approvals.length&&!overrun.length&&!dirList.length&&!mine.length) return null;
+  const markRead=async(n)=>{ await sb.from('shutdown_notices').update({read_at:new Date().toISOString()}).eq('id',n.id); changed(); };
+  const KIND_COL={cancelled:'var(--red)',extended:'var(--red)',rejected:'var(--red)',approved:'var(--blue)',completed:'var(--green)'};
+  return(<div style={{marginBottom:24}}>
+    <div className="section-label">Maintenance shutdown</div>
+    {notes.map(n=>(<div key={n.id} className="card" style={{marginBottom:10,borderLeft:`4px solid ${KIND_COL[n.kind]||'var(--amber)'}`}}>
+      <div style={{fontSize:13}}>🔧 {n.message}</div>
+      <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
+        <span className="dim" style={{fontSize:11}}>{new Date(n.created_at).toLocaleString('en-IN')}</span>
+        {onGo&&<button className="btn btn-ghost btn-sm" onClick={()=>onGo('shutdowns')}>Open ↗</button>}
+        <button className="btn btn-ghost btn-sm" onClick={()=>markRead(n)}>Mark read</button>
+      </div>
+    </div>))}
+    {approvals.map(s=>(<div key={s.id} className="card" style={{marginBottom:10,borderLeft:'4px solid var(--amber)'}}>
+      <div style={{fontSize:15,fontWeight:600}}>🔧 Approval needed: {s.title}</div>
+      <div style={{fontSize:13,marginTop:4}}>{s.start_date} to {sdEnd(s)} · {s.est_days} days · planned by {s.proposed_by_name||s.proposed_by}</div>
+      {s.work_scope&&<div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>{s.work_scope}</div>}
+      <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+        <SdActions sd={s} m={m} onChanged={changed}/>
+        {onGo&&<button className="btn btn-ghost btn-sm" onClick={()=>onGo('shutdowns')}>Review plan ↗</button>}
+      </div>
+    </div>))}
+    {overrun.map(s=>(<div key={s.id} className="card" style={{marginBottom:10,borderLeft:'4px solid var(--red)'}}>
+      <div style={{fontSize:15,fontWeight:600}}>🔧 {s.title} — {sdState(s).label}</div>
+      <div style={{marginTop:8}}><SdActions sd={s} m={m} onChanged={changed}/></div>
+    </div>))}
+    {dirList.map(s=>(<div key={s.id} className="card" style={{marginBottom:10,borderLeft:'4px solid var(--blue)'}}>
+      <div style={{fontSize:14,fontWeight:600}}>🔧 {s.title} — {sdState(s).label}</div>
+      <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{s.start_date} to {sdEnd(s)} · precautions {(s.precautions||[]).filter(p=>p.done).length}/{(s.precautions||[]).length} done. Goes ahead as planned unless you cancel it.</div>
+      <div style={{marginTop:8,display:'flex',gap:6}}><SdActions sd={s} m={m} onChanged={changed}/>{onGo&&<button className="btn btn-ghost btn-sm" onClick={()=>onGo('shutdowns')}>Open ↗</button>}</div>
+    </div>))}
+    {mine.length>0&&(<div className="card" style={{marginBottom:10,borderLeft:'4px solid var(--blue)'}}>
+      <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>🔧 Your shutdown precautions ({mine.length})</div>
+      {mine.map(({s,p})=>(<div key={s.id+p.id} style={{display:'flex',gap:8,alignItems:'flex-start',marginBottom:6,fontSize:13}}>
+        <button className="btn btn-green btn-sm" onClick={async()=>{ if(await sdTick(s,p.id,true)) changed(); }}>✓ Done</button>
+        <span><span className="badge badge-blue">{(SD_DEPTS.find(d=>d.k===p.dept)||{}).label}</span> {p.text} <span className="dim" style={{fontSize:11}}>({s.start_date} to {sdEnd(s)})</span></span>
+      </div>))}
+    </div>)}
+  </div>);
+}
+
+function ShutdownDashboardAlerts(){
+  const [items,setItems]=useState([]);
+  useEffect(()=>{(async()=>{ try{
+    const {rows,S}=await sdLoadRows();
+    if(!S.enabled||S.show_dashboard===false) return;
+    const horizon=Number(S.remind_days)||14;
+    setItems(rows.map(s=>({s,st:sdState(s)})).filter(x=>x.st.k==='proposed'||x.st.k==='live'||x.st.k==='overrun'||(x.st.k==='upcoming'&&x.st.daysTo<=horizon)));
+  }catch(e){} })();},[]);
+  return <>{items.map(({s,st})=>{
+    const pre=s.precautions||[];
+    return <Alert key={s.id} type={st.k==='live'||st.k==='overrun'||(st.daysTo!==undefined&&st.daysTo<=3)?'red':'amber'} icon="🔧"
+      title={`Maintenance shutdown "${s.title}" — ${st.label}`}
+      sub={`${s.start_date} to ${sdEnd(s)} (${s.est_days} days)${pre.length?` · precaution tasks ${pre.filter(p=>p.done).length}/${pre.length} done`:''}`}/>;
+  })}</>;
+}
+
+// Shown at the top of the pages a shutdown affects.
+function ShutdownBanner({area}){
+  const dept=SD_AREA_DEPT[area];
+  const [st,setSt]=useState(null);
+  useEffect(()=>{
+    if(!dept){ setSt(null); return; }
+    let c=false;
+    (async()=>{ try{ const v=await sdLoadRows(); if(!c) setSt(v); }catch(e){} })();
+    return ()=>{c=true;};
+  },[area]);
+  if(!dept||!st||!st.S.enabled) return null;
+  const horizon=Number(st.S.remind_days)||14;
+  const list=st.rows.filter(s=>s.status==='Approved').map(s=>({s,x:sdState(s)})).filter(({x})=>x.k==='live'||x.k==='overrun'||(x.k==='upcoming'&&x.daysTo<=horizon));
+  if(!list.length) return null;
+  const dl=SD_DEPTS.find(d=>d.k===dept);
+  return(<div className="sd-banner">{list.map(({s,x})=>{
+    const isLive=x.k!=='upcoming';
+    const open=(s.precautions||[]).filter(p=>p.dept===dept&&!p.done);
+    return(<div key={s.id} className="card" style={{marginBottom:10,borderLeft:`4px solid ${isLive?'var(--red)':'var(--amber)'}`}}>
+      <div style={{fontSize:14,fontWeight:600}}>🔧 Maintenance shutdown: {s.title} — {x.label}</div>
+      <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{s.start_date} to {sdEnd(s)}</div>
+      <div style={{fontSize:13,marginTop:6}}>{(SD_ADVICE[dept]||{})[isLive?'live':'pre']}</div>
+      {open.length>0&&<div style={{marginTop:6,fontSize:12}}><strong>{dl?dl.label:''} tasks still open ({open.length}):</strong>{open.slice(0,4).map(p=><div key={p.id}>• {p.text}</div>)}{open.length>4&&<div className="dim">…and {open.length-4} more (see My Tasks)</div>}</div>}
+    </div>);
+  })}</div>);
+}
+
+// Director-only settings: who plans, who approves, who is responsible per department, rules.
+function ShutdownSettings(){
+  const [S,setS]=useState(SD_DEFAULTS);
+  const [emps,setEmps]=useState([]);
+  const [appUsers,setAppUsers]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+  useEffect(()=>{(async()=>{
+    const [cfg,{data:e},{data:au}]=await Promise.all([loadShutdownSettings(),sb.from(EMP_TABLE).select('*').range(0,4999),sb.from('app_users').select('*')]);
+    setS(cfg); setEmps((e||[]).filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b)))); setAppUsers(au||[]); setLoading(false);
+  })();},[]);
+  const linked=new Set(appUsers.filter(u=>u.employee_id!==null&&u.employee_id!==undefined).map(u=>String(u.employee_id)));
+  const nameOf=(id)=>{ const e=emps.find(x=>String(x.id)===String(id)); return e?empName(e):'Unknown'; };
+  const multi=(label,val,onSet)=>{
+    const noLogin=sdIds(val).filter(id=>!linked.has(id));
+    return(<Field label={label}>
+      <select multiple size={6} className="form-input" value={sdIds(val)} onChange={e=>onSet(Array.from(e.target.selectedOptions).map(o=>o.value))}>
+        {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+      </select>
+      {noLogin.length>0&&<div style={{fontSize:11,color:'var(--red)',marginTop:4}}>⚠ No login linked (they will get nothing): {noLogin.map(nameOf).join(', ')}</div>}
+    </Field>);
+  };
+  const num=(k,label,props)=>(<Field label={label}><input type="number" className="form-input" value={S[k]} onChange={e=>s(k,e.target.value)} {...(props||{})}/></Field>);
+  const chk=(k,label)=>(<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={!!S[k]} onChange={e=>s(k,e.target.checked)}/>{label}</label>);
+  const toggleOff=(i)=>s('off_days',(S.off_days||[]).includes(i)?(S.off_days||[]).filter(x=>x!==i):[...(S.off_days||[]),i]);
+
+  const save=async()=>{
+    const n=(v)=>Number(v);
+    const whole=(v,min,max)=>Number.isInteger(n(v))&&n(v)>=min&&n(v)<=max;
+    if(!whole(S.min_notice_days,0,365)) return alert('Minimum notice must be a whole number of days (0–365).');
+    if(!whole(S.max_days,1,120)) return alert('Maximum shutdown length must be 1–120 days.');
+    if(!whole(S.remind_days,1,90)) return alert('Heads-up window must be 1–90 days.');
+    if(!whole(S.lookback_days,7,180)) return alert('History used for averages must be 7–180 days.');
+    if(!whole(S.restart_ramp_days,0,14)||!whole(S.restart_wheat_days,0,30)||!whole(S.lift_buffer_days,0,60)||!whole(S.license_buffer_days,0,365)) return alert('Please check the restart, lifting and licence day fields (whole numbers).');
+    if(!(n(S.safety_pct)>=0)||!(n(S.max_extra_prod_pct)>=0)) return alert('Percentages must be 0 or more.');
+    if(S.enabled&&sdIds(S.initiator_ids).length===0&&!confirm('Nobody is assigned to plan shutdowns yet (only Directors can). Save anyway?')) return;
+    if(S.enabled&&sdIds(S.approver_ids).length===0&&!confirm('Nobody is assigned to approve shutdowns, so only a Director can approve. Save anyway?')) return;
+    const both=sdIds(S.initiator_ids).filter(id=>sdIds(S.approver_ids).includes(id));
+    if(both.length&&!confirm(`${both.map(nameOf).join(', ')} can both plan and approve. Nobody can approve their own proposal (except a Director), so that person cannot approve their own plans. Continue?`)) return;
+    const clean={...S,min_notice_days:n(S.min_notice_days),max_days:n(S.max_days),remind_days:n(S.remind_days),lookback_days:n(S.lookback_days),safety_pct:n(S.safety_pct),max_extra_prod_pct:n(S.max_extra_prod_pct),restart_ramp_days:n(S.restart_ramp_days),restart_wheat_days:n(S.restart_wheat_days),lift_buffer_days:n(S.lift_buffer_days),license_buffer_days:n(S.license_buffer_days),initiator_ids:sdIds(S.initiator_ids),approver_ids:sdIds(S.approver_ids)};
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:SD_SETTING_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    setS(clean); sdBust();
+    logActivity('Settings','update','Maintenance shutdown settings updated');
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000);
+  };
+  if(loading) return <Loading/>;
+  return(<div className="page">
+    <div className="page-header"><div className="page-label">System Settings</div><div className="page-title">Shutdown settings</div></div>
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--red)'}`}}>
+      {chk('enabled','Maintenance shutdown planning and alerts are ON')}
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. Who plans and who approves</div>
+      <div className="form-grid">
+        {multi('Can plan a shutdown (e.g. the Miller)',S.initiator_ids,(v)=>s('initiator_ids',v))}
+        {multi('Can approve a shutdown (e.g. the Manager)',S.approver_ids,(v)=>s('approver_ids',v))}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>Directors can always plan, approve and cancel. Nobody can approve their own proposal except a Director. Only the Director can cancel. A person only gets notices if their login is linked to their employee profile in the HR portal.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. Who is responsible in each department (gets the precaution tasks)</div>
+      <div className="form-grid">
+        {SD_DEPTS.map(d=><div key={d.k}>{multi(`${d.icon} ${d.label}`,(S.dept_ids||{})[d.k],(v)=>s('dept_ids',{...(S.dept_ids||{}),[d.k]:v}))}</div>)}
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">3. Date rules</div>
+      <div className="form-grid">
+        {num('min_notice_days','Minimum notice before the start date (days)',{min:0})}
+        {num('max_days','Longest shutdown allowed (days)',{min:1})}
+        {num('remind_days','Show banners and dashboard alerts this many days ahead',{min:1})}
+      </div>
+      <div style={{marginTop:12}}>
+        <div className="form-label" style={{marginBottom:6}}>Weekly off days (no production or dispatch counted)</div>
+        <div style={{display:'flex',gap:14,flexWrap:'wrap'}}>
+          {LIFT_WEEKDAYS.map((nm,i)=>(<label key={i} style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}><input type="checkbox" checked={(S.off_days||[]).includes(i)} onChange={()=>toggleOff(i)}/>{nm}</label>))}
+        </div>
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>The minimum notice and longest length can be overridden by a Director.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">4. Stock planner assumptions</div>
+      <div className="form-grid">
+        {num('lookback_days','Use the last N days to work out average production and dispatch',{min:7})}
+        {num('safety_pct','Safety margin on expected dispatch during the shutdown (%)',{min:0})}
+        {num('max_extra_prod_pct','Production can be pushed above average by up to (%)',{min:0})}
+        {num('restart_ramp_days','Restart days at half output',{min:0})}
+        {num('restart_wheat_days','Wheat needed at restart, in days of normal use',{min:0})}
+        {num('lift_buffer_days','Flag lifting orders due this many days after restart',{min:0})}
+        {num('license_buffer_days','Flag licences expiring this many days after restart',{min:0})}
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">5. Notifications</div>
+      {chk('notify_director_on_proposal','Tell the Director as soon as a shutdown is planned (not only after approval)')}
+      {chk('show_tasks','Show shutdown notices and tasks in My Tasks and the sidebar badge')}
+      {chk('show_dashboard','Show shutdown alerts on the Dashboard')}
+    </div>
+
+    <div style={{display:'flex',gap:8,alignItems:'center'}}>
+      <button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':'Save settings'}</button>
+      {msg&&<span style={{fontSize:12,color:'var(--green)'}}>{msg}</span>}
+    </div>
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -7842,6 +8696,7 @@ function App(){
         const WS=await loadWoaSettings();
         if(WS.enabled&&WS.show_tasks) n+=woaAlertsFor(woaBoard(await loadWoaBase(),WS),WS,access.employee_id,access.role).length;
       }catch(e){}
+      try{ n+=await sdTaskCount(access.employee_id,access.role); }catch(e){}
       if(!cancelled&&!error) setRenewalCount(n);
     };
     fetchRenewals();
@@ -7850,6 +8705,17 @@ function App(){
   },[access?.employee_id,access?.role,renewalTick]);
 
   const [orgVisible,setOrgVisible]=useState(false);
+  const [sdAllowed,setSdAllowed]=useState(false);
+  useEffect(()=>{
+    if(!access||!access.role||access.role==='pending') return;
+    let c=false;
+    (async()=>{ try{
+      const S=await loadShutdownSettings(); const me=String(access.employee_id??'');
+      const ok=!!me&&(sdIds(S.initiator_ids).includes(me)||sdIds(S.approver_ids).includes(me)||Object.values(S.dept_ids||{}).some(a=>sdIds(a).includes(me)));
+      if(!c) setSdAllowed(ok);
+    }catch(e){} })();
+    return ()=>{c=true;};
+  },[access?.role,access?.employee_id]);
   useEffect(()=>{
     if(!access||!access.role||access.role==='pending') return;
     let cancelled=false;
@@ -7879,11 +8745,12 @@ function App(){
   </div></div>);
   CUR_ROLE=access.role;
     ORG_VISIBLE=orgVisible;
+    SD_ALLOWED=sdAllowed;
   const displayName=titleCase(myName||(user.email||'').split('@')[0].replace(/[._-]+/g,' '));
   const firstName=displayName.split(' ')[0];
   const activeTab=canSeePage(access.role,tab)?tab:'my-tasks';
   const navItems=[...MY_WORK_NAV,...visibleNav(access.role)];
-  const myTasksView=<MyTasks key={'mt'+jobsTick} employeeId={access.employee_id} onCount={setMyOpenCount} role={access.role} onRenewed={()=>setRenewalTick(x=>x+1)}/>;
+  const myTasksView=<MyTasks key={'mt'+jobsTick} employeeId={access.employee_id} onCount={setMyOpenCount} role={access.role} onRenewed={()=>setRenewalTick(x=>x+1)} onGo={setTab}/>;
 
   const VIEWS={
     'dashboard':<Dashboard name={firstName}/>,
@@ -7915,6 +8782,8 @@ function App(){
     'my-tasks':myTasksView,
         'org-chart':<OrgChart role={access.role} employeeId={access.employee_id} visible={orgVisible} onVisible={setOrgVisible}/>,
     'reports':<Reports/>,
+    'shutdowns':<Shutdowns role={access.role} employeeId={access.employee_id} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
+    'shutdown-settings':<ShutdownSettings/>,
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
   };
 
@@ -7950,7 +8819,7 @@ function App(){
         <button className="btn btn-ghost btn-sm" style={{width:'100%'}} onClick={()=>sb.auth.signOut()}>Sign out</button>
       </div>
     </div>
-    <div className="main">{VIEWS[activeTab]||<Dashboard/>}</div>
+    <div className="main"><ShutdownBanner area={activeTab}/>{VIEWS[activeTab]||<Dashboard/>}</div>
   </div>);
 }
 
