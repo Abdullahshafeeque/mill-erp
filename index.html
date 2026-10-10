@@ -191,6 +191,8 @@ const NAV = [
   { id:'ledger', label:'Daily Cash Book', icon:'₹' },
   { section:'Reports' },
   { id:'reports', label:'Reports', icon:'📈' },
+    { section:'Organisation' },
+  { id:'org-chart', label:'Roles & Responsibilities', icon:'🧭' },
   { section:'Settings' },
   { id:'product-master', label:'Product Master', icon:'⚙️' },
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
@@ -225,7 +227,8 @@ const ROLE_ACTIONS={
   'record.delete':['director','manager'],
 };
 let CUR_ROLE='';
-const canSeePage=(role,id)=>{ if(id==='org-chart') return true; const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
+let ORG_VISIBLE=false;
+const canSeePage=(role,id)=>{ if(id==='org-chart') return role==='director'||ORG_VISIBLE; const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
 const can=(role,action)=>(ROLE_ACTIONS[action]||[]).includes(role);
 const allow=(action)=>can(CUR_ROLE,action);
 const visibleNav=(role)=>{
@@ -5239,7 +5242,7 @@ function JobCards({employeeId,role,userEmail}){
 // ══════════════════════════════════════════════════════════
 // MY TASKS (employee view)
 // ══════════════════════════════════════════════════════════
-const MY_WORK_NAV=[{section:'My Work'},{id:'my-tasks',label:'My Tasks',icon:'✅'},{id:'org-chart',label:'Roles & Responsibilities',icon:'🧭'}];
+const MY_WORK_NAV=[{section:'My Work'},{id:'my-tasks',label:'My Tasks',icon:'✅'}];
 
 // ══════════════════════════════════════════════════════════
 // RECURRING JOBS · APPROVALS · CHECKLISTS
@@ -7479,7 +7482,7 @@ function TaskBadge({n,compact}){
 // ══════════════════════════════════════════════════════════
 // ROLES & RESPONSIBILITIES (org chart built from HR portal posts)
 // ══════════════════════════════════════════════════════════
-function OrgChart({role,employeeId}){
+function OrgChart({role,employeeId,visible,onVisible}){
   const isDirector=role==='director';
   const [posts,setPosts]=useState([]);
   const [emps,setEmps]=useState([]);
@@ -7558,6 +7561,15 @@ function OrgChart({role,employeeId}){
     if(error) return alert(error.message);
     logActivity('Roles & Responsibilities','update',placed?`${postById[id].name} placed under ${parent?postById[parent].name:'the Director'}`:`${postById[id].name} removed from the chart`);
     await load();
+  };
+
+    const toggleVisible=async()=>{
+    const next=!visible;
+    if(!confirm(next?'Make this section visible to everyone who logs in?':'Hide this section from everyone except Directors?')) return;
+    const {error}=await sb.from('erp_settings').upsert({key:'org_chart_visible',value:next?'1':'0'},{onConflict:'key'});
+    if(error) return alert(error.message);
+    onVisible(next);
+    logActivity('Roles & Responsibilities','update',next?'Section made visible to staff':'Section hidden from staff');
   };
 
   const q=find.trim().toLowerCase();
@@ -7656,9 +7668,17 @@ function OrgChart({role,employeeId}){
   };
 
   return(<div className="page">
-    <div className="page-header">
-      <div className="page-label">My Work</div>
-      <div className="page-title">Roles &amp; responsibilities</div>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Organisation</div>
+        <div className="page-title">Roles &amp; responsibilities</div>
+      </div>
+      {isDirector&&(
+        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,color:visible?'var(--green)':'var(--muted)'}}>{visible?'Visible to all staff':'Visible to Directors only'}</span>
+          <button className={`btn btn-sm ${visible?'btn-green':'btn-ghost'}`} onClick={toggleVisible}>{visible?'● ON — click to hide':'○ OFF — click to show'}</button>
+        </div>
+      )}
     </div>
 
     {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
@@ -7784,6 +7804,19 @@ function App(){
     return ()=>{cancelled=true;clearInterval(t);};
   },[access?.employee_id,access?.role,renewalTick]);
 
+  const [orgVisible,setOrgVisible]=useState(false);
+  useEffect(()=>{
+    if(!access||!access.role||access.role==='pending') return;
+    let cancelled=false;
+    const f=async()=>{
+      const {data}=await sb.from('erp_settings').select('value').eq('key','org_chart_visible').maybeSingle();
+      if(!cancelled) setOrgVisible(!!data&&data.value==='1');
+    };
+    f();
+    const t=setInterval(f,60000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role]);
+
   useEffect(()=>{
     sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setAuthLoading(false);});
     sb.auth.onAuthStateChange((_,session)=>setUser(session?.user??null));
@@ -7800,6 +7833,7 @@ function App(){
     <button className="btn btn-ghost" onClick={()=>sb.auth.signOut()}>Sign out</button>
   </div></div>);
   CUR_ROLE=access.role;
+    ORG_VISIBLE=orgVisible;
   const displayName=titleCase(myName||(user.email||'').split('@')[0].replace(/[._-]+/g,' '));
   const firstName=displayName.split(' ')[0];
   const activeTab=canSeePage(access.role,tab)?tab:'my-tasks';
@@ -7834,7 +7868,7 @@ function App(){
     'recurring-jobs':<RecurringJobs role={access.role} userEmail={user.email}/>,
         'licenses':<Licenses role={access.role} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
     'my-tasks':myTasksView,
-        'org-chart':<OrgChart role={access.role} employeeId={access.employee_id}/>,
+        'org-chart':<OrgChart role={access.role} employeeId={access.employee_id} visible={orgVisible} onVisible={setOrgVisible}/>,
     'reports':<Reports/>,
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
   };
