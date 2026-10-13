@@ -3098,10 +3098,11 @@ function Ledger({role,userEmail}){
     <td className="mono" style={{textAlign:'right',fontWeight:600}}>{fmt(e.amount,2)}</td>
     <td style={{whiteSpace:'nowrap'}}>{!locked&&(<>
       {accAllow('ledger','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(e)} disabled={saving}>✎</button>}{' '}
-      {accAllow('ledger','delete')&&{accAllow('ledger','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(e)} disabled={saving}>✕</button>}}
+      {accAllow('ledger','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(e)} disabled={saving}>✕</button>}
     </>)}</td>
   </tr>);
-  const addRow=(side)=>(locked||!accAllow('ledger','add'))?null:(<tr key={'add-'+side}>
+  const noAdd=locked||!accAllow('ledger','add');
+const addRow=(side)=>noAdd?null:(<tr key={'add-'+side}>
     <td colSpan={3}>
       <button className={`btn btn-sm ${side==='in'?'btn-green':'btn-red'}`} style={{width:'100%'}} onClick={()=>startAdd(side)} disabled={saving}>{side==='in'?'+ Add receipt':'+ Add payment'}</button>
     </td>
