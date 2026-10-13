@@ -248,9 +248,37 @@ const ROLE_ACTIONS={
 let CUR_ROLE='';
 let ORG_VISIBLE=false;
 let SD_ALLOWED=false;
-const canSeePage=(role,id)=>{ if(id==='shutdowns') return !!role&&role!=='pending'&&(role!=='viewer'||SD_ALLOWED); if(id==='org-chart') return role==='director'||ORG_VISIBLE; const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id)); };
+let ACC_ON=false;
+let ACC_ME='';
+let ACC_RULES=[];
+let ACC_PAGE='';
+const ACC_SECTIONS=['dashboard','timeline','production','dispatch','work-order-tracker','private-dispatch','lifting-orders','returns','fci-inwards','private-inwards','reconciliation','job-cards','recurring-jobs','licenses','all-stock','store','stock-count','ledger','reports','product-master','product-recipes','depot-settings','lifting-settings','workorder-settings','activity-log'];
+const accRule=(section,action)=>ACC_RULES.some(r=>r.section==='mill:'+section&&r.action===action&&r.user_email===ACC_ME);
+const accAllow=(section,action)=>{
+  if(CUR_ROLE==='director') return true;
+  if(!ACC_ON){
+    if(action==='view'){ const p=ROLE_PAGES[CUR_ROLE]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(section)); }
+    return true;
+  }
+  if(action!=='view'&&!accRule(section,'view')) return false;
+  return accRule(section,action);
+};
+const canSeePage=(role,id)=>{
+  if(id==='shutdowns') return !!role&&role!=='pending'&&(role!=='viewer'||SD_ALLOWED);
+  if(id==='org-chart') return role==='director'||ORG_VISIBLE;
+  if(ACC_ON&&ACC_SECTIONS.includes(id)) return role==='director'||accRule(id,'view');
+  const p=ROLE_PAGES[role]; return p===ALL_PAGES||(Array.isArray(p)&&p.includes(id));
+};
 const can=(role,action)=>(ROLE_ACTIONS[action]||[]).includes(role);
-const allow=(action)=>can(CUR_ROLE,action);
+const ACC_MAP={'production.edit':['production','edit'],'production.delete':['production','delete'],'ledger.view':['ledger','view'],'master.delete':['product-master','delete']};
+const allow=(action)=>{
+  if(ACC_ON){
+    if(action==='record.delete') return accAllow(ACC_PAGE,'delete');
+    if(action==='ledger.write') return ['add','edit','delete'].some(a=>accAllow('ledger',a));
+    if(ACC_MAP[action]) return accAllow(...ACC_MAP[action]);
+  }
+  return can(CUR_ROLE,action);
+};
 const visibleNav=(role)=>{
   const out=[]; let head=null;
   NAV.forEach(n=>{
@@ -451,7 +479,7 @@ function ProductMaster(){
         <div className="page-label">System Settings</div>
         <div className="page-title">Product Master</div>
       </div>
-      <button className="btn btn-amber" onClick={()=>{setEditingId(null);setForm(blank);setShowForm(v=>!v);}}>+ Add Product</button>
+      {accAllow('product-master','add')&&<button className="btn btn-amber" onClick={()=>{setEditingId(null);setForm(blank);setShowForm(v=>!v);}}>+ Add Product</button>}
     </div>
 
     {showForm&&(
@@ -588,7 +616,7 @@ function ProductMaster(){
               </td>
               <td><button className={`btn btn-sm ${p.is_active?'btn-green':'btn-ghost'}`} onClick={()=>toggleActive(p)}>{p.is_active?'Active':'Archived'}</button></td>
               <td><div style={{display:'flex',gap:6}}>
-                <button className="btn btn-blue btn-sm" onClick={()=>startEdit(p)}>Edit</button>
+                {accAllow('product-master','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(p)}>Edit</button>}
                 {allow('master.delete') && <button className="btn btn-red btn-sm" onClick={()=>deleteProduct(p)}>Delete</button>}
               </div></td>
             </tr>
@@ -1140,8 +1168,7 @@ function Production(){
               {lastLoggedDate ? `Last entry logged: ${lastLoggedDate}. Next day to enter:` : 'No entries yet. Start with:'} <strong>{nextEntryDate}</strong>
             </div>
             <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button className="btn btn-green" onClick={startEntry}>+ Enter {nextEntryDate}</button>
-              <button className="btn btn-ghost" onClick={logNoProduction} disabled={saving}>No production on {nextEntryDate}</button>
+{accAllow('production','add')&&<button className="btn btn-green" onClick={startEntry}>+ Enter {nextEntryDate}</button>}              {accAllow('production','add')&&<button className="btn btn-ghost" onClick={logNoProduction} disabled={saving}>No production on {nextEntryDate}</button>}
             </div>
           </>
         ) : (
@@ -1845,7 +1872,7 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
         <div className="page-label">Raw Materials</div>
         <div className="page-title">Lifting orders</div>
       </div>
-      <button className="btn btn-amber" onClick={()=>{ if(showForm){ closeForm(); return; } setEditingId(null); setEditLocked(0); setForm({...blank,deadline:Number(S.default_deadline_days)>0?licShift(today,Number(S.default_deadline_days)):''}); setShowForm(true); }}>+ New lifting order</button>
+      {accAllow('lifting-orders','add')&&<button className="btn btn-amber" onClick={()=>{ if(showForm){ closeForm(); return; } setEditingId(null); setEditLocked(0); setForm({...blank,deadline:Number(S.default_deadline_days)>0?licShift(today,Number(S.default_deadline_days)):''}); setShowForm(true); }}>+ New lifting order</button>}
     </div>
 
     {showForm&&(
@@ -1891,7 +1918,7 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
             <td className="mono">{fmtMT(o.allotted_kg)}</td>
             <td className="mono" style={{color:'var(--green)'}}>{fmtMT(o.lifted_kg)}</td>
             <td className="mono" style={{color:balance>0?'var(--amber)':'var(--green)',fontWeight:600}}>{fmtMT(balance)}</td>
-            <td className="mono dim">{o.deadline||'—'} <button className="btn btn-ghost btn-sm" onClick={()=>setDeadline(o)}>✎</button></td>
+            <td className="mono dim">{o.deadline||'—'} {accAllow('lifting-orders','edit')&&<button className="btn btn-ghost btn-sm" onClick={()=>setDeadline(o)}>✎</button>}</td>
             <td>
               {li.complete?<span className="badge badge-green">Complete</span>
                 :!o.deadline?<span className="dim">No deadline</span>
@@ -1900,8 +1927,8 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
             </td>
             <td className="mono dim">{o.deadline&&!li.complete?`${fmtMT(li.reqPerDay)}/day${li.trucksPerDay?` · ${li.trucksPerDay} truck${li.trucksPerDay===1?'':'s'}`:''}`:'—'}</td>
             <td><div style={{display:'flex',gap:6}}>
-              <button className="btn btn-blue btn-sm" onClick={()=>startEdit(o)}>Edit</button>
-              <button className="btn btn-red btn-sm" onClick={()=>del(o)}>✕</button>
+              {accAllow('lifting-orders','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(o)}>Edit</button>}
+              {accAllow('lifting-orders','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(o)}>✕</button>}
             </div></td>
           </tr>);
         })}
@@ -1965,7 +1992,7 @@ function Returns(){
         <div className="page-label">Mill Operations</div>
         <div className="page-title">Returns — this month: {fmt(totalBags)} bags</div>
       </div>
-      <button className="btn btn-blue" onClick={()=>setShowForm(v=>!v)}>+ Log return</button>
+      {accAllow('returns','add')&&<button className="btn btn-blue" onClick={()=>setShowForm(v=>!v)}>+ Log return</button>}
     </div>
 
     {showForm&&(
@@ -2100,7 +2127,7 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
         <div className="page-title">FCI Inwards — {periodLabel}: {fmtMT(total)}</div>
         <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
-      <button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Log receipt</button>
+      {accAllow(ACC_PAGE,'add')&&<button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Log receipt</button>}
     </div>
 
     {showForm&&(
@@ -2403,7 +2430,7 @@ function Dispatch(){
         <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
       <div style={{display:'flex',gap:8}}>
-        <button className="btn btn-green" onClick={()=>setShowDF(v=>!v)}>+ Log dispatch</button>
+        {accAllow('dispatch','add')&&<button className="btn btn-green" onClick={()=>setShowDF(v=>!v)}>+ Log dispatch</button>}
       </div>
     </div>
 
@@ -2548,7 +2575,7 @@ function PrivateDispatch(){
         <div className="page-title">Private dispatch — {periodLabel}: {fmt(totalBags)} bags, {fmtMT(totalKg)}</div>
         <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
-      <button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ Log dispatch</button>
+      {accAllow('private-dispatch','add')&&<button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ Log dispatch</button>}
     </div>
 
     {showForm&&(
@@ -3070,11 +3097,11 @@ function Ledger({role,userEmail}){
     </td>
     <td className="mono" style={{textAlign:'right',fontWeight:600}}>{fmt(e.amount,2)}</td>
     <td style={{whiteSpace:'nowrap'}}>{!locked&&(<>
-      <button className="btn btn-blue btn-sm" onClick={()=>startEdit(e)} disabled={saving}>✎</button>{' '}
-      <button className="btn btn-red btn-sm" onClick={()=>del(e)} disabled={saving}>✕</button>
+      {accAllow('ledger','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(e)} disabled={saving}>✎</button>}{' '}
+      {accAllow('ledger','delete')&&{accAllow('ledger','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(e)} disabled={saving}>✕</button>}}
     </>)}</td>
   </tr>);
-  const addRow=(side)=>locked?null:(<tr key={'add-'+side}>
+  const addRow=(side)=>(locked||!accAllow('ledger','add'))?null:(<tr key={'add-'+side}>
     <td colSpan={3}>
       <button className={`btn btn-sm ${side==='in'?'btn-green':'btn-red'}`} style={{width:'100%'}} onClick={()=>startAdd(side)} disabled={saving}>{side==='in'?'+ Add receipt':'+ Add payment'}</button>
     </td>
@@ -4674,7 +4701,7 @@ function WorkOrderTracker(){
           {[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{new Date(2000,i,1).toLocaleString('en-IN',{month:'long'})}</option>)}
         </select>
         <select style={{width:90}} value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))}>{[2024,2025,2026,2027].map(y=><option key={y}>{y}</option>)}</select>
-        <button className="btn btn-amber" onClick={()=>{ if(!showCreate&&Number(S.default_deadline_days)>0) setCForm(p=>({...p,deadline:p.deadline||licShift(p.work_order_date||today,Number(S.default_deadline_days))})); setShowCreate(v=>!v); }}>+ Work order</button>
+        {accAllow('work-order-tracker','add')&&<button className="btn btn-amber" onClick={()=>{ if(!showCreate&&Number(S.default_deadline_days)>0) setCForm(p=>({...p,deadline:p.deadline||licShift(p.work_order_date||today,Number(S.default_deadline_days))})); setShowCreate(v=>!v); }}>+ Work order</button>}
       </div>
     </div>
 
@@ -4772,7 +4799,7 @@ function WorkOrderTracker(){
               <strong className="mono" style={{fontSize:14}}>{wo.work_order_no}</strong>
               <span className="badge badge-blue" style={{marginLeft:8}}>{wo.scheme}</span>
               <span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.work_order_date}</span>
-              <button className="btn btn-ghost btn-sm" style={{marginLeft:10}} onClick={()=>startEdit(wo)}>Edit</button>
+              {accAllow('work-order-tracker','edit')&&<button className="btn btn-ghost btn-sm" style={{marginLeft:10}} onClick={()=>startEdit(wo)}>Edit</button>}
 {allow('record.delete')&&<button className="btn btn-red btn-sm" style={{marginLeft:6}} onClick={()=>deleteWorkOrder(wo)} disabled={saving}>Delete</button>}
               {(()=>{
                 const bi=board[wo.id];
@@ -4781,7 +4808,7 @@ function WorkOrderTracker(){
                   {bi&&bi.complete?<span className="badge badge-green" style={{marginLeft:8}}>Complete</span>
                     :wo.deadline&&bi?<span className="badge" style={{marginLeft:8,background:`color-mix(in srgb, ${col} 18%, transparent)`,color:col}}>⏰ {wo.deadline} · {licDaysText(bi.daysLeft)}</span>
                     :<span className="dim" style={{marginLeft:8,fontSize:12}}>{wo.deadline?`⏰ ${wo.deadline}`:'No deadline'}</span>}
-                  <button className="btn btn-ghost btn-sm" style={{marginLeft:6}} onClick={()=>setDeadline(wo)}>✎ deadline</button>
+                  {accAllow('work-order-tracker','edit')&&<button className="btn btn-ghost btn-sm" style={{marginLeft:6}} onClick={()=>setDeadline(wo)}>✎ deadline</button>}
                   {bi&&!bi.complete&&wo.deadline&&(<div style={{fontSize:12,marginTop:6,color:'var(--muted)'}}>
                     Needs about {fmt(Math.ceil(bi.bagsPerDay))} bags/day{bi.trucksPerDay?` · ${bi.trucksPerDay} truck${bi.trucksPerDay===1?'':'s'}/day`:''} over {bi.workDays} working day{bi.workDays===1?'':'s'}.
                     {' '}Stock: {fmt(bi.stockBags)} of {fmt(Math.ceil(bi.balBags))} pending bags{bi.shortBags>0?<strong style={{color:'var(--red)'}}> — {fmt(Math.ceil(bi.shortBags))} still to produce</strong>:' ✓ covered'}
@@ -5085,7 +5112,7 @@ function JobCards({employeeId,role,userEmail}){
         <div className="page-label">Mill Operations</div>
         <div className="page-title">Job cards</div>
       </div>
-      <button className="btn btn-amber" onClick={()=>{ if(showForm) resetForm(); else {setEditingId(null);setForm(blank);setNewFiles([]);setShowForm(true);} }}>+ New job</button>
+      {accAllow('job-cards','add')&&<button className="btn btn-amber" onClick={()=>{ if(showForm) resetForm(); else {setEditingId(null);setForm(blank);setNewFiles([]);setShowForm(true);} }}>+ New job</button>}
     </div>
 
     <div className="stat-grid">
@@ -5205,8 +5232,8 @@ function JobCards({employeeId,role,userEmail}){
             {j.status==='Pending'&&<button className="btn btn-amber btn-sm" onClick={()=>setStatus(j,'In Progress')}>Start</button>}
             {!isDone&&<button className="btn btn-green btn-sm" onClick={()=>openDone(j)}>Mark done</button>}
             {isDone&&<button className="btn btn-ghost btn-sm" onClick={()=>setStatus(j,'Pending')}>Reopen</button>}
-            <button className="btn btn-blue btn-sm" onClick={()=>startEdit(j)}>Edit</button>
-            <button className="btn btn-red btn-sm" onClick={()=>deleteJob(j)}>✕</button>
+            {accAllow('job-cards','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(j)}>Edit</button>}
+            {accAllow('job-cards','delete')&&<button className="btn btn-red btn-sm" onClick={()=>deleteJob(j)}>✕</button>}
           </div>
         </div>
 
@@ -8706,6 +8733,26 @@ function App(){
 
   const [orgVisible,setOrgVisible]=useState(false);
   const [sdAllowed,setSdAllowed]=useState(false);
+    const [accData,setAccData]=useState(null);
+  useEffect(()=>{
+    if(!access||!access.role) return;
+    let cancelled=false;
+    const f=async()=>{
+      let on=false, rules=[];
+      try{
+        const {data:st}=await sb.from('erp_settings').select('value').eq('key','access_rules_on').maybeSingle();
+        on=!!st&&st.value==='1';
+        if(on){
+          const {data,error}=await sb.from('access_rules').select('section,action,user_email').eq('user_email',(user.email||'').toLowerCase()).limit(2000);
+          if(error) on=false; else rules=data||[];
+        }
+      }catch(e){ on=false; rules=[]; }
+      if(!cancelled) setAccData({on,rules});
+    };
+    f();
+    const t=setInterval(f,60000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role,user?.email]);
   useEffect(()=>{
     if(!access||!access.role||access.role==='pending') return;
     let c=false;
@@ -8743,12 +8790,15 @@ function App(){
     <div style={{fontSize:13,color:'var(--muted)',marginBottom:20}}>{access.error?access.error:'Your account is waiting for Director approval in the HR portal.'}</div>
     <button className="btn btn-ghost" onClick={()=>sb.auth.signOut()}>Sign out</button>
   </div></div>);
+  if(!accData) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'var(--muted)'}}>checking access…</div>;
   CUR_ROLE=access.role;
+  ACC_ON=accData.on; ACC_RULES=accData.rules; ACC_ME=(user.email||'').toLowerCase();
     ORG_VISIBLE=orgVisible;
     SD_ALLOWED=sdAllowed;
   const displayName=titleCase(myName||(user.email||'').split('@')[0].replace(/[._-]+/g,' '));
   const firstName=displayName.split(' ')[0];
   const activeTab=canSeePage(access.role,tab)?tab:'my-tasks';
+  ACC_PAGE=activeTab;
   const navItems=[...MY_WORK_NAV,...visibleNav(access.role)];
   const myTasksView=<MyTasks key={'mt'+jobsTick} employeeId={access.employee_id} onCount={setMyOpenCount} role={access.role} onRenewed={()=>setRenewalTick(x=>x+1)} onGo={setTab}/>;
 
