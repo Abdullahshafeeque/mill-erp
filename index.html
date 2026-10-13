@@ -197,6 +197,7 @@ const NAV = [
 { id:'fci-inwards', label:'FCI Inwards', icon:'🌾' },
   { id:'private-inwards', label:'Private Inwards', icon:'🌿' },
   { id:'reconciliation', label:'Reconciliation', icon:'📊' },
+  { id:'quality', label:'Quality Control', icon:'🧪' },
   { id:'job-cards', label:'Job Cards', icon:'🛠️' },
     { id:'recurring-jobs', label:'Recurring Jobs', icon:'🔁' },
   { id:'licenses', label:'Licenses & Renewals', icon:'📑' },
@@ -220,6 +221,7 @@ const NAV = [
     { id:'access-settings', label:'Access Settings', icon:'🛂' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
+  { id:'quality-settings', label:'Quality Settings', icon:'🔬' },
   { id:'whatsapp-settings', label:'WhatsApp Alerts', icon:'💬' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
@@ -250,6 +252,8 @@ const AX_MILL=[
  {key:'mill:fci-inwards',label:'FCI Inwards',acts:[['view','Open page','MT'],['log','Log receipt','MT'],['add_supplier','Add new supplier','MT'],['delete','Delete receipt','M']]},
  {key:'mill:private-inwards',label:'Private Inwards',acts:[['view','Open page','MT'],['log','Log receipt','MT'],['delete','Delete receipt','M']]},
  {key:'mill:reconciliation',label:'Reconciliation',acts:[['view','Open page','MA'],['generate','Generate report','MA']]},
+ {key:'mill:quality',label:'Quality Control',acts:[['view','Open page','MS'],['enter','Record a test','MS'],['edit','Edit a test','M'],['delete','Delete a test','M'],['ack','Acknowledge failed test','M'],['download','Download CSV','MS']]},
+ {key:'mill:quality-settings',label:'Quality Settings',acts:[['view','Open page','M'],['manage_params','Add / edit parameters','M'],['manage_products','Choose products and set limits','M'],['edit_alerts','Change alert settings','M']]},
  {key:'mill:job-cards',label:'Job Cards',acts:[['view','Open page','MS'],['add','Create job','MS'],['edit','Edit job','MS'],['start','Start job','MS'],['mark_done','Mark done','MS'],['reopen','Reopen a done job','M'],['keep_photos','Keep / release photos','MS'],['delete_photo','Delete a photo','MS'],['delete','Delete job','M']]},
  {key:'mill:recurring-jobs',label:'Recurring Jobs',acts:[['view','Open page','M'],['add','New / duplicate schedule','M'],['edit','Edit schedule','M'],['pause','Pause / resume','M'],['skip_next','Skip next run','M'],['generate_now','Generate due jobs now','M'],['delete','Delete schedule','M']]},
  {key:'mill:licenses',label:'Licenses & Renewals',acts:[['view','Open page','MA'],['add','Add license','M'],['edit','Edit license details','M'],['renew','Renew & upload','MA'],['add_file','Add files','MA']]},
@@ -3572,6 +3576,7 @@ function Dashboard({name}){
       <LiftingDashboardAlerts/>
       <WoaDashboardAlerts/>
       <ShutdownDashboardAlerts/>
+      <QcDashboardAlerts/>
       {stockAlerts.map(r=>(
         <Alert key={r.product.id} type="amber" icon="⚠" title={`${r.product.product_name} — ${fmt(r.qty)} bags, within watch range`} sub={`Between min (${fmt(r.product.min_stock_alert)}) and max (${fmt(r.product.max_stock_alert)})`}/>
       ))}
@@ -6162,6 +6167,7 @@ function MyTasks({employeeId,onCount,role,onRenewed,onGo}){
     <ShutdownTasks employeeId={employeeId} role={role} onChanged={onRenewed} onGo={onGo}/>
     <RenewalAlerts employeeId={employeeId} role={role} onRenewed={onRenewed}/>
     <LiftingAlerts employeeId={employeeId} role={role}/>
+    <QcAlerts employeeId={employeeId} role={role} onChanged={onRenewed}/>
     <WoaAlerts employeeId={employeeId} role={role}/>
     <JobApprovalQueue employeeId={employeeId} role={role} onChanged={load}/>
     <div className="stat-grid">
@@ -8913,6 +8919,895 @@ function AccessSettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// QUALITY CONTROL — parameters, limits, tests, alerts
+// ══════════════════════════════════════════════════════════
+const QC_SETTING_KEY='qc_alert_settings';
+const QC_DEFAULTS={
+  enabled:true,
+  person_ids:[], notify_director:true, director_after_hours:24,
+  alert_on_warning:false,
+  repeat_alert:true, repeat_count:3,
+  overdue_alert:true,
+  show_dashboard:true, show_tasks:true
+};
+const QC_SAMPLE_TYPES=['Finished product','In-process','Raw material (wheat)','Packed bag check'];
+const QC_DISPOSITIONS=['Hold batch','Retest','Reprocess / blend','Release with approval','Reject','No action needed'];
+const QC_COL={Pass:'var(--green)',Warning:'var(--amber)',Fail:'var(--red)'};
+const QC_BADGE={Pass:'badge-green',Warning:'badge-amber',Fail:'badge-red'};
+const QC_PRESETS=[['Moisture','%'],['Ash','%'],['Wet gluten','%'],['Dry gluten','%'],['Gluten index','%'],['Protein','%'],['Falling number','s'],['Sedimentation value','ml'],['Water absorption','%'],['Granulation (through sieve)','%']];
+
+async function loadQcSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',QC_SETTING_KEY).maybeSingle();
+  let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  return {...QC_DEFAULTS,...saved};
+}
+
+const qcNum=(v)=>(v===null||v===undefined||String(v).trim()==='')?null:(isNaN(Number(v))?null:Number(v));
+
+// r = {min,max,warn_pct}. Returns 'Pass' | 'Warning' | 'Fail' | null (blank / not a number)
+const qcEval=(v,r)=>{
+  if(v===null||v===undefined||String(v).trim()==='') return null;
+  const n=Number(v); if(isNaN(n)) return null;
+  const mn=qcNum(r.min), mx=qcNum(r.max);
+  if(mn!==null&&n<mn) return 'Fail';
+  if(mx!==null&&n>mx) return 'Fail';
+  const w=Number(r.warn_pct)||0;
+  if(w>0){
+    const band=(mn!==null&&mx!==null)?(mx-mn):Math.abs(mn!==null?mn:(mx!==null?mx:0));
+    const m=band*w/100;
+    if(mn!==null&&n<mn+m) return 'Warning';
+    if(mx!==null&&n>mx-m) return 'Warning';
+  }
+  return 'Pass';
+};
+const qcOverall=(list)=>list.some(r=>r.status==='Fail')?'Fail':list.some(r=>r.status==='Warning')?'Warning':'Pass';
+const qcLimit=(r)=>{ const mn=qcNum(r.min), mx=qcNum(r.max); return mn!==null&&mx!==null?`${mn} – ${mx}`:mn!==null?`min ${mn}`:mx!==null?`max ${mx}`:'record only'; };
+const qcFailText=(t)=>(t.results||[]).filter(r=>r.status!=='Pass').map(r=>`${r.name} ${r.value}${r.unit?' '+r.unit:''} (limit ${qcLimit(r)})`).join('; ');
+const qcHoursSince=(iso)=>iso?(Date.now()-new Date(iso).getTime())/3600000:0;
+const qcNeedsAction=(t,S)=>{
+  if(t.alert_ack_at) return false;
+  if(t.status==='Fail') return true;
+  return !!S.alert_on_warning&&t.status==='Warning';
+};
+
+// Which open quality alerts should this person see?
+const qcAlertsFor=(tests,S,employeeId,role)=>{
+  if(!S.enabled||!S.show_tasks) return [];
+  const me=(employeeId===null||employeeId===undefined)?'':String(employeeId);
+  const people=(S.person_ids||[]).map(String);
+  const out=[];
+  tests.forEach(t=>{
+    if(!qcNeedsAction(t,S)) return;
+    const hrs=qcHoursSince(t.created_at);
+    let as=null;
+    if(me&&people.includes(me)) as='assignee';
+    else if(role==='director'&&S.notify_director&&hrs>=(Number(S.director_after_hours)||0)) as='director';
+    if(as) out.push({t,hrs,as});
+  });
+  return out.sort((a,b)=>String(b.t.created_at).localeCompare(String(a.t.created_at)));
+};
+
+// Same parameter failing several tests in a row for one product (tests must be newest first).
+const qcRepeatFails=(tests,S)=>{
+  const need=Math.max(2,Number(S.repeat_count)||3);
+  const by={};
+  tests.forEach(t=>{ (by[t.product_id]=by[t.product_id]||[]).push(t); });
+  const out=[];
+  Object.keys(by).forEach(pid=>{
+    const list=by[pid]; const latest=list[0]; if(!latest) return;
+    (latest.results||[]).forEach(r=>{
+      let n=0;
+      for(const t of list){
+        const x=(t.results||[]).find(z=>String(z.pid)===String(r.pid));
+        if(!x) continue;
+        if(x.status==='Fail') n++; else break;
+      }
+      if(n>=need) out.push({product_id:pid,product_name:latest.product_name,param:r.name,n,last:latest.test_date});
+    });
+  });
+  return out;
+};
+
+// Products not tested for longer than their "test at least every N days" setting.
+const qcOverdue=(qprods,tests,products)=>{
+  const out=[];
+  qprods.forEach(q=>{
+    const gap=Number(q.max_gap_days)||0; if(gap<=0) return;
+    const last=tests.filter(t=>String(t.product_id)===String(q.product_id)).map(t=>t.test_date).sort().pop();
+    const base=last||(q.created_at||'').slice(0,10)||today;
+    const since=-daysUntil(base);
+    if(since>gap){
+      const p=products.find(x=>String(x.id)===String(q.product_id));
+      out.push({name:p?p.product_name:'(removed product)',since,gap,last});
+    }
+  });
+  return out;
+};
+
+async function qcAlertData(){
+  const S=await loadQcSettings();
+  if(!S.enabled) return {S,open:[],repeats:[],overdue:[]};
+  const since=licShift(today,-60);
+  const [open,recent,qp,pm]=await Promise.all([
+    sb.from('qc_tests').select('*').is('alert_ack_at',null).in('status',['Fail','Warning']).order('created_at',{ascending:false}).limit(100).then(repMust),
+    sb.from('qc_tests').select('*').gte('test_date',since).order('test_date',{ascending:false}).order('created_at',{ascending:false}).limit(600).then(repMust),
+    sb.from('qc_products').select('*').eq('is_active',true).then(repMust),
+    sb.from('product_master').select('id,product_name').then(repMust),
+  ]);
+  return {S,
+    open:open.filter(t=>qcNeedsAction(t,S)),
+    repeats:S.repeat_alert?qcRepeatFails(recent,S):[],
+    overdue:S.overdue_alert?qcOverdue(qp,recent,pm):[]};
+}
+
+async function qcTaskCount(employeeId,role){
+  const S=await loadQcSettings();
+  if(!S.enabled||!S.show_tasks) return 0;
+  const {data,error}=await sb.from('qc_tests').select('*').is('alert_ack_at',null).in('status',['Fail','Warning']).limit(100);
+  if(error) return 0;
+  return qcAlertsFor(data||[],S,employeeId,role).length;
+}
+
+async function qcAcknowledge(t,disposition,note){
+  const {data:{user}}=await sb.auth.getUser();
+  const {data,error}=await sb.from('qc_tests').update({alert_ack_by:user?.email||null,alert_ack_at:new Date().toISOString(),alert_ack_note:(note||'').trim()||null,disposition}).eq('id',t.id).is('alert_ack_at',null).select();
+  if(error){ alert(error.message); return false; }
+  if(!data||!data.length){ alert('This result was already acknowledged by someone else.'); return false; }
+  logActivity('Quality Control','update',`Acknowledged ${t.status} — ${t.product_name} ${t.test_date}: ${disposition}`);
+  return true;
+}
+
+function QcAckBox({t,onDone}){
+  const [disp,setDisp]=useState('');
+  const [note,setNote]=useState('');
+  const [busy,setBusy]=useState(false);
+  const submit=async()=>{
+    if(!disp) return alert('Choose what action is being taken.');
+    if((disp==='Release with approval'||disp==='No action needed')&&!note.trim()) return alert('A short note is required for this action — say who approved it, or why no action is needed.');
+    setBusy(true); const ok=await qcAcknowledge(t,disp,note); setBusy(false);
+    if(ok&&onDone) onDone();
+  };
+  return(<div style={{marginTop:10,padding:'10px 12px',borderRadius:6,background:'var(--surface2)',border:'1px solid var(--border)'}}>
+    <div className="form-label" style={{marginBottom:6}}>Acknowledge &amp; record the action taken</div>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+      <select style={{width:210}} value={disp} onChange={e=>setDisp(e.target.value)}>
+        <option value="">-- Action taken --</option>
+        {QC_DISPOSITIONS.map(d=><option key={d}>{d}</option>)}
+      </select>
+      <input style={{flex:1,minWidth:200}} placeholder="Note (what was done / who approved)" value={note} onChange={e=>setNote(e.target.value)}/>
+      <button className="btn btn-green btn-sm" onClick={submit} disabled={busy}>{busy?'Saving…':'✓ Acknowledge'}</button>
+    </div>
+  </div>);
+}
+
+// Shown at the top of My Tasks.
+function QcAlerts({employeeId,role,onChanged}){
+  const [list,setList]=useState([]);
+  const [overdue,setOverdue]=useState([]);
+  const [repeats,setRepeats]=useState([]);
+  const load=useCallback(async()=>{
+    try{
+      const d=await qcAlertData();
+      if(!d.S.enabled||!d.S.show_tasks){ setList([]); setOverdue([]); setRepeats([]); return; }
+      setList(qcAlertsFor(d.open,d.S,employeeId,role));
+      const mine=(d.S.person_ids||[]).map(String).includes(String(employeeId??''))||role==='director';
+      setOverdue(mine?d.overdue:[]); setRepeats(mine?d.repeats:[]);
+    }catch(e){ console.error('Quality alerts failed:',e.message); }
+  },[employeeId,role]);
+  useEffect(()=>{load();},[load]);
+  if(list.length+overdue.length+repeats.length===0) return null;
+  return(<div style={{marginBottom:24}}>
+    <div className="section-label">Quality alerts ({list.length+overdue.length+repeats.length})</div>
+    {list.map(a=>{
+      const t=a.t; const col=QC_COL[t.status]||'var(--amber)';
+      const who=a.as==='assignee'?'You are assigned to handle quality alerts.':`Escalated to the Director — not acknowledged for ${Math.floor(a.hrs)} hour${Math.floor(a.hrs)===1?'':'s'}.`;
+      return(<div key={t.id} className="card" style={{marginBottom:12,borderLeft:`4px solid ${col}`}}>
+        <div style={{fontSize:15,fontWeight:600}}>🧪 {t.status==='Fail'?'FAILED':'Warning'}: {t.product_name}{t.batch_no?` · batch ${t.batch_no}`:''}</div>
+        <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{t.test_date}{t.test_time?' '+t.test_time:''} · {t.sample_type||'—'} · tested by {(t.tested_by||'—').split('@')[0]}</div>
+        <div style={{fontSize:13,marginTop:6,color:col,fontWeight:500}}>{qcFailText(t)}</div>
+        <div style={{fontSize:12,marginTop:4}}>{who}</div>
+        <QcAckBox t={t} onDone={()=>{ load(); if(onChanged) onChanged(); }}/>
+      </div>);
+    })}
+    {repeats.map((r,i)=>(<div key={'rp'+i} className="card" style={{marginBottom:12,borderLeft:'4px solid var(--red)'}}>
+      <div style={{fontSize:14,fontWeight:600}}>📉 Repeated failure: {r.product_name} — {r.param}</div>
+      <div style={{fontSize:12,marginTop:4}}>Failed the last {r.n} tests in a row (latest {r.last}). Check the process, not just the batch.</div>
+    </div>))}
+    {overdue.map((o,i)=>(<div key={'od'+i} className="card" style={{marginBottom:12,borderLeft:'4px solid var(--amber)'}}>
+      <div style={{fontSize:14,fontWeight:600}}>⏰ Test overdue: {o.name}</div>
+      <div style={{fontSize:12,marginTop:4}}>{o.last?`Last tested ${o.last}`:'Never tested'} — {o.since} days ago, but it should be tested at least every {o.gap} day{o.gap===1?'':'s'}.</div>
+    </div>))}
+  </div>);
+}
+
+// Shown on the Dashboard.
+function QcDashboardAlerts(){
+  const [d,setD]=useState(null);
+  useEffect(()=>{(async()=>{
+    try{ const x=await qcAlertData(); if(x.S.enabled&&x.S.show_dashboard) setD(x); }catch(e){}
+  })();},[]);
+  if(!d) return null;
+  return <>
+    {d.open.map(t=>(
+      <Alert key={t.id} type={t.status==='Fail'?'red':'amber'} icon="🧪"
+        title={`Quality ${t.status==='Fail'?'FAILED':'warning'} — ${t.product_name}${t.batch_no?` (batch ${t.batch_no})`:''}, ${t.test_date}`}
+        sub={qcFailText(t)}/>
+    ))}
+    {d.repeats.map((r,i)=>(
+      <Alert key={'rp'+i} type="red" icon="📉" title={`Repeated quality failure — ${r.product_name}: ${r.param}`} sub={`Failed ${r.n} tests in a row (latest ${r.last}).`}/>
+    ))}
+    {d.overdue.map((o,i)=>(
+      <Alert key={'od'+i} type="amber" icon="⏰" title={`Quality test overdue — ${o.name}`} sub={`${o.last?`Last tested ${o.last}`:'Never tested'} (${o.since} days ago). Required at least every ${o.gap} day${o.gap===1?'':'s'}.`}/>
+    ))}
+  </>;
+}
+
+// Simple SVG trend chart with the pass band and limit lines.
+function QcTrendChart({points,min,max}){
+  if(points.length===0) return <div className="dim" style={{fontSize:13,padding:24,textAlign:'center'}}>No results for this selection in the chosen dates.</div>;
+  const W=720,H=280,L=54,R=16,T=14,B=34;
+  const vs=points.map(p=>p.value);
+  let lo=Math.min(...vs,...(min!==null?[min]:[])), hi=Math.max(...vs,...(max!==null?[max]:[]));
+  if(lo===hi){ lo-=1; hi+=1; }
+  const pad=(hi-lo)*0.12; lo-=pad; hi+=pad;
+  const x=(i)=>points.length===1?(L+(W-L-R)/2):L+i*(W-L-R)/(points.length-1);
+  const y=(v)=>T+(hi-v)/(hi-lo)*(H-T-B);
+  const ticks=[0,1,2,3,4].map(i=>lo+(hi-lo)*i/4);
+  const path=points.map((p,i)=>`${i===0?'M':'L'}${x(i).toFixed(1)} ${y(p.value).toFixed(1)}`).join(' ');
+  const xl=[0,Math.floor((points.length-1)/2),points.length-1].filter((v,i,a)=>a.indexOf(v)===i);
+  const lab={fontSize:10,fill:'var(--muted)',fontFamily:'var(--mono)'};
+  return(<div style={{overflowX:'auto'}}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:520,height:'auto'}}>
+      {min!==null&&max!==null&&<rect x={L} y={y(max)} width={W-L-R} height={Math.max(0,y(min)-y(max))} style={{fill:'var(--green)',opacity:0.09}}/>}
+      {ticks.map((tv,i)=>(<g key={i}>
+        <line x1={L} x2={W-R} y1={y(tv)} y2={y(tv)} style={{stroke:'var(--border)'}}/>
+        <text x={L-6} y={y(tv)+4} textAnchor="end" style={lab}>{Number(tv.toFixed(2))}</text>
+      </g>))}
+      {max!==null&&<line x1={L} x2={W-R} y1={y(max)} y2={y(max)} style={{stroke:'var(--red)',strokeDasharray:'5 4',strokeWidth:1.5}}/>}
+      {min!==null&&<line x1={L} x2={W-R} y1={y(min)} y2={y(min)} style={{stroke:'var(--red)',strokeDasharray:'5 4',strokeWidth:1.5}}/>}
+      <path d={path} style={{fill:'none',stroke:'var(--blue)',strokeWidth:1.5}}/>
+      {points.map((p,i)=>(<circle key={i} cx={x(i)} cy={y(p.value)} r={4.5} style={{fill:QC_COL[p.status]||'var(--blue)',stroke:'var(--surface)',strokeWidth:1.5}}>
+        <title>{`${p.date} · ${p.value} · ${p.status}${p.batch?' · batch '+p.batch:''}`}</title>
+      </circle>))}
+      {xl.map(i=>(<text key={i} x={x(i)} y={H-10} textAnchor={i===0?'start':i===points.length-1?'end':'middle'} style={lab}>{points[i].date}</text>))}
+    </svg>
+  </div>);
+}
+
+// ══════════════════════════════════════════════════════════
+// QUALITY CONTROL PAGE (chemist)
+// ══════════════════════════════════════════════════════════
+function QualityControl({role,employeeId,userEmail}){
+  const presets=reportPresets();
+  const [tab,setTab]=useState(ax('quality','enter')?'record':'log');
+  const [from,setFrom]=useState(monthStart);
+  const [to,setTo]=useState(today);
+  const [tests,setTests]=useState([]);
+  const [qprods,setQprods]=useState([]);
+  const [products,setProducts]=useState([]);
+  const [specs,setSpecs]=useState([]);
+  const [params,setParams]=useState([]);
+  const [S,setS]=useState(QC_DEFAULTS);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [msg,setMsg]=useState('');
+  const [saving,setSaving]=useState(false);
+  const blank={test_date:today,test_time:new Date().toTimeString().slice(0,5),product_id:'',sample_type:QC_SAMPLE_TYPES[0],batch_no:'',source:'',notes:''};
+  const [form,setForm]=useState(blank);
+  const [vals,setVals]=useState({});
+  const [editingId,setEditingId]=useState(null);
+  const [editSnap,setEditSnap]=useState(null);
+  const [open,setOpen]=useState(null);
+  const [fProduct,setFProduct]=useState('All');
+  const [fStatus,setFStatus]=useState('All');
+  const [search,setSearch]=useState('');
+  const [tp,setTp]=useState('');
+  const [tparam,setTparam]=useState('');
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const loadConfig=useCallback(async()=>{
+    try{
+      const [qp,sp,pa,pm,cfg]=await Promise.all([
+        sb.from('qc_products').select('*').eq('is_active',true).then(repMust),
+        sb.from('qc_specs').select('*').then(repMust),
+        sb.from('qc_parameters').select('*').order('created_at').then(repMust),
+        sb.from('product_master').select('id,product_name').then(repMust),
+        loadQcSettings(),
+      ]);
+      setQprods(qp); setSpecs(sp); setParams(pa); setProducts(pm); setS(cfg); setErr('');
+    }catch(e){ setErr((e.message||String(e))+' — have you run the SQL for Quality Control?'); }
+  },[]);
+  const loadTests=useCallback(async()=>{
+    if(!from||!to||from>to){ setTests([]); return; }
+    try{
+      const rows=await fetchAllRows((a,b)=>sb.from('qc_tests').select('*').gte('test_date',from).lte('test_date',to).order('test_date',{ascending:false}).order('created_at',{ascending:false}).order('id').range(a,b));
+      setTests(rows);
+    }catch(e){ setErr((e.message||String(e))+' — have you run the SQL for Quality Control?'); }
+  },[from,to]);
+  useEffect(()=>{ (async()=>{ setLoading(true); await loadConfig(); setLoading(false); })(); },[loadConfig]);
+  useEffect(()=>{ loadTests(); },[loadTests]);
+
+  const flash=(t)=>{ setMsg(t); setTimeout(()=>setMsg(''),4000); };
+  const pname=(id)=>{ const p=products.find(x=>String(x.id)===String(id)); return p?p.product_name:'(removed product)'; };
+  const prodOptions=qprods.map(q=>({id:String(q.product_id),name:pname(q.product_id)})).sort((a,b)=>a.name.localeCompare(b.name));
+  const paramById=(id)=>params.find(x=>String(x.id)===String(id));
+  const specRows=(pid)=>specs.filter(s=>String(s.product_id)===String(pid)).map(s=>({s,p:paramById(s.parameter_id)})).filter(x=>x.p&&x.p.is_active!==false)
+    .sort((a,b)=>String(a.p.created_at).localeCompare(String(b.p.created_at)))
+    .map(({s,p})=>({pid:String(p.id),name:p.name,unit:p.unit||'',min:qcNum(s.min_value),max:qcNum(s.max_value),warn_pct:Number(s.warn_pct)||0,required:s.required!==false}));
+  const rowsNow=editingId?(editSnap||[]):(form.product_id?specRows(form.product_id):[]);
+  const evald=rowsNow.map(r=>({r,st:qcEval(vals[r.pid],r)}));
+  const filled=evald.filter(x=>x.st!==null);
+  const overall=filled.length?qcOverall(filled.map(x=>({status:x.st}))):null;
+
+  const myId=String(employeeId??'');
+  const isAssignee=!!myId&&(S.person_ids||[]).map(String).includes(myId);
+  const canRecord=ax('quality','enter')||!!editingId;
+
+  const resetForm=()=>{ setForm(blank); setVals({}); setEditingId(null); setEditSnap(null); };
+
+  const save=async()=>{
+    if(!form.product_id) return alert('Select a product.');
+    if(!form.test_date||form.test_date>today) return alert('Choose a valid test date (not in the future).');
+    if(rowsNow.length===0) return alert('No parameters are set for this product. Ask the manager to add them in Quality Settings.');
+    const bad=rowsNow.filter(r=>String(vals[r.pid]??'').trim()!==''&&qcNum(vals[r.pid])===null).map(r=>r.name);
+    if(bad.length) return alert('Not a valid number: '+bad.join(', ')+'.');
+    const missing=rowsNow.filter(r=>r.required&&qcEval(vals[r.pid],r)===null).map(r=>r.name);
+    if(missing.length) return alert('Enter a value for: '+missing.join(', ')+'.');
+    const results=rowsNow.filter(r=>qcEval(vals[r.pid],r)!==null).map(r=>({pid:r.pid,name:r.name,unit:r.unit,value:Number(vals[r.pid]),min:r.min,max:r.max,warn_pct:r.warn_pct,status:qcEval(vals[r.pid],r)}));
+    if(results.length===0) return alert('Enter at least one result.');
+    const status=qcOverall(results);
+    const batch=form.batch_no.trim();
+    if(!editingId&&batch&&tests.some(t=>String(t.product_id)===String(form.product_id)&&t.batch_no===batch&&t.test_date===form.test_date)&&!confirm(`A test for ${pname(form.product_id)}, batch "${batch}" is already recorded on ${form.test_date}. Save another one anyway?`)) return;
+    if(status==='Fail'){
+      const n=(S.person_ids||[]).length;
+      if(!confirm(`This result FAILS the limits:\n\n${results.filter(r=>r.status==='Fail').map(r=>`• ${r.name}: ${r.value}${r.unit?' '+r.unit:''} (limit ${qcLimit(r)})`).join('\n')}\n\nA quality alert will be raised${S.enabled&&n>0?` for ${n} assigned person${n===1?'':'s'}`:''}. Save?`)) return;
+    }
+    setSaving(true);
+    const payload={test_date:form.test_date,test_time:form.test_time||null,product_id:String(form.product_id),product_name:pname(form.product_id),sample_type:form.sample_type,batch_no:batch||null,source:form.source.trim()||null,notes:form.notes.trim()||null,results,status};
+    const res=editingId
+      ?await sb.from('qc_tests').update({...payload,edited_by:userEmail||null,edited_at:new Date().toISOString()}).eq('id',editingId)
+      :await sb.from('qc_tests').insert({...payload,tested_by:userEmail||null});
+    setSaving(false);
+    if(res.error) return alert(res.error.message);
+    logActivity('Quality Control',editingId?'update':'create',`${editingId?'Edited':'Recorded'} test — ${payload.product_name}${batch?' batch '+batch:''}: ${status}`);
+    const keep={...blank,product_id:form.product_id,sample_type:form.sample_type,test_date:form.test_date};
+    const wasEdit=!!editingId;
+    setForm(keep); setVals({}); setEditingId(null); setEditSnap(null);
+    flash(`Saved — ${status==='Pass'?'all within limits ✓':status==='Warning'?'passed, but close to a limit ⚠':'FAILED — alert raised'}.`);
+    await loadTests();
+    if(wasEdit) setTab('log');
+  };
+
+  const startEdit=(t)=>{
+    setEditingId(t.id);
+    setEditSnap((t.results||[]).map(r=>({pid:String(r.pid),name:r.name,unit:r.unit||'',min:qcNum(r.min),max:qcNum(r.max),warn_pct:Number(r.warn_pct)||0,required:true})));
+    const v={}; (t.results||[]).forEach(r=>{ v[String(r.pid)]=String(r.value); });
+    setVals(v);
+    setForm({test_date:t.test_date,test_time:t.test_time||'',product_id:String(t.product_id),sample_type:t.sample_type||QC_SAMPLE_TYPES[0],batch_no:t.batch_no||'',source:t.source||'',notes:t.notes||''});
+    setTab('record'); if(window.scrollTo) window.scrollTo(0,0);
+  };
+
+  const del=async(t)=>{
+    if(!confirm(`Delete the ${t.status} test for ${t.product_name}${t.batch_no?' batch '+t.batch_no:''} on ${t.test_date}? This cannot be undone.`)) return;
+    const {error}=await sb.from('qc_tests').delete().eq('id',t.id);
+    if(error) return alert(error.message);
+    logActivity('Quality Control','delete',`Deleted test — ${t.product_name} ${t.test_date} (${t.status})`);
+    loadTests();
+  };
+
+  if(loading) return <Loading/>;
+
+  // ── log filtering and numbers ──
+  const q=search.trim().toLowerCase();
+  const shown=tests.filter(t=>
+    (fProduct==='All'||String(t.product_id)===fProduct)&&
+    (fStatus==='All'||(fStatus==='Open'?qcNeedsAction(t,S):t.status===fStatus))&&
+    (!q||`${t.batch_no||''} ${t.product_name||''} ${t.tested_by||''} ${t.source||''}`.toLowerCase().includes(q)));
+  const nPass=tests.filter(t=>t.status==='Pass').length;
+  const nWarn=tests.filter(t=>t.status==='Warning').length;
+  const nFail=tests.filter(t=>t.status==='Fail').length;
+  const nOpen=tests.filter(t=>qcNeedsAction(t,S)).length;
+  const logProducts=Array.from(new Map(tests.map(t=>[String(t.product_id),t.product_name])).entries());
+
+  const csv=()=>{
+    const names=[]; shown.forEach(t=>(t.results||[]).forEach(r=>{ if(!names.includes(r.name)) names.push(r.name); }));
+    downloadCSV(`quality_tests_${from}_to_${to}.csv`,
+      ['Date','Time','Product','Batch','Sample type','Source','Result',...names,'Tested by','Action taken','Notes'],
+      shown.map(t=>[t.test_date,t.test_time||'',t.product_name,t.batch_no||'',t.sample_type||'',t.source||'',t.status,
+        ...names.map(n=>{ const r=(t.results||[]).find(x=>x.name===n); return r?r.value:''; }),
+        t.tested_by||'',t.disposition||'',t.notes||'']));
+  };
+
+  // ── trends ──
+  const tProd=tp||(prodOptions[0]?prodOptions[0].id:'');
+  const tTests=tests.filter(t=>String(t.product_id)===tProd).slice().sort((a,b)=>(a.test_date+(a.test_time||'')+(a.created_at||'')).localeCompare(b.test_date+(b.test_time||'')+(b.created_at||'')));
+  const tParams=[]; tTests.forEach(t=>(t.results||[]).forEach(r=>{ if(!tParams.some(x=>x.pid===String(r.pid))) tParams.push({pid:String(r.pid),name:r.name,unit:r.unit}); }));
+  const tPid=tParams.some(x=>x.pid===tparam)?tparam:(tParams[0]?tParams[0].pid:'');
+  const pts=tTests.map(t=>{ const r=(t.results||[]).find(z=>String(z.pid)===tPid); return r?{date:t.test_date,value:Number(r.value),status:r.status,batch:t.batch_no,min:qcNum(r.min),max:qcNum(r.max)}:null; }).filter(Boolean);
+  const lastPt=pts[pts.length-1];
+  const tmin=lastPt?lastPt.min:null, tmax=lastPt?lastPt.max:null;
+  const mean=pts.length?pts.reduce((s,p)=>s+p.value,0)/pts.length:0;
+  const sd=pts.length>1?Math.sqrt(pts.reduce((s,p)=>s+(p.value-mean)*(p.value-mean),0)/(pts.length-1)):0;
+  const inSpec=pts.length?pts.filter(p=>p.status!=='Fail').length/pts.length*100:null;
+  let cpk=null;
+  if(pts.length>=5&&sd>0){ const a=[]; if(tmax!==null) a.push((tmax-mean)/(3*sd)); if(tmin!==null) a.push((mean-tmin)/(3*sd)); if(a.length) cpk=Math.min(...a); }
+  const tUnit=(tParams.find(x=>x.pid===tPid)||{}).unit||'';
+
+  const detail=(t)=>{
+    const needs=qcNeedsAction(t,S);
+    return(<div style={{padding:'6px 4px'}}>
+      <table style={{marginBottom:8}}>
+        <thead><tr><th>Parameter</th><th>Result</th><th>Limit</th><th>Status</th></tr></thead>
+        <tbody>
+          {(t.results||[]).map((r,i)=>(<tr key={i}>
+            <td><strong>{r.name}</strong></td>
+            <td className="mono" style={{fontWeight:600,color:QC_COL[r.status]}}>{r.value}{r.unit?' '+r.unit:''}</td>
+            <td className="mono dim">{qcLimit(r)}</td>
+            <td><span className={`badge ${QC_BADGE[r.status]||'badge-muted'}`}>{r.status}</span></td>
+          </tr>))}
+        </tbody>
+      </table>
+      <div style={{fontSize:12,color:'var(--muted)'}}>
+        {t.source&&<span>Source: {t.source} · </span>}Recorded by {t.tested_by||'—'}{t.created_at?` on ${new Date(t.created_at).toLocaleString('en-IN')}`:''}{t.edited_by?` · edited by ${t.edited_by}`:''}
+      </div>
+      {t.notes&&<div style={{fontSize:13,marginTop:6,whiteSpace:'pre-wrap'}}><strong>Notes:</strong> {t.notes}</div>}
+      {t.alert_ack_at&&t.status!=='Pass'&&<div style={{fontSize:12,marginTop:6,color:'var(--green)'}}>✓ Acknowledged by {t.alert_ack_by||'—'} on {new Date(t.alert_ack_at).toLocaleString('en-IN')} — <strong>{t.disposition||'—'}</strong>{t.alert_ack_note?`: ${t.alert_ack_note}`:''}</div>}
+      {needs&&(ax('quality','ack')||isAssignee||role==='director')&&<QcAckBox t={t} onDone={()=>{ loadTests(); }}/>}
+      <div style={{display:'flex',gap:6,marginTop:10}}>
+        {ax('quality','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(t)}>Edit</button>}
+        {ax('quality','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(t)}>Delete</button>}
+      </div>
+    </div>);
+  };
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">Laboratory</div>
+      <div className="page-title">Quality control</div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load Quality Control" sub={err}/>}
+    {msg&&<Alert type="green" icon="✓" title={msg}/>}
+
+    <div className="stat-grid">
+      <StatCard label="Tests in period" value={tests.length} col="var(--blue)"/>
+      <StatCard label="Pass rate" value={tests.length?Math.round(nPass/tests.length*100)+'%':'—'} sub={`${nPass} passed`} col="var(--green)"/>
+      <StatCard label="Warnings" value={nWarn} col={nWarn>0?'var(--amber)':'var(--green)'}/>
+      <StatCard label="Failed" value={nFail} col={nFail>0?'var(--red)':'var(--green)'}/>
+      <StatCard label="Awaiting action" value={nOpen} col={nOpen>0?'var(--red)':'var(--green)'}/>
+    </div>
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:16}}>
+      {canRecord&&<button className={`btn btn-sm ${tab==='record'?'btn-amber':'btn-ghost'}`} onClick={()=>setTab('record')}>{editingId?'Editing a test':'+ Record test'}</button>}
+      <button className={`btn btn-sm ${tab==='log'?'btn-amber':'btn-ghost'}`} onClick={()=>setTab('log')}>Test log</button>
+      <button className={`btn btn-sm ${tab==='trends'?'btn-amber':'btn-ghost'}`} onClick={()=>setTab('trends')}>Trends</button>
+    </div>
+
+    {tab==='record'&&canRecord&&(<div className="card" style={{marginBottom:16,borderLeft:`3px solid ${overall?QC_COL[overall]:'var(--blue)'}`}}>
+      <div className="section-label">{editingId?'Edit test result':'New quality test'}</div>
+      {prodOptions.length===0&&<Alert type="amber" icon="⚠" title="No products are available for quality testing yet" sub="The manager must choose products and set their parameters in Settings → Quality Settings."/>}
+      <div className="form-grid">
+        <Field label="Test date"><input type="date" className="form-input" value={form.test_date} max={today} onChange={e=>f('test_date',e.target.value)}/></Field>
+        <Field label="Time"><input type="time" className="form-input" value={form.test_time} onChange={e=>f('test_time',e.target.value)}/></Field>
+        <Field label="Product ★">
+          <select className="form-input" value={form.product_id} disabled={!!editingId} onChange={e=>{ f('product_id',e.target.value); setVals({}); }}>
+            <option value="">-- Select product --</option>
+            {editingId&&form.product_id&&!prodOptions.some(o=>o.id===form.product_id)&&<option value={form.product_id}>{pname(form.product_id)}</option>}
+            {prodOptions.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Sample type"><select className="form-input" value={form.sample_type} onChange={e=>f('sample_type',e.target.value)}>{QC_SAMPLE_TYPES.map(s=><option key={s}>{s}</option>)}</select></Field>
+        <Field label="Batch / lot no."><input className="form-input" value={form.batch_no} onChange={e=>f('batch_no',e.target.value.toUpperCase())}/></Field>
+        <Field label="Source (line / silo / bin)"><input className="form-input" value={form.source} onChange={e=>f('source',e.target.value)}/></Field>
+      </div>
+
+      {form.product_id&&rowsNow.length===0&&<div style={{marginTop:12,fontSize:13,color:'var(--red)'}}>No parameters are set for this product. Ask the manager to add them in Quality Settings.</div>}
+
+      {rowsNow.length>0&&(<div style={{marginTop:14}}>
+        <TableWrap><table>
+          <thead><tr><th>Parameter</th><th>Limit</th><th>Result</th><th>Status</th></tr></thead>
+          <tbody>
+            {evald.map(({r,st})=>(<tr key={r.pid}>
+              <td><strong>{r.name}</strong>{r.required&&<span style={{color:'var(--red)'}}> ★</span>}{r.unit&&<span className="dim"> ({r.unit})</span>}</td>
+              <td className="mono dim">{qcLimit(r)}</td>
+              <td><input type="number" step="any" className="form-input" style={{width:150,fontWeight:600,borderColor:st?QC_COL[st]:undefined}} value={vals[r.pid]??''} onChange={e=>setVals(p=>({...p,[r.pid]:e.target.value}))}/></td>
+              <td>{st?<span className={`badge ${QC_BADGE[st]}`}>{st}</span>:<span className="dim">—</span>}</td>
+            </tr>))}
+          </tbody>
+        </table></TableWrap>
+        {overall&&<div style={{marginTop:12,padding:'10px 14px',borderRadius:6,fontWeight:600,color:QC_COL[overall],background:`color-mix(in srgb, ${QC_COL[overall]} 10%, transparent)`,border:`1px solid color-mix(in srgb, ${QC_COL[overall]} 30%, transparent)`}}>
+          Overall: {overall==='Pass'?'✓ All within limits':overall==='Warning'?'⚠ Within limits, but close to a limit':'✕ FAIL — outside limits (an alert will be raised)'}
+        </div>}
+        <div style={{marginTop:12}}><Field label="Notes (optional)"><textarea className="form-input" rows={2} value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field></div>
+        <div className="form-actions">
+          <button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':editingId?'Save changes':'Save result'}</button>
+          <button className="btn btn-ghost" onClick={()=>{ const was=!!editingId; resetForm(); if(was) setTab('log'); }}>{editingId?'Cancel edit':'Clear'}</button>
+        </div>
+      </div>)}
+    </div>)}
+
+    {tab!=='record'&&(<div className="card" style={{marginBottom:16,display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+      <Field label="From"><input type="date" className="form-input" style={{width:160}} max={today} value={from} onChange={e=>setFrom(e.target.value)}/></Field>
+      <Field label="To"><input type="date" className="form-input" style={{width:160}} max={today} value={to} onChange={e=>setTo(e.target.value)}/></Field>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        {presets.map(p=><button key={p.label} className="btn btn-ghost btn-sm" onClick={()=>{setFrom(p.from);setTo(p.to);}}>{p.label}</button>)}
+      </div>
+    </div>)}
+
+    {tab==='log'&&(<>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:12}}>
+        {['All','Pass','Warning','Fail','Open'].map(s=><button key={s} className={`btn btn-sm ${fStatus===s?'btn-amber':'btn-ghost'}`} onClick={()=>setFStatus(s)}>{s==='Open'?'Needs action':s}</button>)}
+        <select style={{width:200}} value={fProduct} onChange={e=>setFProduct(e.target.value)}>
+          <option value="All">All products</option>
+          {logProducts.map(([id,name])=><option key={id} value={id}>{name}</option>)}
+        </select>
+        <input style={{width:200}} placeholder="Search batch, product…" value={search} onChange={e=>setSearch(e.target.value)}/>
+        {ax('quality','download')&&<button className="btn btn-ghost btn-sm" onClick={csv} disabled={shown.length===0}>⬇ Download CSV</button>}
+      </div>
+      <TableWrap><table>
+        <thead><tr><th>Date</th><th>Product</th><th>Batch</th><th>Result</th><th>Out of limits</th><th>By</th><th></th></tr></thead>
+        <tbody>
+          {shown.length===0&&<tr><td colSpan={7}><Empty msg="No tests in this view."/></td></tr>}
+          {shown.map(t=>{
+            const isOpen=open===t.id;
+            const bad=(t.results||[]).filter(r=>r.status!=='Pass');
+            const needs=qcNeedsAction(t,S);
+            return(<React.Fragment key={t.id}>
+              <tr style={{cursor:'pointer'}} onClick={()=>setOpen(isOpen?null:t.id)}>
+                <td className="mono dim">{t.test_date}{t.test_time?<div style={{fontSize:11}}>{t.test_time}</div>:null}</td>
+                <td><strong>{t.product_name}</strong><div className="dim" style={{fontSize:11}}>{t.sample_type||''}</div></td>
+                <td className="mono">{t.batch_no||'—'}</td>
+                <td>
+                  <span className={`badge ${QC_BADGE[t.status]||'badge-muted'}`}>{t.status}</span>
+                  {needs&&<div style={{fontSize:10,color:'var(--red)',marginTop:2}}>needs action</div>}
+                  {t.alert_ack_at&&t.status!=='Pass'&&<div style={{fontSize:10,color:'var(--green)',marginTop:2}}>✓ {t.disposition||'acknowledged'}</div>}
+                </td>
+                <td style={{fontSize:12}}>{bad.length?bad.map(r=>`${r.name} ${r.value}${r.unit?' '+r.unit:''}`).join(', '):<span className="dim">All within limits</span>}</td>
+                <td className="dim" style={{fontSize:12}}>{(t.tested_by||'—').split('@')[0]}</td>
+                <td className="dim">{isOpen?'▴':'▾'}</td>
+              </tr>
+              {isOpen&&<tr><td colSpan={7} style={{background:'var(--surface2)'}}>{detail(t)}</td></tr>}
+            </React.Fragment>);
+          })}
+        </tbody>
+      </table></TableWrap>
+    </>)}
+
+    {tab==='trends'&&(<>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+        <select style={{width:240}} value={tProd} onChange={e=>{ setTp(e.target.value); setTparam(''); }}>
+          {prodOptions.length===0&&<option value="">No products</option>}
+          {prodOptions.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}
+        </select>
+        <select style={{width:240}} value={tPid} onChange={e=>setTparam(e.target.value)}>
+          {tParams.length===0&&<option value="">No results yet</option>}
+          {tParams.map(x=><option key={x.pid} value={x.pid}>{x.name}{x.unit?` (${x.unit})`:''}</option>)}
+        </select>
+      </div>
+      <div className="card" style={{marginBottom:16}}>
+        <div className="section-label">Results over time — green band = within limits, dashed lines = limits</div>
+        <QcTrendChart points={pts} min={tmin} max={tmax}/>
+      </div>
+      {pts.length>0&&(<div className="stat-grid">
+        <StatCard label="Results" value={pts.length} col="var(--blue)"/>
+        <StatCard label="Average" value={Number(mean.toFixed(3))+(tUnit?' '+tUnit:'')} col="var(--amber)"/>
+        <StatCard label="Std deviation" value={Number(sd.toFixed(3))} sub="lower = more consistent" col="var(--purple)"/>
+        <StatCard label="Within limits" value={inSpec===null?'—':inSpec.toFixed(0)+'%'} col={inSpec!==null&&inSpec<95?'var(--red)':'var(--green)'}/>
+        <StatCard label="Cpk" value={cpk===null?'—':cpk.toFixed(2)} sub={cpk===null?'needs 5+ results and a limit':cpk>=1.33?'capable process':cpk>=1?'marginal':'not capable'} col={cpk===null?'var(--muted)':cpk>=1.33?'var(--green)':cpk>=1?'var(--amber)':'var(--red)'}/>
+      </div>)}
+    </>)}
+  </div>);
+}
+
+// ══════════════════════════════════════════════════════════
+// QUALITY SETTINGS (parameters, products + limits, alert rules)
+// ══════════════════════════════════════════════════════════
+function QualitySettings(){
+  const [params,setParams]=useState([]);
+  const [qprods,setQprods]=useState([]);
+  const [specs,setSpecs]=useState([]);
+  const [products,setProducts]=useState([]);
+  const [emps,setEmps]=useState([]);
+  const [appUsers,setAppUsers]=useState([]);
+  const [S,setS]=useState(QC_DEFAULTS);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [pForm,setPForm]=useState({name:'',unit:''});
+  const [pEdit,setPEdit]=useState(null);
+  const [addPid,setAddPid]=useState('');
+  const [openPid,setOpenPid]=useState(null);
+  const [draft,setDraft]=useState({});
+  const [gap,setGap]=useState('0');
+  const [copyFrom,setCopyFrom]=useState('');
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+  const flash=(t)=>{ setMsg(t); setTimeout(()=>setMsg(''),3000); };
+
+  const load=useCallback(async()=>{
+    try{
+      const [pa,qp,sp,pm,cfg,e,au]=await Promise.all([
+        sb.from('qc_parameters').select('*').order('created_at').then(repMust),
+        sb.from('qc_products').select('*').order('created_at').then(repMust),
+        sb.from('qc_specs').select('*').then(repMust),
+        sb.from('product_master').select('id,product_name,category,is_active').order('product_name').then(repMust),
+        loadQcSettings(),
+        sb.from(EMP_TABLE).select('*').range(0,4999),
+        sb.from('app_users').select('*'),
+      ]);
+      setParams(pa); setQprods(qp); setSpecs(sp); setProducts(pm); setS(cfg);
+      setEmps((e.data||[]).filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b))));
+      setAppUsers(au.data||[]); setErr('');
+    }catch(ex){ setErr((ex.message||String(ex))+' — have you run the SQL for Quality Control?'); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const pname=(id)=>{ const p=products.find(x=>String(x.id)===String(id)); return p?p.product_name:'(removed product)'; };
+
+  // ── 1. parameters ──
+  const saveParam=async()=>{
+    const name=pForm.name.trim();
+    if(!name) return alert('Enter a parameter name.');
+    if(params.some(x=>x.id!==pEdit&&x.name.toLowerCase()===name.toLowerCase())) return alert('A parameter with this name already exists.');
+    setBusy(true);
+    const row={name,unit:pForm.unit.trim()||null};
+    const {error}=pEdit?await sb.from('qc_parameters').update(row).eq('id',pEdit):await sb.from('qc_parameters').insert(row);
+    setBusy(false);
+    if(error) return alert(error.message);
+    logActivity('Quality Settings',pEdit?'update':'create',`Parameter — ${name}${row.unit?' ('+row.unit+')':''}`);
+    setPForm({name:'',unit:''}); setPEdit(null); load();
+  };
+  const toggleParam=async(p)=>{
+    const {error}=await sb.from('qc_parameters').update({is_active:!(p.is_active!==false)}).eq('id',p.id);
+    if(error) return alert(error.message);
+    logActivity('Quality Settings','update',`Parameter ${p.name} ${p.is_active!==false?'deactivated':'activated'}`);
+    load();
+  };
+  const delParam=async(p)=>{
+    const used=specs.filter(x=>String(x.parameter_id)===String(p.id)).length;
+    if(!confirm(`Delete "${p.name}"?${used?`\n\nIt is used in the limits of ${used} product${used===1?'':'s'}; those limits will be removed too.`:''}\n\nPast test results keep their recorded values. To simply stop using it, set it Inactive instead.`)) return;
+    setBusy(true);
+    await sb.from('qc_specs').delete().eq('parameter_id',String(p.id));
+    const {error}=await sb.from('qc_parameters').delete().eq('id',p.id);
+    setBusy(false);
+    if(error) return alert(error.message);
+    logActivity('Quality Settings','delete',`Parameter deleted — ${p.name}`);
+    load();
+  };
+
+  // ── 2. products + limits ──
+  const addProduct=async()=>{
+    if(!addPid) return alert('Choose a product to add.');
+    setBusy(true);
+    const {error}=await sb.from('qc_products').insert({product_id:String(addPid)});
+    setBusy(false);
+    if(error) return alert(error.message);
+    logActivity('Quality Settings','create',`Product added to Quality Control — ${pname(addPid)}`);
+    setAddPid(''); load();
+  };
+  const removeProduct=async(q)=>{
+    if(!confirm(`Remove "${pname(q.product_id)}" from Quality Control?\n\nIts limits are deleted. Past test results are kept.`)) return;
+    setBusy(true);
+    await sb.from('qc_specs').delete().eq('product_id',String(q.product_id));
+    const {error}=await sb.from('qc_products').delete().eq('id',q.id);
+    setBusy(false);
+    if(error) return alert(error.message);
+    logActivity('Quality Settings','delete',`Product removed from Quality Control — ${pname(q.product_id)}`);
+    if(openPid===String(q.product_id)) setOpenPid(null);
+    load();
+  };
+  const specToDraft=(sp)=>sp?{on:true,min:sp.min_value===null||sp.min_value===undefined?'':String(sp.min_value),max:sp.max_value===null||sp.max_value===undefined?'':String(sp.max_value),warn:String(sp.warn_pct??0),req:sp.required!==false}:{on:false,min:'',max:'',warn:'0',req:true};
+  const openProduct=(q)=>{
+    const pid=String(q.product_id); const d={};
+    params.forEach(p=>{ d[String(p.id)]=specToDraft(specs.find(x=>String(x.product_id)===pid&&String(x.parameter_id)===String(p.id))); });
+    setDraft(d); setGap(String(q.max_gap_days??0)); setOpenPid(pid); setCopyFrom('');
+  };
+  const setD=(pid,k,v)=>setDraft(p=>({...p,[pid]:{...p[pid],[k]:v}}));
+  const copyLimits=()=>{
+    if(!copyFrom) return;
+    setDraft(prev=>{
+      const n={...prev};
+      params.forEach(p=>{ const sp=specs.find(x=>String(x.product_id)===copyFrom&&String(x.parameter_id)===String(p.id)); if(sp) n[String(p.id)]=specToDraft(sp); });
+      return n;
+    });
+  };
+  const saveProduct=async(pid)=>{
+    const g=Number(gap);
+    if(!Number.isInteger(g)||g<0||g>60) return alert('"Test at least every N days" must be a whole number from 0 to 60 (0 = no reminder).');
+    const on=params.filter(p=>draft[String(p.id)]&&draft[String(p.id)].on);
+    for(const p of on){
+      const d=draft[String(p.id)];
+      const mn=d.min===''?null:Number(d.min), mx=d.max===''?null:Number(d.max);
+      if((d.min!==''&&isNaN(mn))||(d.max!==''&&isNaN(mx))) return alert(`${p.name}: limits must be numbers.`);
+      if(mn!==null&&mx!==null&&mn>mx) return alert(`${p.name}: the minimum is higher than the maximum.`);
+      const w=d.warn===''?0:Number(d.warn);
+      if(isNaN(w)||w<0||w>50) return alert(`${p.name}: the warning zone must be between 0 and 50 %.`);
+    }
+    if(on.length===0&&!confirm('No parameters are ticked, so chemists will have nothing to enter for this product. Save anyway?')) return;
+    const noLimit=on.filter(p=>draft[String(p.id)].min===''&&draft[String(p.id)].max==='').map(p=>p.name);
+    if(noLimit.length&&!confirm(`No limit is set for: ${noLimit.join(', ')}.\n\nThese will be recorded but can never fail or raise an alert. Continue?`)) return;
+    setBusy(true);
+    const rows=on.map(p=>{ const d=draft[String(p.id)]; return {product_id:pid,parameter_id:String(p.id),min_value:d.min===''?null:Number(d.min),max_value:d.max===''?null:Number(d.max),warn_pct:d.warn===''?0:Number(d.warn),required:!!d.req}; });
+    const offIds=params.filter(p=>!(draft[String(p.id)]&&draft[String(p.id)].on)).map(p=>String(p.id));
+    let error=null;
+    if(rows.length){ ({error}=await sb.from('qc_specs').upsert(rows,{onConflict:'product_id,parameter_id'})); }
+    if(!error&&offIds.length){ ({error}=await sb.from('qc_specs').delete().eq('product_id',pid).in('parameter_id',offIds)); }
+    if(!error){ ({error}=await sb.from('qc_products').update({max_gap_days:g}).eq('product_id',pid)); }
+    setBusy(false);
+    if(error) return alert(error.message);
+    logActivity('Quality Settings','update',`Limits saved — ${pname(pid)} (${rows.length} parameter${rows.length===1?'':'s'})`);
+    setOpenPid(null); flash('Saved.'); load();
+  };
+
+  // ── 3. alert rules ──
+  const saveAlerts=async()=>{
+    const n=(v)=>Number(v);
+    if(!Number.isInteger(n(S.director_after_hours))||n(S.director_after_hours)<0||n(S.director_after_hours)>720) return alert('Director escalation hours must be a whole number from 0 to 720 (0 = immediately).');
+    if(!Number.isInteger(n(S.repeat_count))||n(S.repeat_count)<2||n(S.repeat_count)>20) return alert('Repeated-failure count must be a whole number from 2 to 20.');
+    if(S.enabled&&(S.person_ids||[]).length===0&&!confirm('Nobody is selected to receive quality alerts, so only the Director (if enabled) will be alerted. Save anyway?')) return;
+    const clean={...S,person_ids:(S.person_ids||[]).map(String),director_after_hours:n(S.director_after_hours),repeat_count:n(S.repeat_count)};
+    setBusy(true);
+    const {error}=await sb.from('erp_settings').upsert({key:QC_SETTING_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setBusy(false);
+    if(error) return alert(error.message);
+    setS(clean);
+    logActivity('Settings','update','Quality alert settings updated');
+    flash('Saved.');
+  };
+
+  if(loading) return <Loading/>;
+
+  const linked=new Set(appUsers.filter(u=>u.employee_id!==null&&u.employee_id!==undefined).map(u=>String(u.employee_id)));
+  const noLogin=(S.person_ids||[]).map(String).filter(id=>!linked.has(id));
+  const nameOf=(id)=>{ const e=emps.find(x=>String(x.id)===String(id)); return e?empName(e):'Unknown'; };
+  const chk=(k,label)=>(<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={!!S[k]} onChange={e=>s(k,e.target.checked)}/>{label}</label>);
+  const inQc=new Set(qprods.map(q=>String(q.product_id)));
+  const addable=products.filter(p=>p.is_active!==false&&!inQc.has(String(p.id)));
+  const activeParams=params.filter(p=>p.is_active!==false);
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Quality settings</div>
+    </div>
+    {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
+    {msg&&<div style={{marginBottom:12,fontSize:12,color:'var(--green)'}}>{msg}</div>}
+
+    {/* 1 — parameters */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. Test parameters (what the chemist can measure)</div>
+      {ax('quality-settings','manage_params')&&(<>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+          <span className="dim" style={{fontSize:12,alignSelf:'center'}}>Quick add:</span>
+          {QC_PRESETS.filter(([n])=>!params.some(x=>x.name.toLowerCase()===n.toLowerCase())).map(([n,u])=>(
+            <button key={n} className="btn btn-ghost btn-sm" onClick={()=>{ setPEdit(null); setPForm({name:n,unit:u}); }}>+ {n}</button>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+          <Field label="Parameter name ★"><input className="form-input" style={{width:240}} value={pForm.name} onChange={e=>setPForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Moisture"/></Field>
+          <Field label="Unit"><input className="form-input" style={{width:120}} value={pForm.unit} onChange={e=>setPForm(p=>({...p,unit:e.target.value}))} placeholder="% / s / ml"/></Field>
+          <button className="btn btn-green" onClick={saveParam} disabled={busy}>{pEdit?'Update parameter':'Add parameter'}</button>
+          {pEdit&&<button className="btn btn-ghost" onClick={()=>{ setPEdit(null); setPForm({name:'',unit:''}); }}>Cancel</button>}
+        </div>
+      </>)}
+      <div style={{marginTop:14}}>
+        <TableWrap><table>
+          <thead><tr><th>Parameter</th><th>Unit</th><th>Used in</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {params.length===0&&<tr><td colSpan={5}><Empty msg="No parameters yet. Add the tests your lab performs."/></td></tr>}
+            {params.map(p=>{ const used=specs.filter(x=>String(x.parameter_id)===String(p.id)).length; const act=p.is_active!==false; return(<tr key={p.id} style={{opacity:act?1:0.55}}>
+              <td><strong>{p.name}</strong></td>
+              <td className="dim">{p.unit||'—'}</td>
+              <td className="dim">{used} product{used===1?'':'s'}</td>
+              <td>{ax('quality-settings','manage_params')?<button className={`btn btn-sm ${act?'btn-green':'btn-ghost'}`} onClick={()=>toggleParam(p)}>{act?'Active':'Inactive'}</button>:<span className={`badge ${act?'badge-green':'badge-muted'}`}>{act?'Active':'Inactive'}</span>}</td>
+              <td>{ax('quality-settings','manage_params')&&<div style={{display:'flex',gap:6}}>
+                <button className="btn btn-blue btn-sm" onClick={()=>{ setPEdit(p.id); setPForm({name:p.name,unit:p.unit||''}); }}>Edit</button>
+                <button className="btn btn-red btn-sm" onClick={()=>delParam(p)}>✕</button>
+              </div>}</td>
+            </tr>); })}
+          </tbody>
+        </table></TableWrap>
+      </div>
+    </div>
+
+    {/* 2 — products and limits */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. Products available to the chemist, and their limits</div>
+      <div className="dim" style={{fontSize:12,marginBottom:10}}>The chemist only sees the products added here, and only the parameters ticked for each product. A result outside the min–max limit is a <strong>Fail</strong> and raises an alert. The optional warning zone marks results that pass but are close to a limit. Changing limits applies to tests entered from now on; past tests keep the limits they were recorded with.</div>
+      {ax('quality-settings','manage_products')&&<div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap',marginBottom:14}}>
+        <Field label="Add a product to Quality Control">
+          <select className="form-input" style={{width:280}} value={addPid} onChange={e=>setAddPid(e.target.value)}>
+            <option value="">-- Select product --</option>
+            {addable.map(p=><option key={p.id} value={String(p.id)}>{p.product_name}{p.category?` · ${p.category}`:''}</option>)}
+          </select>
+        </Field>
+        <button className="btn btn-green" onClick={addProduct} disabled={busy||!addPid}>+ Add product</button>
+      </div>}
+      {qprods.length===0&&<Empty msg="No products added yet."/>}
+      {qprods.map(q=>{
+        const pid=String(q.product_id); const isOpen=openPid===pid;
+        const n=specs.filter(x=>String(x.product_id)===pid).length;
+        return(<div key={q.id} style={{marginBottom:12,border:'1px solid var(--border)',borderLeft:`4px solid ${n>0?'var(--green)':'var(--amber)'}`,borderRadius:8,padding:'10px 14px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+            <div>
+              <strong style={{fontSize:14}}>{pname(pid)}</strong>
+              <span className={`badge ${n>0?'badge-green':'badge-amber'}`} style={{marginLeft:8}}>{n} parameter{n===1?'':'s'}</span>
+              {Number(q.max_gap_days)>0&&<span className="badge badge-blue" style={{marginLeft:6}}>test every {q.max_gap_days} day{Number(q.max_gap_days)===1?'':'s'}</span>}
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              {ax('quality-settings','manage_products')&&<button className="btn btn-blue btn-sm" onClick={()=>isOpen?setOpenPid(null):openProduct(q)}>{isOpen?'Close':'Parameters & limits'}</button>}
+              {ax('quality-settings','manage_products')&&<button className="btn btn-red btn-sm" onClick={()=>removeProduct(q)}>Remove</button>}
+            </div>
+          </div>
+          {isOpen&&(<div style={{marginTop:12}}>
+            {activeParams.length===0&&<div className="dim" style={{fontSize:13}}>Add parameters in section 1 first.</div>}
+            {activeParams.length>0&&<TableWrap><table>
+              <thead><tr><th>Test it</th><th>Parameter</th><th>Minimum</th><th>Maximum</th><th>Warning zone %</th><th>Required</th></tr></thead>
+              <tbody>
+                {activeParams.map(p=>{ const k=String(p.id); const d=draft[k]||{on:false,min:'',max:'',warn:'0',req:true}; return(<tr key={k} style={{opacity:d.on?1:0.55}}>
+                  <td><input type="checkbox" style={{transform:'scale(1.2)'}} checked={!!d.on} onChange={e=>setD(k,'on',e.target.checked)}/></td>
+                  <td><strong>{p.name}</strong>{p.unit&&<span className="dim"> ({p.unit})</span>}</td>
+                  <td><input type="number" step="any" className="form-input" style={{width:110}} disabled={!d.on} value={d.min} onChange={e=>setD(k,'min',e.target.value)} placeholder="no min"/></td>
+                  <td><input type="number" step="any" className="form-input" style={{width:110}} disabled={!d.on} value={d.max} onChange={e=>setD(k,'max',e.target.value)} placeholder="no max"/></td>
+                  <td><input type="number" step="any" min="0" max="50" className="form-input" style={{width:90}} disabled={!d.on} value={d.warn} onChange={e=>setD(k,'warn',e.target.value)}/></td>
+                  <td><input type="checkbox" disabled={!d.on} checked={!!d.req} onChange={e=>setD(k,'req',e.target.checked)}/></td>
+                </tr>); })}
+              </tbody>
+            </table></TableWrap>}
+            <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap',marginTop:12}}>
+              <Field label="Test at least every N days (0 = no reminder)"><input type="number" min="0" max="60" className="form-input" style={{width:120}} value={gap} onChange={e=>setGap(e.target.value)}/></Field>
+              <Field label="Copy limits from another product">
+                <div style={{display:'flex',gap:6}}>
+                  <select className="form-input" style={{width:200}} value={copyFrom} onChange={e=>setCopyFrom(e.target.value)}>
+                    <option value="">-- Select --</option>
+                    {qprods.filter(x=>String(x.product_id)!==pid).map(x=><option key={x.id} value={String(x.product_id)}>{pname(x.product_id)}</option>)}
+                  </select>
+                  <button className="btn btn-ghost btn-sm" onClick={copyLimits} disabled={!copyFrom}>Copy</button>
+                </div>
+              </Field>
+              <button className="btn btn-green" onClick={()=>saveProduct(pid)} disabled={busy}>{busy?'Saving…':'Save limits'}</button>
+            </div>
+            <div className="dim" style={{fontSize:11,marginTop:6}}>The "test every N days" reminder counts calendar days, so use 2 or more if the lab is closed on Sundays.</div>
+          </div>)}
+        </div>);
+      })}
+    </div>
+
+    {/* 3 — alerts */}
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--red)'}`}}>
+      <div className="section-label">3. Alerts — who is told when a result fails</div>
+      {chk('enabled','Quality alerts are ON (untick to switch every alert off; results are still recorded)')}
+      <div className="form-grid" style={{marginTop:6}}>
+        <Field label="People who receive quality alerts (Ctrl/Cmd-click to pick several)">
+          <select multiple size={7} className="form-input" value={(S.person_ids||[]).map(String)} onChange={e=>s('person_ids',Array.from(e.target.selectedOptions).map(o=>o.value))}>
+            {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+          </select>
+          {noLogin.length>0&&<div style={{fontSize:11,color:'var(--red)',marginTop:4}}>⚠ No login linked (they will see nothing): {noLogin.map(nameOf).join(', ')}</div>}
+        </Field>
+        <div>
+          <div style={{marginTop:2}}>{chk('notify_director','Escalate to every Director if nobody acknowledges the alert')}</div>
+          <Field label="Escalate to Director after (hours, 0 = immediately)"><input type="number" min="0" className="form-input" value={S.director_after_hours} onChange={e=>s('director_after_hours',e.target.value)}/></Field>
+        </div>
+      </div>
+      <div style={{marginTop:12}}>
+        {chk('alert_on_warning','Also alert for "Warning" results (passed, but close to a limit)')}
+        {chk('repeat_alert','Alert when the same parameter fails several tests in a row for a product')}
+        <Field label="…number of failed tests in a row"><input type="number" min="2" className="form-input" style={{width:120}} value={S.repeat_count} onChange={e=>s('repeat_count',e.target.value)}/></Field>
+        <div style={{height:8}}/>
+        {chk('overdue_alert','Alert when a product has not been tested for longer than its "test every N days" setting')}
+        {chk('show_tasks','Show in My Tasks and the sidebar badge')}
+        {chk('show_dashboard','Show on the Dashboard (visible to everyone who opens it)')}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:6}}>An alert stays open until someone acknowledges it and records the action taken (hold, retest, reprocess, release with approval, reject). A person only sees alerts if their login is linked to their employee profile in the HR portal.</div>
+      <div className="form-actions">
+        {ax('quality-settings','edit_alerts')&&<button className="btn btn-green" onClick={saveAlerts} disabled={busy}>{busy?'Saving…':'Save alert settings'}</button>}
+      </div>
+    </div>
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -8991,6 +9886,7 @@ function App(){
         if(WS.enabled&&WS.show_tasks) n+=woaAlertsFor(woaBoard(await loadWoaBase(),WS),WS,access.employee_id,access.role).length;
       }catch(e){}
       try{ n+=await sdTaskCount(access.employee_id,access.role); }catch(e){}
+      try{ n+=await qcTaskCount(access.employee_id,access.role); }catch(e){}
       if(!cancelled&&!error) setRenewalCount(n);
     };
     fetchRenewals();
@@ -9103,6 +9999,8 @@ function App(){
     'shutdown-settings':<ShutdownSettings/>,
         'access-settings':<AccessSettings/>,
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
+    'quality':<QualityControl role={access.role} employeeId={access.employee_id} userEmail={user.email}/>,
+    'quality-settings':<QualitySettings/>,
   };
 
   return(<div className="app">
