@@ -217,6 +217,7 @@ const NAV = [
     { id:'cashbook-settings', label:'Cash Book Settings', icon:'🧾' },
   { id:'depot-settings', label:'Depots', icon:'🏢' },
   { id:'shutdown-settings', label:'Shutdown Settings', icon:'🧯' },
+    { id:'access-settings', label:'Access Settings', icon:'🛂' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
   { id:'whatsapp-settings', label:'WhatsApp Alerts', icon:'💬' },
@@ -8647,6 +8648,372 @@ function ShutdownSettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// ACCESS SETTINGS (Director only) — controls both the Mill app and the HR portal
+// ══════════════════════════════════════════════════════════
+const AX_CATALOG=[
+  {group:'Mill app',items:[
+    {key:'mill:dashboard',label:'Dashboard',acts:['view']},
+    {key:'mill:timeline',label:'Timeline Calendar',acts:['view']},
+    {key:'mill:production',label:'Production',acts:['view','add','edit','delete']},
+    {key:'mill:dispatch',label:'Supplyco Dispatch',acts:['view','add','delete']},
+    {key:'mill:work-order-tracker',label:'Work Order Tracker',acts:['view','add','edit','delete']},
+    {key:'mill:private-dispatch',label:'Private Dispatch',acts:['view','add','delete']},
+    {key:'mill:lifting-orders',label:'Lifting Orders',acts:['view','add','edit','delete']},
+    {key:'mill:returns',label:'Returns',acts:['view','add','delete']},
+    {key:'mill:fci-inwards',label:'FCI Inwards',acts:['view','add','delete']},
+    {key:'mill:private-inwards',label:'Private Inwards',acts:['view','add','delete']},
+    {key:'mill:reconciliation',label:'Reconciliation',acts:['view']},
+    {key:'mill:job-cards',label:'Job Cards',acts:['view','add','edit','delete']},
+    {key:'mill:recurring-jobs',label:'Recurring Jobs',acts:['view']},
+    {key:'mill:licenses',label:'Licenses & Renewals',acts:['view']},
+    {key:'mill:all-stock',label:'All Stock',acts:['view']},
+    {key:'mill:store',label:'Store & Materials',acts:['view']},
+    {key:'mill:stock-count',label:'Stock Count',acts:['view']},
+    {key:'mill:ledger',label:'Daily Cash Book',acts:['view','add','edit','delete']},
+    {key:'mill:reports',label:'Reports',acts:['view']},
+    {key:'mill:product-master',label:'Product Master',acts:['view','add','edit','delete']},
+    {key:'mill:product-recipes',label:'Product Recipes',acts:['view']},
+    {key:'mill:depot-settings',label:'Depots',acts:['view']},
+    {key:'mill:lifting-settings',label:'Lifting Alerts',acts:['view']},
+    {key:'mill:workorder-settings',label:'Work Order Alerts',acts:['view']},
+    {key:'mill:activity-log',label:'Activity Log',acts:['view']},
+  ]},
+  {group:'HR portal',items:[
+    {key:'hr:attendance',label:'Attendance',hint:'Edit = change a submitted day, Delete = unlock a day',acts:['view','add','edit','delete']},
+    {key:'hr:overtime',label:'Overtime',hint:'Edit = link missing staff',acts:['view','add','edit','delete']},
+    {key:'hr:staff',label:'Staff',hint:'View only = limited card, Edit = full profile',acts:['view','add','edit','delete']},
+    {key:'hr:payroll',label:'Payroll',hint:'Add = register transactions and payouts',acts:['view','add']},
+    {key:'hr:transactions',label:'Transactions',acts:['view']},
+    {key:'hr:reports',label:'Reports',acts:['view']},
+  ]},
+];
+const AX_ALL=AX_CATALOG.flatMap(g=>g.items.map(i=>({...i,group:g.group})));
+const AX_ACTS=[['view','View'],['add','Add'],['edit','Edit'],['delete','Delete']];
+const AX_COL={view:'var(--blue)',add:'var(--green)',edit:'var(--amber)',delete:'var(--red)'};
+const AX_MILL_VIEW={
+  manager:['dashboard','timeline','production','dispatch','work-order-tracker','private-dispatch','lifting-orders','returns','fci-inwards','private-inwards','reconciliation','job-cards','recurring-jobs','licenses','all-stock','store','stock-count','ledger','reports','product-master','depot-settings','lifting-settings','workorder-settings','product-recipes','activity-log'],
+  accountant:['dashboard','timeline','reconciliation','licenses','all-stock','ledger','reports'],
+  supervisor:['dashboard','timeline','production','returns','job-cards','all-stock','store','stock-count'],
+  store:['dashboard','all-stock','store','stock-count','fci-inwards','private-inwards'],
+  dispatch:['dashboard','timeline','dispatch','private-dispatch','returns','all-stock'],
+  viewer:[],
+};
+// What each login role can do today (must match the HR portal's accessDefault).
+const axDefault=(key,role,action)=>{
+  const [app,id]=key.split(':');
+  if(role==='director') return true;
+  if(app==='mill'){
+    if(!(AX_MILL_VIEW[role]||[]).includes(id)) return false;
+    if(action==='view') return true;
+    if(id==='production'&&(action==='edit'||action==='delete')) return role==='manager';
+    if(id==='ledger') return role==='manager'||role==='accountant';
+    if(id==='product-master'&&action==='delete') return false;
+    if(action==='delete'&&['returns','fci-inwards','private-inwards','dispatch','private-dispatch','work-order-tracker'].includes(id)) return role==='manager';
+    return true;
+  }
+  const notViewerAcct=role!=='viewer'&&role!=='accountant';
+  if(id==='attendance') return (action==='view'||action==='add')&&notViewerAcct;
+  if(id==='overtime') return action==='view'?true:action==='add'?notViewerAcct:false;
+  if(id==='staff') return (action==='view'||action==='add')?(role==='manager'||role==='supervisor'):action==='edit'?role==='manager':false;
+  if(id==='payroll'||id==='transactions') return role==='manager'||role==='accountant';
+  if(id==='reports') return role==='manager';
+  return false;
+};
+
+function AccessSettings(){
+  const [rules,setRules]=useState([]);
+  const [on,setOn]=useState(false);
+  const [users,setUsers]=useState([]);
+  const [emps,setEmps]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState('');
+  const [mode,setMode]=useState('page');
+  const [secKey,setSecKey]=useState(AX_ALL[0].key);
+  const [personId,setPersonId]=useState('');
+  const [search,setSearch]=useState('');
+  const [onlyLogin,setOnlyLogin]=useState(true);
+  const [onlyAccess,setOnlyAccess]=useState(false);
+  const [bulkAct,setBulkAct]=useState('view');
+  const [bulkRole,setBulkRole]=useState('manager');
+
+  const load=useCallback(async()=>{
+    try{
+      const [{data:st},{data:au},{data:e},rl]=await Promise.all([
+        sb.from('erp_settings').select('value').eq('key','access_rules_on').maybeSingle(),
+        sb.from('app_users').select('*'),
+        sb.from(EMP_TABLE).select('*').range(0,4999),
+        fetchAllRows((a,b)=>sb.from('access_rules').select('section,action,employee_id').order('section').order('action').order('employee_id').range(a,b)),
+      ]);
+      setOn(!!st&&st.value==='1'); setUsers(au||[]); setEmps(e||[]); setRules(rl); setErr('');
+    }catch(ex){ setErr((ex.message||String(ex))+' — have you run the SQL for access rules?'); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const ruleSet=React.useMemo(()=>new Set(rules.map(r=>`${r.section}|${r.action}|${r.employee_id}`)),[rules]);
+  const has=(sec,act,id)=>ruleSet.has(`${sec}|${act}|${id}`);
+  const loginOf=(e)=>users.find(u=>String(u.employee_id)===String(e.id));
+  const everyone=emps.filter(empIsActive).filter(e=>{ const lu=loginOf(e); return !(lu&&lu.role==='director'); }).sort((a,b)=>empName(a).localeCompare(empName(b)));
+  const unlinked=users.filter(u=>u.role!=='pending'&&u.role!=='director'&&!u.employee_id);
+  const actsOf=(it,id)=>it.acts.filter(a=>has(it.key,a,id));
+  const peopleWith=(it,a)=>everyone.filter(e=>has(it.key,a,String(e.id)));
+  const shown=everyone.filter(e=>!onlyLogin||!!loginOf(e)).filter(e=>!search.trim()||`${empName(e)} ${empCode(e)}`.toLowerCase().includes(search.trim().toLowerCase()));
+
+  // One write path for everything: set the exact list of actions a person has on one page.
+  const setActs=async(it,id,wanted)=>{
+    const remove=it.acts.filter(a=>!wanted.includes(a));
+    setBusy(true);
+    let error=null;
+    if(wanted.length){ const {error:e}=await sb.from('access_rules').upsert(wanted.map(a=>({section:it.key,action:a,employee_id:id})),{onConflict:'section,action,employee_id'}); error=e; }
+    if(!error&&remove.length){ const {error:e}=await sb.from('access_rules').delete().eq('section',it.key).eq('employee_id',id).in('action',remove); error=e; }
+    setBusy(false);
+    if(error) return alert('Could not save: '+error.message);
+    setRules(p=>[...p.filter(r=>!(r.section===it.key&&r.employee_id===id&&it.acts.includes(r.action))),...wanted.map(a=>({section:it.key,action:a,employee_id:id}))]);
+  };
+  const toggle=(it,a,id,want)=>{
+    const cur=actsOf(it,id);
+    const next=want?Array.from(new Set([...cur,a,'view'])):(a==='view'?[]:cur.filter(x=>x!==a));
+    setActs(it,id,next);
+  };
+
+  const applyRole=async()=>{
+    const it=AX_ALL.find(s=>s.key===secKey);
+    if(!it.acts.includes(bulkAct)) return alert(`"${it.label}" has no ${bulkAct} option.`);
+    const targets=everyone.filter(e=>{ const lu=loginOf(e); return lu&&lu.role===bulkRole; });
+    if(targets.length===0) return alert(`No active employee has a login with the role "${bulkRole}".`);
+    if(!window.confirm(`Give "${bulkAct}" access on "${it.label}" to ${targets.length} employee(s) whose login role is "${bulkRole}"?`)) return;
+    const acts=bulkAct==='view'?['view']:['view',bulkAct];
+    const rows=[]; targets.forEach(e=>acts.forEach(a=>rows.push({section:it.key,action:a,employee_id:String(e.id)})));
+    setBusy(true);
+    const {error}=await sb.from('access_rules').upsert(rows,{onConflict:'section,action,employee_id'});
+    setBusy(false);
+    if(error) return alert('Could not save: '+error.message);
+    logActivity('Access Rules',`Gave ${bulkAct} on ${it.label} to all ${bulkRole} employees`);
+    load();
+  };
+  const clearSection=async()=>{
+    const it=AX_ALL.find(s=>s.key===secKey);
+    if(!window.confirm(`Remove ALL access to "${it.label}" for everyone except Directors?`)) return;
+    setBusy(true);
+    const {error}=await sb.from('access_rules').delete().eq('section',it.key);
+    setBusy(false);
+    if(error) return alert('Could not save: '+error.message);
+    logActivity('Access Rules',`Cleared all access to ${it.label}`);
+    load();
+  };
+  const rowsFromRole=(emp)=>{
+    const lu=loginOf(emp); const rows=[];
+    if(!lu||lu.role==='pending') return rows;
+    AX_ALL.forEach(it=>it.acts.forEach(a=>{ if(axDefault(it.key,lu.role,a)) rows.push({section:it.key,action:a,employee_id:String(emp.id)}); }));
+    return rows;
+  };
+  const resetPerson=async(emp)=>{
+    if(!loginOf(emp)) return alert('This employee has no login, so there is no role to copy from.');
+    if(!window.confirm(`Reset ${empName(emp)}'s access to the default for their login role (${loginOf(emp).role})? Their current settings will be replaced.`)) return;
+    setBusy(true);
+    const del=await sb.from('access_rules').delete().eq('employee_id',String(emp.id));
+    if(del.error){ setBusy(false); return alert('Could not clear: '+del.error.message); }
+    const rows=rowsFromRole(emp);
+    if(rows.length){ const {error}=await sb.from('access_rules').insert(rows); if(error){ setBusy(false); return alert('Could not save: '+error.message); } }
+    setBusy(false);
+    logActivity('Access Rules',`Reset ${empName(emp)} to role defaults`);
+    load();
+  };
+  const seed=async()=>{
+    if(!window.confirm('This ERASES all current access rules and rebuilds them from the role of each employee\'s linked login (the same access they have today). Employees without a login get nothing. Continue?')) return;
+    setBusy(true);
+    const rows=everyone.flatMap(rowsFromRole);
+    const del=await sb.from('access_rules').delete().neq('section','');
+    if(del.error){ setBusy(false); return alert('Could not clear old rules: '+del.error.message); }
+    for(let i=0;i<rows.length;i+=500){
+      const {error}=await sb.from('access_rules').insert(rows.slice(i,i+500));
+      if(error){ setBusy(false); return alert('Could not save rules: '+error.message); }
+    }
+    logActivity('Access Rules',`Rules rebuilt from roles (${rows.length} entries)`);
+    setBusy(false); load();
+  };
+  const setSwitch=async(next)=>{
+    if(next&&rules.length===0) return alert('There are no rules yet. Click "Fill from current roles" first, otherwise everybody except Directors would be locked out.');
+    if(next&&unlinked.length>0&&!window.confirm(`${unlinked.length} approved login(s) are not linked to an employee and will get NO access:\n\n${unlinked.map(u=>u.email).join('\n')}\n\nTurn ON anyway?`)) return;
+    if(!window.confirm(next?'Turn ON custom access rules? From now on these rules decide who can see and do what, in both apps.':'Turn OFF custom access rules? Both apps go back to the old role-based access.')) return;
+    setBusy(true);
+    const {error}=await sb.from('erp_settings').upsert({key:'access_rules_on',value:next?'1':'0'},{onConflict:'key'});
+    setBusy(false);
+    if(error) return alert('Could not save: '+error.message);
+    setOn(next);
+    logActivity('Access Rules',next?'Custom access rules turned ON':'Custom access rules turned OFF');
+  };
+
+  if(loading) return <Loading/>;
+
+  const cur=AX_ALL.find(s=>s.key===secKey)||AX_ALL[0];
+  const person=everyone.find(e=>String(e.id)===String(personId))||null;
+
+  const cell=(it,a,id)=>it.acts.includes(a)
+    ?<input type="checkbox" style={{transform:'scale(1.25)',accentColor:AX_COL[a],cursor:'pointer'}} checked={has(it.key,a,id)} disabled={busy} onChange={e=>toggle(it,a,id,e.target.checked)}/>
+    :<span className="dim">—</span>;
+
+  const presets=(it,id)=>{
+    const c=actsOf(it,id), single=it.acts.length===1;
+    const isNone=c.length===0, isFull=c.length===it.acts.length, isView=c.length===1&&c[0]==='view'&&!single;
+    return(<div style={{display:'flex',gap:4,justifyContent:'flex-end'}}>
+      <button className={`btn btn-sm ${isNone?'btn-red':'btn-ghost'}`} disabled={busy} onClick={()=>setActs(it,id,[])}>None</button>
+      {!single&&<button className={`btn btn-sm ${isView?'btn-blue':'btn-ghost'}`} disabled={busy} onClick={()=>setActs(it,id,['view'])}>View only</button>}
+      <button className={`btn btn-sm ${isFull?'btn-green':'btn-ghost'}`} disabled={busy} onClick={()=>setActs(it,id,it.acts)}>{single?'Allowed':'Full'}</button>
+    </div>);
+  };
+
+  const roleBadge=(e)=>{ const lu=loginOf(e); return lu
+    ?<><span className="badge badge-blue">{lu.role}</span><div className="dim" style={{fontSize:10,marginTop:2}}>{lu.email}</div></>
+    :<span style={{fontSize:11,color:'var(--red)'}}>No login linked</span>; };
+
+  // ── By page ──
+  const pageView=(()=>{
+    const list=shown.filter(e=>!onlyAccess||has(cur.key,'view',String(e.id)));
+    return(<div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-start'}}>
+      <div className="card" style={{width:270,flex:'none',padding:12,maxHeight:'70vh',overflowY:'auto'}}>
+        {AX_CATALOG.map(g=>(<div key={g.group}>
+          <div className="section-label" style={{margin:'6px 4px 8px'}}>{g.group}</div>
+          {g.items.map(it=>{
+            const sel=it.key===secKey;
+            const n=peopleWith({...it,key:it.key},'view').length;
+            return(<button key={it.key} onClick={()=>setSecKey(it.key)} style={{display:'flex',justifyContent:'space-between',alignItems:'center',width:'100%',textAlign:'left',padding:'7px 10px',marginBottom:2,borderRadius:6,border:'1px solid '+(sel?'var(--blue)':'transparent'),background:sel?'color-mix(in srgb, var(--blue) 10%, var(--surface))':'transparent',color:'var(--text)',fontSize:13}}>
+              <span>{it.label}</span>
+              <span className="oc-pill" title="People who can open this page">{n}</span>
+            </button>);
+          })}
+        </div>))}
+      </div>
+
+      <div style={{flex:1,minWidth:320}}>
+        <div style={{fontSize:20,fontWeight:600}}>{cur.label} <span className="dim" style={{fontSize:12,fontWeight:400}}>· {cur.group}</span></div>
+        {cur.hint&&<div className="dim" style={{fontSize:12,marginTop:2}}>{cur.hint}</div>}
+
+        <div className="stat-grid" style={{marginTop:14,gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))'}}>
+          {AX_ACTS.filter(([a])=>cur.acts.includes(a)).map(([a,l])=>{
+            const who=peopleWith(cur,a);
+            return(<div key={a} className="stat-card" style={{borderTop:`2px solid ${AX_COL[a]}`}}>
+              <div className="stat-label">Can {l.toLowerCase()}</div>
+              <div style={{fontSize:22,fontWeight:600,color:AX_COL[a]}}>{who.length}</div>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:8}}>
+                {who.length===0&&<span className="dim" style={{fontSize:11}}>Nobody (except Directors)</span>}
+                {who.slice(0,10).map(e=><span key={e.id} className="badge badge-muted" title={empLabel(e)}>{empName(e)}</span>)}
+                {who.length>10&&<span className="dim" style={{fontSize:11}}>+{who.length-10} more</span>}
+              </div>
+            </div>);
+          })}
+        </div>
+
+        <div className="card" style={{marginBottom:14}}>
+          <div className="section-label">Give a whole role access</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
+            <Field label="Give"><select className="form-input" value={bulkAct} onChange={e=>setBulkAct(e.target.value)}>{AX_ACTS.filter(([a])=>cur.acts.includes(a)).map(([a,l])=><option key={a} value={a}>{l}</option>)}</select></Field>
+            <Field label="To everyone with login role"><select className="form-input" value={bulkRole} onChange={e=>setBulkRole(e.target.value)}>{['manager','accountant','supervisor','store','dispatch','viewer'].map(r=><option key={r} value={r}>{r}</option>)}</select></Field>
+            <button className="btn btn-green" onClick={applyRole} disabled={busy}>Apply</button>
+            <button className="btn btn-red" onClick={clearSection} disabled={busy}>Clear this page</button>
+          </div>
+        </div>
+
+        <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
+          <input style={{minWidth:200}} placeholder="🔍 Search employee…" value={search} onChange={e=>setSearch(e.target.value)}/>
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12}}><input type="checkbox" checked={onlyLogin} onChange={e=>setOnlyLogin(e.target.checked)}/> Only people with a login</label>
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12}}><input type="checkbox" checked={onlyAccess} onChange={e=>setOnlyAccess(e.target.checked)}/> Only people who have access</label>
+        </div>
+        <TableWrap><table>
+          <thead><tr><th>Employee</th><th>Login</th>{AX_ACTS.map(([a,l])=><th key={a} style={{textAlign:'center',color:AX_COL[a]}}>{l}</th>)}<th style={{textAlign:'right'}}>Quick set</th></tr></thead>
+          <tbody>
+            {list.length===0&&<tr><td colSpan={7}><Empty msg="No employees match."/></td></tr>}
+            {list.map(e=>{ const id=String(e.id); return(<tr key={e.id}>
+              <td><strong>{empName(e)}</strong><div className="dim" style={{fontSize:10}}>{empCode(e)||'—'} · {e.post||'—'}</div></td>
+              <td>{roleBadge(e)}</td>
+              {AX_ACTS.map(([a])=><td key={a} style={{textAlign:'center'}}>{cell(cur,a,id)}</td>)}
+              <td>{presets(cur,id)}</td>
+            </tr>); })}
+          </tbody>
+        </table></TableWrap>
+      </div>
+    </div>);
+  })();
+
+  // ── By person ──
+  const personView=(()=>{
+    const id=person?String(person.id):'';
+    return(<div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-start'}}>
+      <div className="card" style={{width:270,flex:'none',padding:12,maxHeight:'70vh',overflowY:'auto'}}>
+        <input style={{width:'100%',marginBottom:8}} placeholder="🔍 Search employee…" value={search} onChange={e=>setSearch(e.target.value)}/>
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,marginBottom:8}}><input type="checkbox" checked={onlyLogin} onChange={e=>setOnlyLogin(e.target.checked)}/> Only people with a login</label>
+        {shown.length===0&&<div className="dim" style={{fontSize:12}}>No employees match.</div>}
+        {shown.map(e=>{
+          const sel=String(e.id)===id, lu=loginOf(e);
+          const n=AX_ALL.filter(it=>has(it.key,'view',String(e.id))).length;
+          return(<button key={e.id} onClick={()=>setPersonId(String(e.id))} style={{display:'block',width:'100%',textAlign:'left',padding:'8px 10px',marginBottom:3,borderRadius:6,border:'1px solid '+(sel?'var(--blue)':'transparent'),background:sel?'color-mix(in srgb, var(--blue) 10%, var(--surface))':'transparent',color:'var(--text)',fontSize:13}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:6}}><strong>{empName(e)}</strong><span className="oc-pill" title="Pages they can open">{n}/{AX_ALL.length}</span></div>
+            <div className="dim" style={{fontSize:10}}>{lu?lu.role:'no login'} · {e.post||'—'}</div>
+          </button>);
+        })}
+      </div>
+
+      <div style={{flex:1,minWidth:320}}>
+        {!person?<div className="card"><Empty msg="Pick a person on the left to see and change everything they can do."/></div>:(<>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap',marginBottom:12}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:600}}>{empName(person)}</div>
+              <div style={{marginTop:4}}>{roleBadge(person)}</div>
+            </div>
+            <button className="btn btn-ghost" disabled={busy} onClick={()=>resetPerson(person)}>↺ Reset to role defaults</button>
+          </div>
+          <TableWrap><table>
+            <thead><tr><th>Page</th>{AX_ACTS.map(([a,l])=><th key={a} style={{textAlign:'center',color:AX_COL[a]}}>{l}</th>)}<th style={{textAlign:'right'}}>Quick set</th></tr></thead>
+            <tbody>
+              {AX_CATALOG.map(g=>(<React.Fragment key={g.group}>
+                <tr><td colSpan={6} style={{background:'var(--surface2)',fontFamily:'var(--mono)',fontSize:10,letterSpacing:'.12em',textTransform:'uppercase',color:'var(--muted)'}}>{g.group}</td></tr>
+                {g.items.map(it=>(<tr key={it.key}>
+                  <td><strong>{it.label}</strong>{it.hint&&<div className="dim" style={{fontSize:10}}>{it.hint}</div>}</td>
+                  {AX_ACTS.map(([a])=><td key={a} style={{textAlign:'center'}}>{cell(it,a,id)}</td>)}
+                  <td>{presets(it,id)}</td>
+                </tr>))}
+              </React.Fragment>))}
+            </tbody>
+          </table></TableWrap>
+        </>)}
+      </div>
+    </div>);
+  })();
+
+  return(<div className="page" style={{maxWidth:1300}}>
+    <div className="page-header">
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Access settings — who can do what</div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load access rules" sub={err}/>}
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${on?'var(--green)':'var(--amber)'}`}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div style={{fontSize:13}}>
+          Custom access rules are <strong style={{color:on?'var(--green)':'var(--amber)'}}>{on?'ON':'OFF'}</strong>.
+          <div className="dim" style={{fontSize:12,marginTop:4}}>{on?'These rules decide access in both apps. Directors always have full access. Changes reach people within about a minute.':'Both apps still use the old role-based access. First click “Fill from current roles”, check the result, then turn ON.'}</div>
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn btn-blue" onClick={seed} disabled={busy}>Fill from current roles</button>
+          <button className={`btn ${on?'btn-red':'btn-green'}`} onClick={()=>setSwitch(!on)} disabled={busy}>{on?'Turn OFF':'Turn ON'}</button>
+        </div>
+      </div>
+    </div>
+
+    {unlinked.length>0&&<Alert type="amber" icon="⚠" title={`${unlinked.length} approved login(s) are not linked to an employee and will get no access when rules are ON`} sub={`Link them in the HR portal's Users tab: ${unlinked.map(u=>u.email).join(', ')}`}/>}
+
+    <div style={{display:'flex',gap:8,margin:'16px 0'}}>
+      <button className={`btn ${mode==='page'?'btn-amber':'btn-ghost'}`} onClick={()=>setMode('page')}>📄 By page</button>
+      <button className={`btn ${mode==='person'?'btn-amber':'btn-ghost'}`} onClick={()=>setMode('person')}>👤 By person</button>
+    </div>
+
+    {mode==='page'?pageView:personView}
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -8836,6 +9203,7 @@ function App(){
     'reports':<Reports/>,
     'shutdowns':<Shutdowns role={access.role} employeeId={access.employee_id} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
     'shutdown-settings':<ShutdownSettings/>,
+        'access-settings':<AccessSettings/>,
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
   };
 
