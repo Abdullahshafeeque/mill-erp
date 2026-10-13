@@ -253,7 +253,7 @@ let ACC_ME='';
 let ACC_RULES=[];
 let ACC_PAGE='';
 const ACC_SECTIONS=['dashboard','timeline','production','dispatch','work-order-tracker','private-dispatch','lifting-orders','returns','fci-inwards','private-inwards','reconciliation','job-cards','recurring-jobs','licenses','all-stock','store','stock-count','ledger','reports','product-master','product-recipes','depot-settings','lifting-settings','workorder-settings','activity-log'];
-const accRule=(section,action)=>ACC_RULES.some(r=>r.section==='mill:'+section&&r.action===action&&r.user_email===ACC_ME);
+const accRule=(section,action)=>ACC_RULES.some(r=>r.section==='mill:'+section&&r.action===action&&r.employee_id===ACC_ME);
 const accAllow=(section,action)=>{
   if(CUR_ROLE==='director') return true;
   if(!ACC_ON){
@@ -8733,17 +8733,18 @@ function App(){
 
   const [orgVisible,setOrgVisible]=useState(false);
   const [sdAllowed,setSdAllowed]=useState(false);
-    const [accData,setAccData]=useState(null);
+  const [accData,setAccData]=useState(null);
   useEffect(()=>{
     if(!access||!access.role) return;
     let cancelled=false;
+    const myEmpId=String(access.employee_id??'');
     const f=async()=>{
       let on=false, rules=[];
       try{
         const {data:st}=await sb.from('erp_settings').select('value').eq('key','access_rules_on').maybeSingle();
         on=!!st&&st.value==='1';
-        if(on){
-          const {data,error}=await sb.from('access_rules').select('section,action,user_email').eq('user_email',(user.email||'').toLowerCase()).limit(2000);
+        if(on&&myEmpId){
+          const {data,error}=await sb.from('access_rules').select('section,action,employee_id').eq('employee_id',myEmpId).limit(2000);
           if(error) on=false; else rules=data||[];
         }
       }catch(e){ on=false; rules=[]; }
@@ -8752,7 +8753,7 @@ function App(){
     f();
     const t=setInterval(f,60000);
     return ()=>{cancelled=true;clearInterval(t);};
-  },[access?.role,user?.email]);
+  },[access?.role,access?.employee_id]);
   useEffect(()=>{
     if(!access||!access.role||access.role==='pending') return;
     let c=false;
@@ -8792,7 +8793,7 @@ function App(){
   </div></div>);
   if(!accData) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'var(--muted)'}}>checking access…</div>;
   CUR_ROLE=access.role;
-  ACC_ON=accData.on; ACC_RULES=accData.rules; ACC_ME=(user.email||'').toLowerCase();
+  ACC_ON=accData.on; ACC_RULES=accData.rules; ACC_ME=String(access.employee_id??'');
     ORG_VISIBLE=orgVisible;
     SD_ALLOWED=sdAllowed;
   const displayName=titleCase(myName||(user.email||'').split('@')[0].replace(/[._-]+/g,' '));
