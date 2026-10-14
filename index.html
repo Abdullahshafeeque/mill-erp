@@ -2226,7 +2226,7 @@ function Returns(){
           <td><strong style={{color:'var(--blue)',fontFamily:'var(--mono)'}}>+{fmt(r.qty_bags)}</strong></td>
           <td className="dim">{r.source_name||'—'}</td>
           <td><span className="badge badge-amber">{r.reason}</span></td>
-          <td>{ax('fci-inwards','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}</td>
+          <td>{ax('returns','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}</td>
         </tr>))}
       </tbody>
     </table></TableWrap>
@@ -2281,14 +2281,27 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
     const {data,error}=await sb.from('fci_inwards').insert(row).select('*, material:material_id(*), lifting_order:lifting_order_id(*), supplier:supplier_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
 
+    const kg=Number(form.received_kg);
+    const undo=async(msg)=>{
+      await sb.from('fci_inwards').delete().eq('id',data.id);
+      alert(msg+'\n\nThe receipt was NOT completed. Please tell the Director and check the list before retrying.');
+      setSaving(false); load();
+    };
+
     const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',selectedOrder.material_id).eq('scheme',selectedOrder.scheme).maybeSingle();
     if(bucket){
-      await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+Number(form.received_kg),updated_at:new Date().toISOString()}).eq('id',bucket.id);
+      const {data:u,error:e1}=await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)+kg,updated_at:new Date().toISOString()}).eq('id',bucket.id).select();
+      if(e1||!u||u.length===0) return undo('Stock could not be updated'+(e1?': '+e1.message:' (not permitted).'));
     } else {
-      await sb.from('raw_material_scheme_stock').insert({product_id:selectedOrder.material_id,scheme:selectedOrder.scheme,qty_kg:Number(form.received_kg)});
+      const {error:e1}=await sb.from('raw_material_scheme_stock').insert({product_id:selectedOrder.material_id,scheme:selectedOrder.scheme,qty_kg:kg});
+      if(e1) return undo('Stock could not be created: '+e1.message);
     }
 
-    await sb.from('lifting_orders').update({lifted_kg:Number(selectedOrder.lifted_kg)+Number(form.received_kg)}).eq('id',form.lifting_order_id);
+    const {data:lo,error:e2}=await sb.from('lifting_orders').update({lifted_kg:Number(selectedOrder.lifted_kg)+kg}).eq('id',form.lifting_order_id).select();
+    if(e2||!lo||lo.length===0){
+      if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)}).eq('id',bucket.id);
+      return undo('The lifting order could not be updated'+(e2?': '+e2.message:' (not permitted).'));
+    }
 
     setReceipts(p=>[data,...p]);
     setLiftingOrders(p=>p.map(o=>o.id===form.lifting_order_id?{...o,lifted_kg:Number(o.lifted_kg)+Number(form.received_kg)}:o));
@@ -2299,12 +2312,21 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
 
   const del=async(r)=>{
     if(!confirm('Delete this receipt? Stock and lifting order balance will be reversed.')) return;
-    await sb.from('fci_inwards').delete().eq('id',r.id);
+    const {data:gone,error:de}=await sb.from('fci_inwards').delete().eq('id',r.id).select();
+    if(de) return alert(de.message);
+    if(!gone||gone.length===0) return alert('Not deleted — you are not permitted to delete this receipt. Nothing was changed.');
+
     const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',r.material_id).eq('scheme',r.scheme).maybeSingle();
-    if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-Number(r.received_kg),updated_at:new Date().toISOString()}).eq('id',bucket.id);
+    if(bucket){
+      const {data:u,error:e1}=await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-Number(r.received_kg),updated_at:new Date().toISOString()}).eq('id',bucket.id).select();
+      if(e1||!u||u.length===0) alert('Receipt deleted, but wheat stock could not be reduced. Please correct it with a Stock Count.');
+    }
     if(r.lifting_order_id){
       const {data:lo}=await sb.from('lifting_orders').select('*').eq('id',r.lifting_order_id).maybeSingle();
-      if(lo) await sb.from('lifting_orders').update({lifted_kg:Math.max(0,Number(lo.lifted_kg)-Number(r.received_kg))}).eq('id',r.lifting_order_id);
+      if(lo){
+        const {data:u,error:e2}=await sb.from('lifting_orders').update({lifted_kg:Math.max(0,Number(lo.lifted_kg)-Number(r.received_kg))}).eq('id',r.lifting_order_id).select();
+        if(e2||!u||u.length===0) alert('Receipt deleted, but the lifting order balance could not be updated. Please tell the Director.');
+      }
     }
     setReceipts(p=>p.filter(x=>x.id!==r.id));
     logActivity('FCI Inwards','delete',`Receipt deleted`);
@@ -2374,7 +2396,7 @@ const [form,setForm]=useState(()=>({...blank, supplier_id: localStorage.getItem(
           <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{fmtMT(r.received_kg)}</strong></td>
           <td className="dim">{r.vehicle_no||'—'}</td>
           <td className="dim">{r.supplier?.name||'—'}</td>
-          <td>{ax('returns','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}</td>
+          <td>{ax('fci-inwards','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}</td>
         </tr>))}
       </tbody>
     </table></TableWrap>
