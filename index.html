@@ -8890,6 +8890,7 @@ function AccessSettings(){
   const [onlyAccess,setOnlyAccess]=useState(false);
   const [bulkAct,setBulkAct]=useState('view');
   const [bulkRole,setBulkRole]=useState('manager');
+  const [copySrc,setCopySrc]=useState('');
 
   const load=useCallback(async()=>{
     try{
@@ -8975,6 +8976,25 @@ function AccessSettings(){
     const rows=rowsFromRole(emp);
     if(rows.length){ const {error}=await sb.from('access_rules').insert(rows); if(error){ setBusy(false); return alert('Could not save: '+error.message); } }
     setBusy(false); logActivity('Access Rules','update',`Reset ${empName(emp)} to role defaults`); load();
+  };
+  const copyAccess=async(target)=>{
+    if(!copySrc) return alert('First choose the person to copy from.');
+    const src=everyone.find(e=>String(e.id)===String(copySrc));
+    if(!src||String(src.id)===String(target.id)) return alert('Choose a different person to copy from.');
+    const srcRules=rules.filter(r=>String(r.employee_id)===String(src.id));
+    if(srcRules.length===0&&!window.confirm(`${empName(src)} has no access to any page. Copying will remove ALL of ${empName(target)}'s access. Continue?`)) return;
+    if(!window.confirm(`Copy the exact access of ${empName(src)} to ${empName(target)}?\n\nAll of ${empName(target)}'s current access on every page will be replaced.`)) return;
+    setBusy(true);
+    const del=await sb.from('access_rules').delete().eq('employee_id',String(target.id));
+    if(del.error){ setBusy(false); return alert('Could not clear old access: '+del.error.message); }
+    const out=srcRules.map(r=>({section:r.section,action:r.action,employee_id:String(target.id)}));
+    for(let i=0;i<out.length;i+=500){
+      const {error}=await sb.from('access_rules').insert(out.slice(i,i+500));
+      if(error){ setBusy(false); load(); return alert('Old access was cleared but the copy could not be saved: '+error.message+'. Please try Copy again.'); }
+    }
+    setBusy(false);
+    logActivity('Access Rules','update',`Copied access of ${empName(src)} to ${empName(target)} (${out.length} entries)`);
+    load();
   };
   const seed=async()=>{
     if(!window.confirm('This ERASES all current access rules and rebuilds them from the role of each employee\'s linked login, using the new detailed permission list. Employees without a login get nothing. Continue?')) return;
@@ -9076,7 +9096,14 @@ function AccessSettings(){
         {!person?<div className="card"><Empty msg="Pick a person on the left to see and change everything they can do."/></div>:(<>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap',marginBottom:12}}>
             <div><div style={{fontSize:20,fontWeight:600}}>{empName(person)}</div><div style={{marginTop:4}}>{roleBadge(person)}</div></div>
-            <button className="btn btn-ghost" disabled={busy} onClick={()=>resetPerson(person)}>↺ Reset all pages to role defaults</button>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+              <select style={{minWidth:210}} value={copySrc} onChange={e=>setCopySrc(e.target.value)}>
+                <option value="">Copy access from…</option>
+                {everyone.filter(x=>String(x.id)!==id).map(x=><option key={x.id} value={String(x.id)}>{empName(x)} ({AX_ALL.filter(it=>has(it.key,'view',String(x.id))).length}/{AX_ALL.length})</option>)}
+              </select>
+              <button className="btn btn-amber" disabled={busy||!copySrc} onClick={()=>copyAccess(person)}>⧉ Copy</button>
+              <button className="btn btn-ghost" disabled={busy} onClick={()=>resetPerson(person)}>↺ Reset all pages to role defaults</button>
+            </div>
           </div>
           <TableWrap><table>
             <thead><tr><th>Page</th><th>What this person can do (tick = allowed)</th><th style={{textAlign:'right'}}>Quick set</th></tr></thead>
