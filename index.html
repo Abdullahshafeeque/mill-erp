@@ -260,7 +260,6 @@ const AX_MILL=[
  {key:'mill:all-stock',label:'All Stock',acts:[['view','Open page','MASTD']]},
  {key:'mill:store',label:'Store & Materials',acts:[['view','Open page','MST'],['add_item','Add store item','MT'],['txn','Receive / issue stock (+/−)','MT']]},
  {key:'mill:stock-count',label:'Stock Count',acts:[['view','Open page','MST'],['start_count','Load book stock','MST'],['submit','Submit count for approval','MST']]},
- {key:'mill:ledger',label:'Daily Cash Book',acts:[['view','Open page','MA'],['add_receipt','Add receipt','MA'],['add_payment','Add payment','MA'],['edit_entry','Edit entry','MA'],['delete_entry','Delete entry','MA'],['add_type','Add new transaction type','MA'],['submit_day','Submit day','MA']]},
  {key:'mill:reports',label:'Reports',acts:[['view','Open page','M'],['tab_yield','Milling yield report','M'],['tab_wheat','Wheat movement report','M'],['tab_dispatch','Dispatch summary report','M'],['download','Download CSV','M']]},
  {key:'mill:product-master',label:'Product Master',acts:[['view','Open page','M'],['add','Add product','M'],['edit','Edit product','M'],['archive','Archive / activate','M']]},
  {key:'mill:product-recipes',label:'Product Recipes',acts:[['view','Open page','M'],['edit_recipe','Edit recipes','M'],['edit_packing','Edit packing rules','M'],['packing_start','Change packing start date','M']]},
@@ -274,6 +273,7 @@ const AX_MILL=[
  {key:'mill:org-chart',label:'Roles & Responsibilities',acts:[['view','Open page','MASTDV'],['edit_resp','Edit responsibilities (positions below theirs)','']]},
  {key:'mill:shutdowns',label:'Maintenance Shutdown',acts:[['view','Open page','MASTD']]}, // planning/approving stays per-person in Shutdown Settings
  {key:'mill:activity-log',label:'Activity Log',acts:[['view','Open page','M']]},
+ {key:'mill:ledger',label:'Daily Cash Book',acts:[['view','Open page','MA'],['add_receipt','Add receipt','MA'],['add_payment','Add payment','MA'],['link_hr','Link payment to an employee (syncs to HR)','MA'],['edit_entry','Edit entry','MA'],['delete_entry','Delete entry','MA'],['add_type','Add new transaction type','MA'],['submit_day','Submit day','MA']]},
 ];
 
 // HR portal group — the SAME text must be pasted in the HR portal file (see 2_hr_access_core.js)
@@ -3119,6 +3119,21 @@ async function cashRebuildAll(){
   return null;
 }
 
+const HR_PAY_TYPES=[
+  {key:'Payout',label:'Salary payout',dir:'out'},
+  {key:'Advance',label:'Advance',dir:'out'},
+  {key:'Bonus',label:'Bonus',dir:'out'},
+  {key:'Loan Given',label:'Loan given',dir:'out'},
+  {key:'Contractor Payout',label:'Contractor payment',dir:'out'},
+  {key:'Loan Repayment',label:'Loan repayment received',dir:'in'},
+];
+const hrMonthList=()=>{
+  const out=[]; const d=new Date(); d.setDate(1);
+  for(let i=0;i<26;i++){ out.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`); d.setMonth(d.getMonth()-1); }
+  return out;
+};
+const hrMonthLabel=(m)=>{ const [y,mo]=m.split('-'); return `${MONTH_NAMES[Number(mo)-1]} ${y}`; };
+
 function Ledger({role,userEmail}){
   const isDirector=role==='director';
   const SEALED='var(--purple)';
@@ -3147,6 +3162,10 @@ function Ledger({role,userEmail}){
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const isFrozenDate=(d)=>!!freezeDate&&d<=freezeDate;
+  const [emps,setEmps]=useState([]);
+const [hrLinks,setHrLinks]=useState({});
+const blankHr={on:false,emp:'',type:'Payout',month:today.slice(0,7)};
+const [hr,setHr]=useState(blankHr);
 
   // Returns a reason string if the date cannot be changed, or '' if it can.
   const lockReason=(d)=>{
@@ -3177,6 +3196,15 @@ function Ledger({role,userEmail}){
     }
     const rec={in:[],out:[]};
     (rc||[]).forEach(r=>{ const s=r.direction==='in'?'in':'out'; if(rec[s].length<5&&!rec[s].includes(r.txn_type)) rec[s].push(r.txn_type); });
+    const {data:em}=await sb.from(EMP_TABLE).select('*').range(0,4999);
+setEmps(em||[]);
+const ids=(e||[]).map(x=>x.id);
+const links={};
+if(ids.length){
+  const {data:hl}=await sb.from('financial_ledger').select('id,employee_id,transaction_type,pay_month,cash_entry_id').in('cash_entry_id',ids);
+  (hl||[]).forEach(r=>{ links[String(r.cash_entry_id)]=r; });
+}
+setHrLinks(links);
     setTxnTypes(tt||[]); setRecentTypes(rec);
     setEntries(e||[]); setDays(daysData); setFreezeDate(fr||''); setBaseOpen(base); setLoading(false);
   },[]);
@@ -3193,35 +3221,45 @@ function Ledger({role,userEmail}){
     logActivity('Ledger','create',`New cash book type — ${name} (${formSide==='in'?'receipt':'payment'})`);
   };
 
-  const startAdd=(side)=>{
-    setEditingId(null); setFormSide(side);
-    setForm({...blank,date:selDate,txn_type:typeOptions(side,'').recent[0]||typeOptions(side,'').rest[0]||''});
-    setShowForm(true);
-  };
-  const startEdit=(e)=>{
-    setEditingId(e.id); setFormSide(e.direction==='in'?'in':'out');
-    setForm({date:e.date,txn_type:e.txn_type,amount:e.amount,party_name:e.party_name||'',description:e.description||'',payment_mode:e.payment_mode||'Cash',reference_no:e.reference_no||''});
-    setShowForm(true);
-  };
-  const closeForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); };
+const startAdd=(side)=>{
+  setEditingId(null); setFormSide(side);
+  setForm({...blank,date:selDate,txn_type:typeOptions(side,'').recent[0]||typeOptions(side,'').rest[0]||''});
+  setHr({...blankHr,month:selDate.slice(0,7),type:HR_PAY_TYPES.find(t=>t.dir===side).key});
+  setShowForm(true);
+};
+const startEdit=(e)=>{
+  setEditingId(e.id); setFormSide(e.direction==='in'?'in':'out');
+  setForm({date:e.date,txn_type:e.txn_type,amount:e.amount,party_name:e.party_name||'',description:e.description||'',payment_mode:e.payment_mode||'Cash',reference_no:e.reference_no||''});
+  const l=hrLinks[String(e.id)];
+  setHr(l?{on:true,emp:l.employee_id?String(l.employee_id):'',type:l.transaction_type,month:l.pay_month||e.date.slice(0,7)}:{...blankHr,month:e.date.slice(0,7),type:HR_PAY_TYPES.find(t=>t.dir===(e.direction==='in'?'in':'out')).key});
+  setShowForm(true);
+};
+const closeForm=()=>{ setForm(blank); setHr(blankHr); setEditingId(null); setShowForm(false); };
 
   const save=async()=>{
     if(!form.amount||Number(form.amount)<=0) return alert('Enter amount.');
-    if(!form.txn_type) return alert('Select a transaction type.');
+    if(!hr.on&&!form.txn_type) return alert('Select a transaction type.');
     const m1=lockReason(form.date);
     if(m1) return alert(m1);
     const orig=editingId?entries.find(x=>x.id===editingId):null;
     if(orig){ const m2=lockReason(orig.date); if(m2) return alert(m2); }
-    setSaving(true);
     const isIn=formSide==='in';
-    const row={...form,amount:Number(form.amount),direction:isIn?'in':'out'};
-    if(editingId){
-      const {error}=await sb.from('daily_ledger').update(row).eq('id',editingId);
-      if(error){alert(error.message);setSaving(false);return;}
-    } else {
-      const {error}=await sb.from('daily_ledger').insert(row);
-      if(error){alert(error.message);setSaving(false);return;}
-    }
+let row={...form,amount:Number(form.amount),direction:isIn?'in':'out'};
+let hrRow=null;
+if(hr.on){
+  const t=HR_PAY_TYPES.find(x=>x.key===hr.type);
+  if(!t||t.dir!==(isIn?'in':'out')) return alert('This HR type does not match a '+(isIn?'receipt':'payment')+'.');
+  const contractor=hr.type==='Contractor Payout';
+  if(!contractor&&!hr.emp) return alert('Select the employee.');
+  if(!hr.month) return alert('Select the pay month.');
+  const emp=contractor?null:emps.find(x=>String(x.id)===String(hr.emp));
+  row.txn_type='HR · '+t.label;
+  if(!row.party_name) row.party_name=contractor?'Contractor':(emp?empName(emp):'');
+  hrRow={employee_id:contractor?null:hr.emp,date:form.date,transaction_type:hr.type,amount:Number(form.amount),notes:form.description||'Paid via cash book',pay_month:hr.month};
+}
+setSaving(true);
+const {error}=await sb.rpc('cash_save_entry',{p_id:editingId?String(editingId):null,p_cash:row,p_hr:hrRow});
+if(error){alert(error.message);setSaving(false);return;}
     // Recalculate the affected day(s), earliest first; each one then cascades forward.
     const dates=Array.from(new Set([form.date,orig?orig.date:form.date])).sort();
     for(const d of dates){
@@ -3237,7 +3275,7 @@ function Ledger({role,userEmail}){
   const del=async(e)=>{
     const m=lockReason(e.date);
     if(m) return alert(m);
-    if(!confirm('Delete this entry? Later days will be recalculated.')) return;
+    if(!confirm(hrLinks[String(e.id)]?'Delete this entry? The linked HR record will be deleted too, and later days recalculated.':'Delete this entry? Later days will be recalculated.')) return;
     setSaving(true);
     const {error}=await sb.from('daily_ledger').delete().eq('id',e.id);
     if(error){alert(error.message);setSaving(false);return;}
@@ -3305,6 +3343,8 @@ function Ledger({role,userEmail}){
     <td>
       <strong>{e.txn_type}</strong>
       <div className="dim" style={{fontSize:11}}>{[e.party_name,e.description,e.reference_no?('Ref '+e.reference_no):'',e.payment_mode].filter(Boolean).join(' · ')}</div>
+      {(()=>{ const lk=hrLinks[String(e.id)]; if(!lk) return null; const em=lk.employee_id?emps.find(x=>String(x.id)===String(lk.employee_id)):null;
+        return <div style={{fontSize:11,color:'var(--blue)',marginTop:2}}>🔗 HR: {lk.employee_id?(em?empName(em):'employee'):'Contractor'} · {lk.transaction_type} · {hrMonthLabel(lk.pay_month||'0000-01')}</div>; })()}
     </td>
     <td className="mono" style={{textAlign:'right',fontWeight:600}}>{fmt(e.amount,2)}</td>
     <td style={{whiteSpace:'nowrap'}}>{!locked&&(<>
@@ -3397,6 +3437,32 @@ const addRow=(side)=>(noAdd||!ax('ledger',side==='in'?'add_receipt':'add_payment
               </Field>
               <Field label="Reference no."><input className="form-input" value={form.reference_no} onChange={e=>f('reference_no',e.target.value)}/></Field>
             </div>
+            {ax('ledger','link_hr')&&(<div style={{marginTop:14,padding:12,border:'1px solid var(--border)',borderRadius:6,background:'var(--surface2)'}}>
+              <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,fontWeight:600}}>
+                <input type="checkbox" checked={hr.on} onChange={e=>setHr(p=>({...p,on:e.target.checked}))}/>
+                Staff / HR payment — also record it in the HR app
+              </label>
+              {hr.on&&(<div className="form-grid" style={{marginTop:10}}>
+                <Field label="HR transaction type ★">
+                  <select className="form-input" value={hr.type} onChange={e=>setHr(p=>({...p,type:e.target.value}))}>
+                    {HR_PAY_TYPES.filter(t=>t.dir===formSide).map(t=><option key={t.key} value={t.key}>{t.label}</option>)}
+                  </select>
+                </Field>
+                {hr.type!=='Contractor Payout'&&<Field label="Employee ★">
+                  <select className="form-input" value={hr.emp} onChange={e=>setHr(p=>({...p,emp:e.target.value}))}>
+                    <option value="">-- Select employee --</option>
+                    <optgroup label="Active">{emps.filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b))).map(x=><option key={x.id} value={String(x.id)}>{empLabel(x)}</option>)}</optgroup>
+                    <optgroup label="Former staff">{emps.filter(x=>!empIsActive(x)).sort((a,b)=>empName(a).localeCompare(empName(b))).map(x=><option key={x.id} value={String(x.id)}>{empLabel(x)} (left)</option>)}</optgroup>
+                  </select>
+                </Field>}
+                <Field label="Pay month ★">
+                  <select className="form-input" value={hr.month} onChange={e=>setHr(p=>({...p,month:e.target.value}))}>
+                    {hrMonthList().map(m=><option key={m} value={m}>{hrMonthLabel(m)}</option>)}
+                  </select>
+                </Field>
+              </div>)}
+              {hr.on&&<div className="dim" style={{fontSize:11,marginTop:8}}>The same amount and date go to the HR ledger for the chosen month. Deleting or editing this cash line updates HR automatically.</div>}
+            </div>)}
           </FormCard>
         </div>
       </div>
