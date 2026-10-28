@@ -2564,6 +2564,32 @@ setEntries(e||[]); setRawMaterials(rm||[]); setLoading(false);
 // ══════════════════════════════════════════════════════════
 // SUPPLYCO DISPATCH
 // ══════════════════════════════════════════════════════════
+async function stockGuard(product, qty){
+  if(!product) return true;
+  const want=Number(qty)||0;
+  let have=0, unit='bags', res;
+  if(product.is_raw_material){
+    unit='kg';
+    res=product.has_schemes
+      ? await sb.from('raw_material_scheme_stock').select('qty_kg').eq('product_id',product.id).eq('scheme','Private').maybeSingle()
+      : await sb.from('raw_material_stock').select('qty_kg').eq('product_id',product.id).maybeSingle();
+    have=Number(res.data?.qty_kg||0);
+  } else if(packSizeOf(product)>0){
+    res=await sb.from('current_stock').select('qty_bags').eq('product_id',product.id).maybeSingle();
+    have=Number(res.data?.qty_bags||0);
+  } else {
+    unit='kg';
+    res=await sb.from('raw_material_stock').select('qty_kg').eq('product_id',product.id).maybeSingle();
+    have=Number(res.data?.qty_kg||0);
+  }
+  if(res.error){ alert('Could not check stock: '+res.error.message); return false; }
+  if(want<=have+0.0005) return true;
+  alert(have<=0
+    ? `Cannot dispatch: there is no stock of ${product.product_name}.\n\nEnter the production for the day first, then dispatch.`
+    : `Cannot dispatch ${fmt(want,unit==='kg'?3:0)} ${unit} of ${product.product_name}.\n\nOnly ${fmt(have,unit==='kg'?3:0)} ${unit} in stock.`);
+  return false;
+}
+
 function Dispatch(){
   const [dispatches,setDispatches]=useState([]);
   const [workOrders,setWorkOrders]=useState([]);
@@ -2604,13 +2630,14 @@ function Dispatch(){
     if(!dForm.invoice_no||!dForm.depot_name||!dForm.qty_bags||!dForm.scheme) return alert('Scheme, invoice, depot and quantity required.');
     const prod=productForScheme(dForm.scheme);
     if(!prod) return alert(`No finished product found matching scheme "${dForm.scheme}" — check Product Master.`);
-    if(!(await sdGuardDispatch(dForm.date,prod,dForm.qty_bags))) return;
+    if(!(await stockGuard(prod,dForm.qty_bags))) return;
+if(!(await sdGuardDispatch(dForm.date,prod,dForm.qty_bags))) return;
     setSaving(true);
     const row={date:dForm.date,invoice_no:dForm.invoice_no,delivery_order_no:dForm.delivery_order_no,work_order_id:dForm.work_order_id||null,scheme:dForm.scheme,product_id:prod.id,batch_no:dForm.batch_no,depot_name:dForm.depot_name,district:dForm.district,qty_bags:Number(dForm.qty_bags),vehicle_no:dForm.vehicle_no,notes:dForm.notes};
     const {data,error}=await sb.from('supplyco_dispatches').insert(row).select('*, product:product_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',prod.id).maybeSingle();
-    if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,Number(s.qty_bags)-Number(dForm.qty_bags)),updated_at:new Date().toISOString()}).eq('id',s.id);
+    if(s) await sb.from('current_stock').update({qty_bags:Number(s.qty_bags)-Number(dForm.qty_bags),updated_at:new Date().toISOString()}).eq('id',s.id);
     setDispatches(p=>[data,...p]); setDForm(blankD); setShowDF(false); setSaving(false);
     logActivity('Dispatch','create',`Invoice ${dForm.invoice_no} — ${dForm.qty_bags} bags to ${dForm.depot_name}`);
   };
@@ -2757,7 +2784,8 @@ function PrivateDispatch(){
 
   const save=async()=>{
     if(!form.party_name||!form.product_id||!form.qty) return alert('Party name, product and quantity required.');
-    if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
+    if(!(await stockGuard(selectedProduct,form.qty))) return;
+if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
     setSaving(true);
     const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:Number(form.qty),qty_kg:isRaw?Number(form.qty):null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes};
     const {data,error}=await sb.from('private_dispatches').insert(row).select('*, product:product_id(*)').single();
