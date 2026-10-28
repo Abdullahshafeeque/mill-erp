@@ -258,7 +258,7 @@ const AX_MILL=[
  {key:'mill:recurring-jobs',label:'Recurring Jobs',acts:[['view','Open page','M'],['add','New / duplicate schedule','M'],['edit','Edit schedule','M'],['pause','Pause / resume','M'],['skip_next','Skip next run','M'],['generate_now','Generate due jobs now','M'],['delete','Delete schedule','M']]},
  {key:'mill:licenses',label:'Licenses & Renewals',acts:[['view','Open page','MA'],['add','Add license','M'],['edit','Edit license details','M'],['renew','Renew & upload','MA'],['add_file','Add files','MA']]},
  {key:'mill:all-stock',label:'All Stock',acts:[['view','Open page','MASTD']]},
- {key:'mill:store',label:'Store & Materials',acts:[['view','Open page','MST'],['add_item','Add store item','MT'],['txn','Receive / issue stock (+/−)','MT']]},
+ {key:'mill:store',label:'Store & Materials',acts:[['view','Open page','MST'],['add_item','Add store item','MT'],['delete_item','Delete store item','M'],['txn','Receive / issue stock (+/−)','MT']]},
  {key:'mill:stock-count',label:'Stock Count',acts:[['view','Open page','MST'],['start_count','Load book stock','MST'],['submit','Submit count for approval','MST']]},
  {key:'mill:reports',label:'Reports',acts:[['view','Open page','M'],['tab_yield','Milling yield report','M'],['tab_wheat','Wheat movement report','M'],['tab_dispatch','Dispatch summary report','M'],['download','Download CSV','M']]},
  {key:'mill:product-master',label:'Product Master',acts:[['view','Open page','M'],['add','Add product','M'],['edit','Edit product','M'],['archive','Archive / activate','M']]},
@@ -2981,7 +2981,33 @@ function Store(){
   };
 
   if(loading) return <Loading/>;
-  const cats=['All',...CATS];
+  const delItem=async(item)=>{
+  if(!ax('store','delete_item')) return;
+  const {data:rules,error:re}=await sb.from('product_packing_rules').select('product_id').eq('store_item_id',item.id);
+  if(re) return alert('Could not check packing rules: '+re.message);
+  if((rules||[]).length>0){
+    const ids=Array.from(new Set(rules.map(r=>r.product_id)));
+    const {data:pn}=await sb.from('product_master').select('id,product_name').in('id',ids);
+    const names=(pn||[]).map(p=>p.product_name);
+    return alert(`"${item.item_name}" cannot be deleted because production still deducts it automatically for:\n\n${(names.length?names:ids).join('\n')}\n\nOpen Product Recipes → Packing & consumables per bag, remove it (or switch it to another item) for these products, then delete it.`);
+  }
+  if(!confirm(`Delete "${item.item_name}" (${item.qty} ${item.unit}) from Store & Materials?\n\nIts movement history will be deleted too. This cannot be undone.`)) return;
+  setSaving(true);
+  const del=()=>sb.from('store_stock').delete().eq('id',item.id).select();
+  const clean=async()=>{
+    await sb.from('production_material_usage').delete().eq('store_item_id',item.id);
+    await sb.from('store_transactions').delete().eq('item_id',item.id);
+  };
+  let r=await del();
+  if(r.error&&r.error.code==='23503'){ await clean(); r=await del(); }
+  else if(!r.error&&r.data&&r.data.length) await clean();
+  setSaving(false);
+  if(r.error) return alert('Could not delete: '+r.error.message);
+  if(!r.data||r.data.length===0) return alert('Not deleted — you are not permitted to delete this item. Nothing was changed.');
+  setItems(p=>p.filter(x=>x.id!==item.id));
+  logActivity('Store','delete',`Deleted item — ${item.item_name} (${item.qty} ${item.unit})`);
+};
+const cats=['All',...CATS];
   const filtered=filterCat==='All'?items:items.filter(x=>x.category===filterCat);
 
   return(<div className="page">
@@ -3024,7 +3050,8 @@ function Store(){
             <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
             <td>
               {ax('store','txn')&&<button className="btn btn-green btn-sm" onClick={()=>setShowTxn(item.id)}>+ / −</button>}
-              {showTxn===item.id&&(
+              {ax('store','delete_item')&&<button className="btn btn-red btn-sm" style={{marginLeft:6}} onClick={()=>delItem(item)} disabled={saving}>✕</button>}
+{showTxn===item.id&&(
                 <div style={{marginTop:8,padding:12,background:'var(--surface2)',borderRadius:6,border:'1px solid var(--border)'}}>
                   <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
                     <select style={{width:110}} value={txnForm.type} onChange={e=>setTxnForm(p=>({...p,type:e.target.value}))}>
