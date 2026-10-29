@@ -202,6 +202,8 @@ const NAV = [
     { id:'recurring-jobs', label:'Recurring Jobs', icon:'🔁' },
   { id:'licenses', label:'Licenses & Renewals', icon:'📑' },
   { id:'shutdowns', label:'Maintenance Shutdown', icon:'🔧' },
+  { section:'Electrical' },
+  { id:'power-factor', label:'Power Factor', icon:'⚡' },
   { section:'Inventory' },
   { id:'all-stock', label:'All Stock', icon:'📦' },
   { id:'store', label:'Store & Materials', icon:'🧰' },
@@ -273,6 +275,7 @@ const AX_MILL=[
  {key:'mill:org-chart',label:'Roles & Responsibilities',acts:[['view','Open page','MASTDV'],['edit_resp','Edit responsibilities (positions below theirs)','']]},
  {key:'mill:shutdowns',label:'Maintenance Shutdown',acts:[['view','Open page','MASTD']]}, // planning/approving stays per-person in Shutdown Settings
  {key:'mill:activity-log',label:'Activity Log',acts:[['view','Open page','M']]},
+  {key:'mill:power-factor',label:'Electrical · Power Factor',acts:[['view','Open page','MS'],['enter','Record a reading','MS'],['edit','Edit a reading','M'],['delete','Delete a reading','M'],['download','Download CSV','MS'],['settings','Change target & settings','M']]},
  {key:'mill:ledger',label:'Daily Cash Book',acts:[['view','Open page','MA'],['add_receipt','Add receipt','MA'],['add_payment','Add payment','MA'],['link_hr','Link payment to an employee (syncs to HR)','MA'],['edit_entry','Edit entry','MA'],['delete_entry','Delete entry','MA'],['add_type','Add new transaction type','MA'],['submit_day','Submit day','MA']]},
 ];
 
@@ -10170,6 +10173,564 @@ function QualitySettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// ELECTRICAL · POWER FACTOR
+// Paste this whole block into the <script type="text/babel"> just ABOVE   function App(){
+// PF for a period = Δ kWh ÷ Δ kVAh  (kVAh is apparent energy, so PF can never exceed 1)
+// ══════════════════════════════════════════════════════════
+const PF_KEY='power_factor_settings';
+const PF_DEFAULTS={target:0.95,minimum:0.90,multiplier:1,gap_hours:36};
+const PF_COL={good:'var(--green)',warn:'var(--amber)',low:'var(--red)',bad:'var(--purple)',na:'var(--muted)'};
+const PF_LABEL={good:'On target',warn:'Below target',low:'Below minimum',bad:'Check entry',na:'—'};
+const PF_BADGE={good:'badge-green',warn:'badge-amber',low:'badge-red',bad:'badge-blue',na:'badge-muted'};
+
+const pfStatus=(pf,S)=>pf===null||pf===undefined?'na':pf>1.0005?'bad':pf>=S.target?'good':pf>=S.minimum?'warn':'low';
+const pf3=(v)=>(v===null||v===undefined||isNaN(v))?'—':Number(v).toFixed(3);
+const pfNowLocal=()=>{ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16); };
+const pfToLocal=(iso)=>{ const d=new Date(iso); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16); };
+const pfFmtDT=(t)=>new Date(t).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true});
+const pfDur=(h)=>h<1?`${Math.round(h*60)} min`:h<48?`${h.toFixed(1)} h`:`${(h/24).toFixed(1)} days`;
+const pfTan=(pf)=>Math.tan(Math.acos(Math.min(1,Math.max(0.01,pf))));
+const pfMK=(t)=>{ const d=new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); };
+const pfMonthName=(k)=>{ const [y,m]=k.split('-'); return `${MONTH_NAMES[Number(m)-1]} ${y}`; };
+const pfHour=(h)=>String(h).padStart(2,'0')+':00';
+
+// One interval per reading (between it and the one before). Resets and bad data give an invalid interval.
+function pfBuild(rows,S){
+  const mf=Number(S.multiplier)||1;
+  return rows.map((c,i)=>{
+    const p=i>0?rows[i-1]:null;
+    const iv={i,row:c,prev:p,valid:false};
+    if(p&&!c.is_reset){
+      const dh=(c.t-p.t)/3600000, dk=(c.kwh-p.kwh)*mf, dv=(c.kvah-p.kvah)*mf;
+      if(dh>0&&dk>=0&&dv>0){
+        const pf=dk/dv, kw=dk/dh, kva=dv/dh;
+        Object.assign(iv,{valid:true,dh,dk,dv,pf,kw,kva,status:pfStatus(pf,S),
+          extra:pf<S.target?dv-dk/S.target:0,
+          kvarReq:(pf<S.target&&pf>0&&pf<=1)?kw*(pfTan(pf)-pfTan(S.target)):0,
+          longGap:dh>S.gap_hours});
+      }
+    }
+    return iv;
+  });
+}
+
+function pfAgg(ivs,S){
+  const good=ivs.filter(x=>x.valid&&x.status!=='bad');
+  const a={n:good.length,bad:ivs.filter(x=>x.valid&&x.status==='bad').length,dk:0,dv:0,h:0,below:0,belowMin:0,extra:0,min:null,max:null,minIv:null,maxIv:null};
+  good.forEach(x=>{
+    a.dk+=x.dk; a.dv+=x.dv; a.h+=x.dh; a.extra+=x.extra;
+    if(x.pf<S.target) a.below+=x.dh;
+    if(x.pf<S.minimum) a.belowMin+=x.dh;
+    if(a.min===null||x.pf<a.min){ a.min=x.pf; a.minIv=x; }
+    if(a.max===null||x.pf>a.max){ a.max=x.pf; a.maxIv=x; }
+  });
+  a.pf=a.dv>0?a.dk/a.dv:null; a.kw=a.h>0?a.dk/a.h:null;
+  return a;
+}
+
+// PF by hour of day: each interval is spread across the clock hours it covers.
+function pfHourly(ivs){
+  const k=Array(24).fill(0), v=Array(24).fill(0);
+  ivs.filter(x=>x.valid&&x.status!=='bad'&&!x.longGap).forEach(x=>{
+    const t0=x.prev.t, t1=x.row.t; let cur=t0, g=0;
+    while(cur<t1&&g<400){
+      const d=new Date(cur);
+      const nb=Math.min(t1,new Date(d.getFullYear(),d.getMonth(),d.getDate(),d.getHours()+1).getTime());
+      const f=(nb-cur)/(t1-t0);
+      k[d.getHours()]+=x.dk*f; v[d.getHours()]+=x.dv*f;
+      cur=nb; g++;
+    }
+  });
+  return k.map((kk,h)=>({h,pf:v[h]>0?kk/v[h]:null,kvah:v[h]}));
+}
+
+// method 'next': first reading of the month → first reading of the next month.  'within': first → last reading in the month.
+function pfMonthStats(key,rows,ivs,method,S){
+  const idx=[]; rows.forEach((r,i)=>{ if(pfMK(r.t)===key) idx.push(i); });
+  if(!idx.length) return null;
+  const iF=idx[0]; let iE, prov=false;
+  if(method==='next'){ const nx=rows.findIndex(r=>pfMK(r.t)>key); if(nx>=0) iE=nx; else { iE=idx[idx.length-1]; prov=true; } }
+  else iE=idx[idx.length-1];
+  if(iE<=iF) return {key,iF,iE,prov,empty:true};
+  const seg=ivs.slice(iF+1,iE+1);
+  return {key,iF,iE,prov,a:pfAgg(seg,S),from:rows[iF],to:rows[iE]};
+}
+
+// What PF the rest of a running month needs to still finish at target.
+function pfProject(st,S){
+  if(!st||st.empty||!st.prov||!st.a||st.a.dv<=0||st.a.h<=0) return null;
+  const L=st.to, d=new Date(L.t);
+  const endMs=new Date(d.getFullYear(),d.getMonth()+1,1).getTime();
+  const remH=Math.max(0,(endMs-L.t)/3600000);
+  const remKvah=st.a.dv/st.a.h*remH;
+  if(remKvah<=0) return null;
+  const req=(S.target*(st.a.dv+remKvah)-st.a.dk)/remKvah;
+  return {remH,remKvah,req};
+}
+
+// ── charts ──
+function PfTrend({ivs,S}){
+  const v=ivs.filter(x=>x.valid&&x.status!=='bad');
+  if(!v.length) return <div className="dim" style={{padding:24,textAlign:'center',fontSize:13}}>No intervals in this range yet. Two readings are needed to get a power factor.</div>;
+  const W=720,H=260,L=44,R=12,T=12,B=30;
+  const t0=v[0].prev.t, t1=v[v.length-1].row.t;
+  const mn=Math.min(...v.map(x=>x.pf),S.minimum);
+  const lo=Math.max(0,Math.floor((mn-0.02)*20)/20), hi=1;
+  const x=(t)=>L+(t1===t0?0:(t-t0)/(t1-t0))*(W-L-R);
+  const y=(p)=>T+(hi-Math.min(hi,Math.max(lo,p)))/(hi-lo)*(H-T-B);
+  const step=(hi-lo)>0.4?0.1:0.05; const ticks=[]; for(let p=lo;p<=hi+1e-9;p+=step) ticks.push(p);
+  const lab={fontSize:10,fill:'var(--muted)',fontFamily:'var(--mono)'};
+  const dl=(t)=>new Date(t).toLocaleDateString('en-IN',{day:'2-digit',month:'short'});
+  return(<div style={{overflowX:'auto'}}><svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:520,height:'auto'}}>
+    <rect x={L} y={y(hi)} width={W-L-R} height={y(S.target)-y(hi)} style={{fill:'var(--green)',opacity:0.09}}/>
+    <rect x={L} y={y(S.target)} width={W-L-R} height={y(S.minimum)-y(S.target)} style={{fill:'var(--amber)',opacity:0.10}}/>
+    <rect x={L} y={y(S.minimum)} width={W-L-R} height={y(lo)-y(S.minimum)} style={{fill:'var(--red)',opacity:0.08}}/>
+    {ticks.map((p,i)=>(<g key={i}><line x1={L} x2={W-R} y1={y(p)} y2={y(p)} style={{stroke:'var(--border)'}}/><text x={L-6} y={y(p)+4} textAnchor="end" style={lab}>{p.toFixed(2)}</text></g>))}
+    <line x1={L} x2={W-R} y1={y(S.target)} y2={y(S.target)} style={{stroke:'var(--green)',strokeDasharray:'5 4',strokeWidth:1.5}}/>
+    <line x1={L} x2={W-R} y1={y(S.minimum)} y2={y(S.minimum)} style={{stroke:'var(--red)',strokeDasharray:'5 4',strokeWidth:1.5}}/>
+    {v.map(q=>(<line key={q.i} x1={x(q.prev.t)} x2={x(q.row.t)} y1={y(q.pf)} y2={y(q.pf)} style={{stroke:PF_COL[q.status],strokeWidth:4,opacity:q.longGap?0.4:1}}>
+      <title>{`${pfFmtDT(q.prev.t)} → ${pfFmtDT(q.row.t)}\nPF ${pf3(q.pf)} · ${fmt(q.dk,1)} kWh / ${fmt(q.dv,1)} kVAh`}</title></line>))}
+    {v.length<=80&&v.map(q=>(<circle key={'c'+q.i} cx={x(q.row.t)} cy={y(q.pf)} r={3.5} style={{fill:PF_COL[q.status],stroke:'var(--surface)',strokeWidth:1.5}}/>))}
+    <text x={L} y={H-8} textAnchor="start" style={lab}>{dl(t0)}</text>
+    <text x={W-R} y={H-8} textAnchor="end" style={lab}>{dl(t1)}</text>
+    <text x={W-R-2} y={y(S.target)-4} textAnchor="end" style={{...lab,fill:'var(--green)'}}>target {S.target}</text>
+  </svg></div>);
+}
+
+function PfBars({items,S,small}){
+  const ok=items.filter(i=>i.pf!==null);
+  if(!ok.length) return <div className="dim" style={{padding:24,textAlign:'center',fontSize:13}}>Not enough data yet.</div>;
+  const W=720,H=210,L=40,R=8,T=14,B=26;
+  const mn=Math.min(...ok.map(i=>i.pf),S.minimum);
+  const lo=Math.max(0,Math.floor((mn-0.03)*20)/20), hi=1;
+  const y=(p)=>T+(hi-Math.min(hi,Math.max(lo,p)))/(hi-lo)*(H-T-B);
+  const bw=(W-L-R)/items.length;
+  const lab={fontSize:small?8:10,fill:'var(--muted)',fontFamily:'var(--mono)'};
+  const step=(hi-lo)>0.4?0.1:0.05; const ticks=[]; for(let p=lo;p<=hi+1e-9;p+=step) ticks.push(p);
+  return(<div style={{overflowX:'auto'}}><svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:520,height:'auto'}}>
+    {ticks.map((p,i)=>(<g key={i}><line x1={L} x2={W-R} y1={y(p)} y2={y(p)} style={{stroke:'var(--border)'}}/><text x={L-5} y={y(p)+3} textAnchor="end" style={lab}>{p.toFixed(2)}</text></g>))}
+    {items.map((it,i)=>{
+      const cx=L+i*bw+bw/2;
+      return(<g key={i}>
+        {it.pf!==null&&<rect x={cx-bw*0.34} y={y(it.pf)} width={bw*0.68} height={Math.max(1,H-B-y(it.pf))} rx={2} style={{fill:PF_COL[pfStatus(it.pf,S)]}}><title>{`${it.title||it.label}: PF ${pf3(it.pf)}`}</title></rect>}
+        {it.pf!==null&&items.length<=24&&<text x={cx} y={y(it.pf)-3} textAnchor="middle" style={lab}>{it.pf.toFixed(2)}</text>}
+        {(items.length<=12||i%3===0)&&<text x={cx} y={H-9} textAnchor="middle" style={lab}>{it.label}</text>}
+      </g>);
+    })}
+    <line x1={L} x2={W-R} y1={y(S.target)} y2={y(S.target)} style={{stroke:'var(--green)',strokeDasharray:'5 4',strokeWidth:1.5}}/>
+    <line x1={L} x2={W-R} y1={y(S.minimum)} y2={y(S.minimum)} style={{stroke:'var(--red)',strokeDasharray:'5 4',strokeWidth:1.5}}/>
+  </svg></div>);
+}
+
+function PfBig({pf,S,label,sub}){
+  const st=pfStatus(pf,S); const c=PF_COL[st];
+  return(<div style={{padding:'14px 18px',borderRadius:8,border:`1px solid color-mix(in srgb, ${c} 35%, transparent)`,background:`color-mix(in srgb, ${c} 9%, transparent)`}}>
+    <div className="form-label" style={{marginBottom:2}}>{label}</div>
+    <div style={{fontSize:34,fontWeight:700,color:c,lineHeight:1.1}}>{pf3(pf)}</div>
+    <div style={{fontSize:12,color:c,fontWeight:600,marginTop:2}}>{PF_LABEL[st]}</div>
+    {sub&&<div className="dim" style={{fontSize:12,marginTop:4}}>{sub}</div>}
+  </div>);
+}
+
+function PowerFactor({userEmail}){
+  const [rows,setRows]=useState([]);
+  const [S,setS]=useState(PF_DEFAULTS);
+  const [sForm,setSForm]=useState(PF_DEFAULTS);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [msg,setMsg]=useState('');
+  const [saving,setSaving]=useState(false);
+  const [tab,setTab]=useState(ax('power-factor','enter')?'record':'overview');
+  const blank=()=>({at:pfNowLocal(),kwh:'',kvah:'',notes:'',reset:false});
+  const [form,setForm]=useState(blank);
+  const [editingId,setEditingId]=useState(null);
+  const [range,setRange]=useState('all');
+  const [from,setFrom]=useState('');
+  const [to,setTo]=useState('');
+  const [method,setMethod]=useState('next');
+  const [month,setMonth]=useState(today.slice(0,7));
+  const [showN,setShowN]=useState(100);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const flash=(t)=>{ setMsg(t); setTimeout(()=>setMsg(''),5000); };
+
+  const load=useCallback(async()=>{
+    try{
+      const [data,{data:st}]=await Promise.all([
+        fetchAllRows((a,b)=>sb.from('power_factor_readings').select('*').order('reading_at').order('id').range(a,b)),
+        sb.from('erp_settings').select('value').eq('key',PF_KEY).maybeSingle(),
+      ]);
+      let saved={}; try{ saved=st&&st.value?JSON.parse(st.value):{}; }catch(e){}
+      const cfg={...PF_DEFAULTS,...saved};
+      setS(cfg); setSForm(cfg);
+      setRows(data.map(r=>({...r,t:new Date(r.reading_at).getTime(),kwh:Number(r.kwh),kvah:Number(r.kvah)})));
+      setErr('');
+    }catch(e){ setErr((e.message||String(e))+' — have you run power_factor.sql?'); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const ivs=React.useMemo(()=>pfBuild(rows,S),[rows,S]);
+
+  // keep "now" fresh when the person opens the Record tab for a new entry
+  useEffect(()=>{ if(tab==='record'&&!editingId) setForm(p=>(p.kwh===''&&p.kvah==='')?{...p,at:pfNowLocal()}:p); },[tab]);
+
+  // ── validation + live preview ──
+  const atMs=form.at?new Date(form.at).getTime():NaN;
+  const others=rows.filter(r=>r.id!==editingId);
+  const prev=others.filter(r=>r.t<atMs).slice(-1)[0]||null;
+  const next=others.find(r=>r.t>atMs)||null;
+  const touched=form.kwh!==''||form.kvah!=='';
+  const chk=(()=>{
+    const errors=[],warnings=[]; let pv=null;
+    const kwh=Number(form.kwh), kvah=Number(form.kvah), mf=Number(S.multiplier)||1;
+    if(!form.at||isNaN(atMs)) errors.push('Choose the date and time of the reading.');
+    else if(atMs>Date.now()+5*60000) errors.push('The reading time is in the future.');
+    if(form.kwh===''||isNaN(kwh)||kwh<0) errors.push('Enter the kWh meter reading.');
+    if(form.kvah===''||isNaN(kvah)||kvah<=0) errors.push('Enter the kVAh meter reading.');
+    if(!errors.length){
+      if(others.some(r=>r.t===atMs)) errors.push('A reading already exists for this exact minute.');
+      if(prev&&!form.reset){
+        if(kwh<prev.kwh) errors.push(`kWh (${fmt(kwh,2)}) is lower than the previous reading (${fmt(prev.kwh,2)}). Check the figure, or tick “meter replaced / reset”.`);
+        if(kvah<prev.kvah) errors.push(`kVAh (${fmt(kvah,2)}) is lower than the previous reading (${fmt(prev.kvah,2)}). Check the figure, or tick “meter replaced / reset”.`);
+      }
+      if(next&&!next.is_reset){
+        if(kwh>next.kwh) errors.push(`kWh is higher than the later reading at ${pfFmtDT(next.t)} (${fmt(next.kwh,2)}).`);
+        if(kvah>next.kvah) errors.push(`kVAh is higher than the later reading at ${pfFmtDT(next.t)} (${fmt(next.kvah,2)}).`);
+      }
+      if(!errors.length&&prev&&!form.reset){
+        const dh=(atMs-prev.t)/3600000, dk=(kwh-prev.kwh)*mf, dv=(kvah-prev.kvah)*mf;
+        if(dv<=0){ if(dk>0) errors.push('kWh moved but kVAh did not — one of them is mistyped.'); else warnings.push('Neither meter has moved since the previous reading, so there is no power factor for this period.'); }
+        else{
+          const pf=dk/dv;
+          pv={dh,dk,dv,pf,kw:dk/dh,kva:dv/dh,status:pfStatus(pf,S),kvarReq:(pf<S.target&&pf>0&&pf<=1)?(dk/dh)*(pfTan(pf)-pfTan(S.target)):0};
+          if(pf>1.0005) warnings.push(`Power factor works out to ${pf3(pf)}, which is above 1 and not possible. kWh and kVAh may be swapped or mistyped.`);
+          if(dk===0) warnings.push('No kWh was consumed in this period (mill idle?), so the power factor is 0.');
+          if(dh>S.gap_hours) warnings.push(`${pfDur(dh)} since the previous reading — this power factor is an average over a long period and hides the daily swings.`);
+        }
+      }
+    }
+    return {errors,warnings,pv};
+  })();
+
+  const resetForm=()=>{ setForm(blank()); setEditingId(null); };
+
+  const save=async()=>{
+    if(chk.errors.length) return alert('Please fix:\n\n• '+chk.errors.join('\n• '));
+    if(chk.warnings.length&&!confirm('Please note:\n\n• '+chk.warnings.join('\n• ')+'\n\nSave anyway?')) return;
+    setSaving(true);
+    const payload={reading_at:new Date(form.at).toISOString(),kwh:Number(form.kwh),kvah:Number(form.kvah),is_reset:!!form.reset,notes:form.notes.trim()||null};
+    const res=editingId
+      ?await sb.from('power_factor_readings').update({...payload,edited_by:userEmail||null,edited_at:new Date().toISOString()}).eq('id',editingId)
+      :await sb.from('power_factor_readings').insert({...payload,entered_by:userEmail||null});
+    setSaving(false);
+    if(res.error) return alert(res.error.code==='23505'?'A reading already exists for this exact time.':res.error.message);
+    logActivity('Electrical',editingId?'update':'create',`Power factor reading ${editingId?'edited':'logged'} — ${fmt(payload.kwh,2)} kWh, ${fmt(payload.kvah,2)} kVAh at ${pfFmtDT(new Date(payload.reading_at).getTime())}${chk.pv?` (PF ${pf3(chk.pv.pf)})`:''}`);
+    const wasEdit=!!editingId;
+    resetForm();
+    flash(chk.pv?`Saved. Power factor since the previous reading: ${pf3(chk.pv.pf)} — ${PF_LABEL[chk.pv.status]}.`:'Saved as the starting reading.');
+    await load();
+    if(wasEdit) setTab('log');
+  };
+
+  const startEdit=(r)=>{
+    setEditingId(r.id);
+    setForm({at:pfToLocal(r.reading_at),kwh:String(r.kwh),kvah:String(r.kvah),notes:r.notes||'',reset:!!r.is_reset});
+    setTab('record'); if(window.scrollTo) window.scrollTo(0,0);
+  };
+  const del=async(r)=>{
+    if(!confirm(`Delete the reading of ${pfFmtDT(r.t)}?\n\nThe periods on either side will merge into one and be recalculated.`)) return;
+    const {error}=await sb.from('power_factor_readings').delete().eq('id',r.id);
+    if(error) return alert(error.message);
+    logActivity('Electrical','delete',`Power factor reading deleted — ${pfFmtDT(r.t)}`);
+    load();
+  };
+
+  const saveSettings=async()=>{
+    const n=(v)=>Number(v);
+    if(!(n(sForm.target)>0&&n(sForm.target)<=1)) return alert('Target must be between 0 and 1.');
+    if(!(n(sForm.minimum)>0&&n(sForm.minimum)<=n(sForm.target))) return alert('Minimum must be above 0 and not higher than the target.');
+    if(!(n(sForm.multiplier)>0)) return alert('Meter multiplier must be above 0 (use 1 if unsure).');
+    if(!(n(sForm.gap_hours)>=1)) return alert('Long-gap hours must be at least 1.');
+    const clean={target:n(sForm.target),minimum:n(sForm.minimum),multiplier:n(sForm.multiplier),gap_hours:n(sForm.gap_hours)};
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:PF_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    setS(clean); logActivity('Settings','update','Power factor settings updated'); flash('Settings saved.');
+  };
+
+  if(loading) return <Loading/>;
+
+  // ── range ──
+  const presets=reportPresets();
+  const setPreset=(k)=>{
+    setRange(k);
+    if(k==='7') { setFrom(licShift(today,-7)); setTo(today); }
+    else if(k==='30') { setFrom(licShift(today,-30)); setTo(today); }
+    else if(k==='month') { setFrom(presets[0].from); setTo(presets[0].to); }
+    else if(k==='last') { setFrom(presets[1].from); setTo(presets[1].to); }
+    else { setFrom(''); setTo(''); }
+  };
+  const fromMs=from?new Date(from+'T00:00:00').getTime():-Infinity;
+  const toMs=to?new Date(to+'T23:59:59').getTime():Infinity;
+  const rIvs=ivs.filter(x=>x.row.t>=fromMs&&x.row.t<=toMs);
+  const agg=pfAgg(rIvs,S);
+  const hourly=pfHourly(rIvs);
+  const validIvs=rIvs.filter(x=>x.valid&&x.status!=='bad');
+
+  // ── insights ──
+  const insights=[];
+  if(agg.n>0){
+    const st=pfStatus(agg.pf,S);
+    insights.push({t:st==='good'?'good':st==='warn'?'warn':'low',x:`Overall power factor for this range is ${pf3(agg.pf)} against a target of ${S.target}.`});
+    if(agg.below>0) insights.push({t:agg.below/agg.h>0.3?'low':'warn',x:`The power factor was below target for ${(agg.below/agg.h*100).toFixed(0)}% of the time (${pfDur(agg.below)})${agg.belowMin>0?`, and below the minimum of ${S.minimum} for ${pfDur(agg.belowMin)}`:''}.`});
+    else insights.push({t:'good',x:'Every period in this range was at or above target. 👏'});
+    const hh=hourly.filter(h=>h.pf!==null&&h.kvah>0);
+    if(hh.length>=4){
+      const w=hh.reduce((a,b)=>b.pf<a.pf?b:a), b2=hh.reduce((a,b)=>b.pf>a.pf?b:a);
+      if(b2.pf-w.pf>=0.02) insights.push({t:'info',x:`Weakest time of day: ${pfHour(w.h)}–${pfHour((w.h+1)%24)} at ${pf3(w.pf)}. Strongest: ${pfHour(b2.h)}–${pfHour((b2.h+1)%24)} at ${pf3(b2.pf)}. Check what runs during the weak hour (motors starting, light load, capacitor stages not switching in).`});
+    }
+    if(agg.extra>0&&agg.dv>0) insights.push({t:'warn',x:`Low power factor drew about ${fmt(agg.extra,0)} kVAh of extra apparent energy (${(agg.extra/agg.dv*100).toFixed(1)}% of all kVAh) compared with running at ${S.target}.`});
+    const need=validIvs.filter(x=>x.kvarReq>0);
+    if(need.length){
+      const tot=need.reduce((s,x)=>s+x.dh,0);
+      const avgReq=need.reduce((s,x)=>s+x.kvarReq*x.dh,0)/tot;
+      const sorted=need.map(x=>x.kvarReq).sort((a,b)=>a-b);
+      const p90=sorted[Math.min(sorted.length-1,Math.floor(sorted.length*0.9))];
+      insights.push({t:'info',x:`To reach ${S.target}, about ${fmt(avgReq,0)} kVAr of correction is needed on average while the power factor is low, and ~${fmt(p90,0)} kVAr at the 90th percentile. An APFC bank of about ${Math.ceil(p90/5)*5} kVAr (in steps) would cover most of it. Have your electrician verify against the connected load before buying.`});
+    }
+  }
+  {
+    const nowMs=Date.now(), d7=7*864e5;
+    const a1=pfAgg(ivs.filter(x=>x.row.t>nowMs-d7),S), a0=pfAgg(ivs.filter(x=>x.row.t<=nowMs-d7&&x.row.t>nowMs-2*d7),S);
+    if(a1.pf!==null&&a0.pf!==null){
+      const d=a1.pf-a0.pf;
+      if(Math.abs(d)>=0.005) insights.push({t:d>0?'good':'warn',x:`Last 7 days: ${pf3(a1.pf)}, ${d>0?'up':'down'} ${Math.abs(d).toFixed(3)} from the 7 days before (${pf3(a0.pf)}).`});
+    }
+    const lastLow=[...ivs].reverse().find(x=>x.valid&&x.status!=='bad'&&x.pf<S.target);
+    const lastAny=[...ivs].reverse().find(x=>x.valid&&x.status!=='bad');
+    if(lastAny&&lastLow&&lastAny.i!==lastLow.i) insights.push({t:'good',x:`${pfDur((lastAny.row.t-lastLow.row.t)/3600000)} since the last period below target.`});
+  }
+  const gaps=rIvs.filter(x=>x.valid&&x.longGap).length, bads=rIvs.filter(x=>x.valid&&x.status==='bad').length;
+  if(bads>0) insights.push({t:'low',x:`${bads} period${bads===1?'':'s'} show a power factor above 1 — probably a typing mistake in kWh or kVAh. They are left out of all averages. Fix them in the Log tab.`});
+  if(gaps>0) insights.push({t:'warn',x:`${gaps} period${gaps===1?' is':'s are'} longer than ${S.gap_hours} hours. Long gaps hide the daily swings; record readings at least once a shift for the best picture.`});
+
+  // ── monthly ──
+  const monthKeys=Array.from(new Set(rows.map(r=>pfMK(r.t)))).sort();
+  const mStats=monthKeys.map(k=>pfMonthStats(k,rows,ivs,method,S));
+  const curKey=monthKeys.includes(month)?month:(monthKeys[monthKeys.length-1]||month);
+  const cur=pfMonthStats(curKey,rows,ivs,method,S);
+  const proj=method==='next'?pfProject(cur,S):null;
+
+  const csv=()=>downloadCSV(`power_factor_${today}.csv`,['Reading time','kWh reading','kVAh reading','Hours since previous','Δ kWh','Δ kVAh','Power factor','Avg kW','Avg kVA','Status','Notes'],
+    rows.map((r,i)=>{ const x=ivs[i]; return [pfFmtDT(r.t),r.kwh,r.kvah,x.valid?x.dh.toFixed(2):'',x.valid?r3(x.dk):'',x.valid?r3(x.dv):'',x.valid?x.pf.toFixed(4):'',x.valid?x.kw.toFixed(1):'',x.valid?x.kva.toFixed(1):'',x.valid?PF_LABEL[x.status]:(r.is_reset?'Meter reset':'Opening reading'),r.notes||'']; }));
+
+  const last=rows[rows.length-1];
+  const lastIv=[...ivs].reverse().find(x=>x.valid);
+
+  const tabBtn=(id,label)=><button key={id} className={`btn btn-sm ${tab===id?'btn-amber':'btn-ghost'}`} onClick={()=>setTab(id)}>{label}</button>;
+
+  const rangeBar=(<div className="card" style={{marginBottom:16,display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+      {[['7','Last 7 days'],['30','Last 30 days'],['month','This month'],['last','Last month'],['all','All time']].map(([k,l])=><button key={k} className={`btn btn-sm ${range===k?'btn-amber':'btn-ghost'}`} onClick={()=>setPreset(k)}>{l}</button>)}
+    </div>
+    <Field label="From"><input type="date" className="form-input" style={{width:150}} max={today} value={from} onChange={e=>{setFrom(e.target.value);setRange('custom');}}/></Field>
+    <Field label="To"><input type="date" className="form-input" style={{width:150}} max={today} value={to} onChange={e=>{setTo(e.target.value);setRange('custom');}}/></Field>
+  </div>);
+
+  return(<div className="page">
+    <div className="page-header">
+      <div className="page-label">Electrical</div>
+      <div className="page-title">Power factor</div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load power factor data" sub={err}/>}
+    {msg&&<Alert type="green" icon="✓" title={msg}/>}
+
+    <div className="stat-grid">
+      <StatCard label="Latest period PF" value={lastIv?pf3(lastIv.pf):'—'} sub={lastIv?PF_LABEL[lastIv.status]:'needs 2 readings'} col={lastIv?PF_COL[lastIv.status]:'var(--muted)'}/>
+      <StatCard label="Overall (range)" value={pf3(agg.pf)} sub={`target ${S.target}`} col={agg.pf===null?'var(--muted)':PF_COL[pfStatus(agg.pf,S)]}/>
+      <StatCard label="Time below target" value={agg.h>0?(agg.below/agg.h*100).toFixed(0)+'%':'—'} sub={agg.h>0?pfDur(agg.below):''} col={agg.h>0&&agg.below/agg.h>0.2?'var(--red)':'var(--green)'}/>
+      <StatCard label="Last reading" value={last?new Date(last.t).toLocaleDateString('en-IN',{day:'2-digit',month:'short'}):'—'} sub={last?`${pfDur((Date.now()-last.t)/3600000)} ago`:'none yet'} col="var(--blue)"/>
+    </div>
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:16}}>
+      {(ax('power-factor','enter')||editingId)&&tabBtn('record',editingId?'Editing a reading':'+ Record reading')}
+      {tabBtn('overview','Overview & analysis')}
+      {tabBtn('log','Reading log')}
+      {tabBtn('monthly','Monthly')}
+      {ax('power-factor','settings')&&tabBtn('settings','Settings')}
+    </div>
+
+    {/* ───── RECORD ───── */}
+    {tab==='record'&&(<div className="card" style={{marginBottom:16,borderLeft:`3px solid ${chk.pv?PF_COL[chk.pv.status]:'var(--amber)'}`}}>
+      <div className="section-label">{editingId?'Edit reading':'New meter reading'}</div>
+      <div className="dim" style={{fontSize:12,marginBottom:12}}>Enter the meter’s running totals (not the difference). The power factor is worked out from the change since the previous reading: <strong>PF = Δ kWh ÷ Δ kVAh</strong>.</div>
+      <div className="form-grid">
+        <Field label="Date & time ★">
+          <div style={{display:'flex',gap:6}}>
+            <input type="datetime-local" className="form-input" max={pfNowLocal()} value={form.at} onChange={e=>f('at',e.target.value)}/>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={()=>f('at',pfNowLocal())}>Now</button>
+          </div>
+        </Field>
+        <Field label="kWh reading ★"><input type="number" step="any" inputMode="decimal" className="form-input" style={{fontWeight:600}} value={form.kwh} onChange={e=>f('kwh',e.target.value)} placeholder={prev?`last ${fmt(prev.kwh,2)}`:''}/></Field>
+        <Field label="kVAh reading ★"><input type="number" step="any" inputMode="decimal" className="form-input" style={{fontWeight:600}} value={form.kvah} onChange={e=>f('kvah',e.target.value)} placeholder={prev?`last ${fmt(prev.kvah,2)}`:''}/></Field>
+        <Field label="Notes (optional)"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)} placeholder="e.g. capacitor bank tripped, load shedding"/></Field>
+      </div>
+      <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginTop:10}}>
+        <input type="checkbox" checked={form.reset} onChange={e=>f('reset',e.target.checked)}/> Meter was replaced / reset — start a new series from this reading (no power factor is calculated for it)
+      </label>
+
+      <div style={{marginTop:14,fontSize:12,color:'var(--muted)'}}>
+        {prev?<>Previous reading: <strong>{pfFmtDT(prev.t)}</strong> · {fmt(prev.kwh,2)} kWh · {fmt(prev.kvah,2)} kVAh</>:'This will be the first reading — it becomes the starting point. The next one gives the first power factor.'}
+        {next&&<><br/>Later reading: {pfFmtDT(next.t)} · {fmt(next.kwh,2)} kWh · {fmt(next.kvah,2)} kVAh (this entry sits between the two and both periods will be recalculated)</>}
+      </div>
+
+      {touched&&chk.errors.map((x,i)=><div key={'e'+i} style={{fontSize:12,color:'var(--red)',marginTop:6}}>✕ {x}</div>)}
+      {touched&&chk.warnings.map((x,i)=><div key={'w'+i} style={{fontSize:12,color:'var(--amber)',marginTop:6}}>⚠ {x}</div>)}
+
+      {chk.pv&&!chk.errors.length&&(<div style={{marginTop:14}}>
+        <div className="section-label">Live preview — this period</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:12}}>
+          <PfBig pf={chk.pv.pf} S={S} label="Power factor" sub={`${pfDur(chk.pv.dh)} since previous`}/>
+          <div className="stat-card"><div className="stat-label">Consumed</div><div style={{fontSize:16,fontWeight:600}}>{fmt(chk.pv.dk,1)} kWh</div><div className="stat-sub">{fmt(chk.pv.dv,1)} kVAh apparent</div></div>
+          <div className="stat-card"><div className="stat-label">Average load</div><div style={{fontSize:16,fontWeight:600}}>{fmt(chk.pv.kw,1)} kW</div><div className="stat-sub">{fmt(chk.pv.kva,1)} kVA</div></div>
+          <div className="stat-card"><div className="stat-label">To reach {S.target}</div><div style={{fontSize:16,fontWeight:600,color:chk.pv.kvarReq>0?'var(--amber)':'var(--green)'}}>{chk.pv.kvarReq>0?fmt(chk.pv.kvarReq,1)+' kVAr':'Nothing needed'}</div><div className="stat-sub">capacitor correction</div></div>
+        </div>
+      </div>)}
+
+      <div className="form-actions">
+        <button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':editingId?'Save changes':'Save reading'}</button>
+        <button className="btn btn-ghost" onClick={()=>{ const was=!!editingId; resetForm(); if(was) setTab('log'); }}>{editingId?'Cancel edit':'Clear'}</button>
+      </div>
+    </div>)}
+
+    {/* ───── OVERVIEW ───── */}
+    {tab==='overview'&&(<>
+      {rangeBar}
+      {rows.length<2&&<Alert type="amber" icon="ℹ" title="Add at least two readings to see analysis" sub="The first reading is a starting point; every reading after it gives a power factor for the period in between."/>}
+      {insights.length>0&&(<div style={{marginBottom:20}}>
+        <div className="section-label">What the data says</div>
+        {insights.map((x,i)=><Alert key={i} type={x.t==='good'?'green':x.t==='low'?'red':'amber'} icon={x.t==='good'?'✓':x.t==='info'?'💡':'⚠'} title={x.x}/>)}
+      </div>)}
+
+      {agg.n>0&&(<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginBottom:20}}>
+        <PfBig pf={agg.pf} S={S} label="Overall PF" sub={`${fmt(agg.dk,0)} kWh · ${fmt(agg.dv,0)} kVAh`}/>
+        <PfBig pf={agg.min} S={S} label="Worst period" sub={agg.minIv?pfFmtDT(agg.minIv.row.t):''}/>
+        <PfBig pf={agg.max} S={S} label="Best period" sub={agg.maxIv?pfFmtDT(agg.maxIv.row.t):''}/>
+      </div>)}
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="section-label">Power factor over time — each bar is one period between readings</div>
+        <PfTrend ivs={rIvs} S={S}/>
+        <div className="dim" style={{fontSize:11,marginTop:6}}>Green zone = at/above target · amber = below target · red = below minimum. Faded bars are long gaps. Hover a bar for details.</div>
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="section-label">Power factor by hour of the day</div>
+        <PfBars items={hourly.map(h=>({label:String(h.h),title:pfHour(h.h),pf:h.pf}))} S={S} small/>
+        <div className="dim" style={{fontSize:11,marginTop:6}}>Each period is spread across the hours it covers, so more frequent readings give a sharper picture. Periods longer than {S.gap_hours} h are left out.</div>
+      </div>
+
+      {agg.n>0&&(<>
+        <div className="section-label">Five weakest periods</div>
+        <RTable head={['Period','Power factor','Avg kW','kVAr to fix']} rows={[...validIvs].sort((a,b)=>a.pf-b.pf).slice(0,5).map(x=>[`${pfFmtDT(x.prev.t)} → ${pfFmtDT(x.row.t)}`,<span style={{color:PF_COL[x.status],fontWeight:700}}>{pf3(x.pf)}</span>,fmt(x.kw,1),x.kvarReq>0?fmt(x.kvarReq,1):'—'])}/>
+      </>)}
+    </>)}
+
+    {/* ───── LOG ───── */}
+    {tab==='log'&&(<>
+      {rangeBar}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
+        <div className="dim" style={{fontSize:12}}>Newest first. Each row’s power factor covers the period since the reading above it in time (the row below).</div>
+        {ax('power-factor','download')&&<button className="btn btn-ghost btn-sm" onClick={csv} disabled={rows.length===0}>⬇ Download CSV</button>}
+      </div>
+      <TableWrap><table>
+        <thead><tr><th>Reading time</th><th>kWh reading</th><th>kVAh reading</th><th>Period</th><th>Δ kWh</th><th>Δ kVAh</th><th>Power factor</th><th>Avg kW</th><th></th></tr></thead>
+        <tbody>
+          {rIvs.length===0&&<tr><td colSpan={9}><Empty msg="No readings in this range."/></td></tr>}
+          {[...rIvs].reverse().slice(0,showN).map(x=>{
+            const r=x.row;
+            return(<tr key={r.id}>
+              <td className="mono">{pfFmtDT(r.t)}{r.notes&&<div className="dim" style={{fontSize:11,fontFamily:'var(--sans)'}}>📝 {r.notes}</div>}</td>
+              <td className="mono">{fmt(r.kwh,2)}</td>
+              <td className="mono">{fmt(r.kvah,2)}</td>
+              <td className="mono dim">{x.valid?pfDur(x.dh):'—'}</td>
+              <td className="mono">{x.valid?fmt(x.dk,1):'—'}</td>
+              <td className="mono">{x.valid?fmt(x.dv,1):'—'}</td>
+              <td>{x.valid?<><strong className="mono" style={{color:PF_COL[x.status],fontSize:14}}>{pf3(x.pf)}</strong> <span className={`badge ${PF_BADGE[x.status]}`}>{PF_LABEL[x.status]}</span>{x.longGap&&<div style={{fontSize:10,color:'var(--amber)'}}>long gap</div>}</>:<span className="badge badge-muted">{r.is_reset?'Meter reset':'Opening reading'}</span>}</td>
+              <td className="mono">{x.valid?fmt(x.kw,1):'—'}</td>
+              <td style={{whiteSpace:'nowrap'}}>
+                {ax('power-factor','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(r)}>✎</button>}{' '}
+                {ax('power-factor','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}
+              </td>
+            </tr>);
+          })}
+        </tbody>
+      </table></TableWrap>
+      {rIvs.length>showN&&<div style={{textAlign:'center',marginTop:12}}><button className="btn btn-ghost btn-sm" onClick={()=>setShowN(n=>n+100)}>Show more ({rIvs.length-showN} left)</button></div>}
+    </>)}
+
+    {/* ───── MONTHLY ───── */}
+    {tab==='monthly'&&(<>
+      {rows.length<2?<Alert type="amber" icon="ℹ" title="Add at least two readings to see a monthly power factor"/>:(<>
+        <div className="card" style={{marginBottom:16,display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+          <Field label="Month">
+            <select className="form-input" style={{width:190}} value={curKey} onChange={e=>setMonth(e.target.value)}>
+              {[...monthKeys].reverse().map(k=><option key={k} value={k}>{pfMonthName(k)}</option>)}
+            </select>
+          </Field>
+          <Field label="How the month is measured">
+            <select className="form-input" style={{width:340}} value={method} onChange={e=>setMethod(e.target.value)}>
+              <option value="next">First reading of the month → first reading of next month</option>
+              <option value="within">First reading → last reading inside the month</option>
+            </select>
+          </Field>
+        </div>
+
+        {cur&&!cur.empty&&cur.a&&cur.a.n>0?(<>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginBottom:16}}>
+            <PfBig pf={cur.a.pf} S={S} label={`${pfMonthName(curKey)} power factor`} sub={cur.prov?'provisional — month still running':'complete month'}/>
+            <div className="stat-card"><div className="stat-label">kWh ÷ kVAh</div><div style={{fontSize:16,fontWeight:600}}>{fmt(cur.a.dk,0)} ÷ {fmt(cur.a.dv,0)}</div><div className="stat-sub">over {pfDur(cur.a.h)}</div></div>
+            <div className="stat-card"><div className="stat-label">Time below target</div><div style={{fontSize:16,fontWeight:600,color:cur.a.below/cur.a.h>0.2?'var(--red)':'var(--green)'}}>{(cur.a.below/cur.a.h*100).toFixed(0)}%</div><div className="stat-sub">range {pf3(cur.a.min)} – {pf3(cur.a.max)}</div></div>
+            <div className="stat-card"><div className="stat-label">Average load</div><div style={{fontSize:16,fontWeight:600}}>{fmt(cur.a.kw,1)} kW</div><div className="stat-sub">extra kVAh from low PF: {fmt(cur.a.extra,0)}</div></div>
+          </div>
+          <div className="dim" style={{fontSize:12,marginBottom:12}}>Measured from <strong>{pfFmtDT(cur.from.t)}</strong> to <strong>{pfFmtDT(cur.to.t)}</strong>{method==='next'&&!cur.prov?' (the first reading of the following month)':''}.{cur.prov&&method==='next'?' The next month has no reading yet, so the latest reading is used for now. It will switch automatically once the next month’s first reading is in.':''}</div>
+          {proj&&(<Alert type={proj.req>1?'red':proj.req<=S.target-0.1?'green':'amber'} icon="🎯"
+            title={proj.req>1?`To finish ${pfMonthName(curKey)} at ${S.target}, the rest of the month would need a power factor above 1 — not reachable.`:proj.req<=0?`${pfMonthName(curKey)} will finish above ${S.target} whatever happens.`:`To finish ${pfMonthName(curKey)} at ${S.target}, the remaining ${pfDur(proj.remH)} need an average power factor of ${pf3(proj.req)}.`}
+            sub={`Assumes the rest of the month draws about ${fmt(proj.remKvah,0)} kVAh at the same pace as so far.`}/>)}
+        </>):<Alert type="amber" icon="ℹ" title={`${pfMonthName(curKey)} has only one reading${method==='next'?' and no reading from the following month':''} — no period to measure yet.`}/>}
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="section-label">Month by month</div>
+          <PfBars items={mStats.map((m,i)=>({label:pfMonthName(monthKeys[i]).slice(0,3)+" '"+monthKeys[i].slice(2,4),title:pfMonthName(monthKeys[i]),pf:m&&!m.empty&&m.a?m.a.pf:null}))} S={S}/>
+        </div>
+        <RTable head={['Month','From reading','To reading','kWh','kVAh','Power factor','Below target']}
+          rows={[...mStats].reverse().map(m=>{
+            if(!m) return null;
+            const sel=m.key===curKey;
+            if(m.empty||!m.a||m.a.n===0) return [<a style={{cursor:'pointer'}} onClick={()=>setMonth(m.key)}>{pfMonthName(m.key)}</a>,'—','—','—','—','—','—'];
+            return [<a style={{cursor:'pointer',fontWeight:sel?700:500}} onClick={()=>setMonth(m.key)}>{pfMonthName(m.key)}{m.prov&&<span className="badge badge-amber" style={{marginLeft:6}}>running</span>}</a>,pfFmtDT(m.from.t),pfFmtDT(m.to.t),fmt(m.a.dk,0),fmt(m.a.dv,0),<strong style={{color:PF_COL[pfStatus(m.a.pf,S)]}}>{pf3(m.a.pf)}</strong>,(m.a.below/m.a.h*100).toFixed(0)+'%'];
+          }).filter(Boolean)}/>
+      </>)}
+    </>)}
+
+    {/* ───── SETTINGS ───── */}
+    {tab==='settings'&&ax('power-factor','settings')&&(<div className="card" style={{maxWidth:640}}>
+      <div className="section-label">Power factor settings</div>
+      <div className="form-grid">
+        <Field label="Target power factor"><input type="number" step="0.01" min="0" max="1" className="form-input" value={sForm.target} onChange={e=>setSForm(p=>({...p,target:e.target.value}))}/></Field>
+        <Field label="Minimum acceptable"><input type="number" step="0.01" min="0" max="1" className="form-input" value={sForm.minimum} onChange={e=>setSForm(p=>({...p,minimum:e.target.value}))}/></Field>
+        <Field label="Meter multiplier (MF / CT×PT)"><input type="number" step="any" min="0" className="form-input" value={sForm.multiplier} onChange={e=>setSForm(p=>({...p,multiplier:e.target.value}))}/></Field>
+        <Field label="Treat as a “long gap” after (hours)"><input type="number" min="1" className="form-input" value={sForm.gap_hours} onChange={e=>setSForm(p=>({...p,gap_hours:e.target.value}))}/></Field>
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:10}}>Target and minimum colour the results and drive the analysis (check your electricity board’s incentive/penalty limits). The multiplier only scales kWh, kVAh, kW and kVA shown; it never changes the power factor, so leave it at 1 if you enter the meter display directly.</div>
+      <div className="form-actions"><button className="btn btn-green" onClick={saveSettings} disabled={saving}>{saving?'Saving…':'Save settings'}</button></div>
+    </div>)}
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -10363,6 +10924,7 @@ function App(){
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
     'quality':<QualityControl role={access.role} employeeId={access.employee_id} userEmail={user.email}/>,
     'quality-settings':<QualitySettings/>,
+        'power-factor':<PowerFactor userEmail={user.email}/>,
   };
 
   return(<div className="app">
