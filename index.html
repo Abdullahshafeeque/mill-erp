@@ -419,8 +419,26 @@ function ProductMaster(){
   },[]);
   useEffect(()=>{load();},[load]);
 
+  const suggestCode=(name)=>{
+    const taken=new Set(products.filter(p=>p.id!==editingId).map(p=>String(p.product_code||'').trim().toUpperCase()));
+    const words=String(name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+    const cands=[];
+    if(words.length>1) cands.push((words[0].slice(0,3)+words[1][0]).slice(0,4));
+    if(words.length>0){ cands.push(words[0].slice(0,4)); cands.push(words.join('').slice(0,4)); cands.push(words.map(w=>w[0]).join('').slice(0,4)); }
+    for(const c of cands){ if(c.length===4&&!taken.has(c)) return c; }
+    const base=((words.join('')||'ITEM')+'XXXX').slice(0,3);
+    for(let i=0;i<10;i++){ const c=base+i; if(!taken.has(c)) return c; }
+    const b2=base.slice(0,2);
+    for(let i=0;i<100;i++){ const c=b2+String(i).padStart(2,'0'); if(!taken.has(c)) return c; }
+    return '';
+  };
+
   const validate=()=>{
     if(!form.product_name.trim()) return 'Product Name is required.';
+        const code=String(form.product_code||'').trim().toUpperCase();
+    if(!/^[A-Z0-9]{4}$/.test(code)) return 'Product Code must be exactly 4 letters or numbers (no spaces or symbols).';
+    const clash=products.find(p=>p.id!==editingId&&String(p.product_code||'').trim().toUpperCase()===code);
+    if(clash) return `Product Code ${code} is already used by "${clash.product_name}". Every product needs its own code.`;
     if(form.is_raw_material && form.has_standard_weight && !form.bag_weight) return 'Enter the standard bag weight, or uncheck "Has standard bag weight".';
     if(!form.is_raw_material && form.packing_type==='packeted' && !form.packet_weight_kg) return 'Packet weight is required.';
     if(!form.is_raw_material && form.packing_type==='loose' && form.has_standard_weight && !form.bag_weight) return 'Enter the standard bag weight, or uncheck it.';
@@ -428,7 +446,7 @@ function ProductMaster(){
   };
 
   const buildPayload=()=>({
-    product_code: form.product_code, product_name: form.product_name.trim(), category: form.category, hsn_code: form.hsn_code,
+    product_code: String(form.product_code||'').trim().toUpperCase(), product_name: form.product_name.trim(), category: form.category, hsn_code: form.hsn_code,
     is_raw_material: !!form.is_raw_material,
     available_for_supplyco: form.is_raw_material ? !!form.available_for_supplyco : false,
     available_for_private_dispatch: !!form.available_for_private_dispatch,
@@ -521,7 +539,13 @@ function ProductMaster(){
     {showForm&&(
       <FormCard title={editingId?'Edit Product':'Register New Product'} col="var(--amber)" onSave={save} onCancel={()=>{setShowForm(false);setEditingId(null);setForm(blank);}} saving={saving}>
         <div className="form-grid">
-          <Field label="Product Code / SKU"><input className="form-input" value={form.product_code} onChange={e=>f('product_code',e.target.value)}/></Field>
+          <Field label="Product Code ★ (exactly 4 letters/numbers, unique)">
+            <div style={{display:'flex',gap:6}}>
+              <input className="form-input" style={{fontFamily:'var(--mono)',fontWeight:700,letterSpacing:'.15em'}} maxLength={4} value={form.product_code} onChange={e=>f('product_code',e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,4))}/>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={()=>f('product_code',suggestCode(form.product_name))}>Suggest</button>
+            </div>
+            {(()=>{const c=String(form.product_code||'').trim().toUpperCase(); if(!c) return null; const clash=products.find(p=>p.id!==editingId&&String(p.product_code||'').trim().toUpperCase()===c); if(clash) return <div style={{fontSize:11,color:'var(--red)',marginTop:4}}>✕ Already used by {clash.product_name}</div>; if(c.length<4) return <div style={{fontSize:11,color:'var(--amber)',marginTop:4}}>{4-c.length} more character{4-c.length===1?'':'s'} needed</div>; return <div style={{fontSize:11,color:'var(--green)',marginTop:4}}>✓ Available</div>;})()}
+          </Field>
           <Field label="Product Name ★"><input className="form-input" value={form.product_name} onChange={e=>f('product_name',e.target.value)}/></Field>
           <Field label="Category">
             <select className="form-input" value={form.category} onChange={e=>f('category',e.target.value)}>
