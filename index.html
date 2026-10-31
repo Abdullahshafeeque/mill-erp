@@ -224,6 +224,7 @@ const NAV = [
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
   { id:'quality-settings', label:'Quality Settings', icon:'🔬' },
+    { id:'power-factor-settings', label:'Power Factor Settings', icon:'⚡' },
   { id:'whatsapp-settings', label:'WhatsApp Alerts', icon:'💬' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
@@ -260,7 +261,7 @@ const AX_MILL=[
  {key:'mill:recurring-jobs',label:'Recurring Jobs',acts:[['view','Open page','M'],['add','New / duplicate schedule','M'],['edit','Edit schedule','M'],['pause','Pause / resume','M'],['skip_next','Skip next run','M'],['generate_now','Generate due jobs now','M'],['delete','Delete schedule','M']]},
  {key:'mill:licenses',label:'Licenses & Renewals',acts:[['view','Open page','MA'],['add','Add license','M'],['edit','Edit license details','M'],['renew','Renew & upload','MA'],['add_file','Add files','MA']]},
  {key:'mill:all-stock',label:'All Stock',acts:[['view','Open page','MASTD']]},
- {key:'mill:store',label:'Store & Materials',acts:[['view','Open page','MST'],['add_item','Add store item','MT'],['delete_item','Delete store item','M'],['txn','Receive / issue stock (+/−)','MT']]},
+ {key:'mill:store',label:'Store & Materials',acts:[['view','Open page','MST'],['add_item','Add store item','MT'],['edit_item','Edit store item','MT'],['organize','Sub-categories & ordering','MT'],['delete_item','Delete store item','M'],['txn','Receive / issue stock (+/−)','MT']]},
  {key:'mill:stock-count',label:'Stock Count',acts:[['view','Open page','MST'],['start_count','Load book stock','MST'],['submit','Submit count for approval','MST']]},
  {key:'mill:reports',label:'Reports',acts:[['view','Open page','M'],['tab_yield','Milling yield report','M'],['tab_wheat','Wheat movement report','M'],['tab_dispatch','Dispatch summary report','M'],['download','Download CSV','M']]},
  {key:'mill:product-master',label:'Product Master',acts:[['view','Open page','M'],['add','Add product','M'],['edit','Edit product','M'],['archive','Archive / activate','M']]},
@@ -275,7 +276,8 @@ const AX_MILL=[
  {key:'mill:org-chart',label:'Roles & Responsibilities',acts:[['view','Open page','MASTDV'],['edit_resp','Edit responsibilities (positions below theirs)','']]},
  {key:'mill:shutdowns',label:'Maintenance Shutdown',acts:[['view','Open page','MASTD']]}, // planning/approving stays per-person in Shutdown Settings
  {key:'mill:activity-log',label:'Activity Log',acts:[['view','Open page','M']]},
-  {key:'mill:power-factor',label:'Electrical · Power Factor',acts:[['view','Open page','MS'],['enter','Record a reading','MS'],['edit','Edit a reading','M'],['delete','Delete a reading','M'],['download','Download CSV','MS'],['settings','Change target & settings','M']]},
+  {key:'mill:power-factor',label:'Electrical · Power Factor',acts:[['view','Open page','MS'],['enter','Record a reading','MS'],['edit','Edit a reading','M'],['delete','Delete a reading','M'],['ack','Acknowledge low PF alert','M'],['download','Download CSV','MS']]},
+ {key:'mill:power-factor-settings',label:'Power Factor Settings',acts:[['view','Open page','M'],['edit','Change & save settings','M']]},
  {key:'mill:ledger',label:'Daily Cash Book',acts:[['view','Open page','MA'],['add_receipt','Add receipt','MA'],['add_payment','Add payment','MA'],['link_hr','Link payment to an employee (syncs to HR)','MA'],['edit_entry','Edit entry','MA'],['delete_entry','Delete entry','MA'],['add_type','Add new transaction type','MA'],['submit_day','Submit day','MA']]},
 ];
 
@@ -2948,27 +2950,88 @@ function AllStock(){
 function Store(){
   const CATS=['Packaging','Spare Parts','Lubricants / Oils','Chemicals','Electrical','Hardware','Miscellaneous'];
   const [items,setItems]=useState([]);
+  const [subOrder,setSubOrder]=useState({});
   const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
   const [showTxn,setShowTxn]=useState(null);
   const [txnForm,setTxnForm]=useState({type:'Received',qty:'',notes:'',date:today});
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
   const [filterCat,setFilterCat]=useState('All');
-  const blank={item_name:'',category:'Packaging',unit:'Nos',qty:0,min_qty:0,notes:''};
+  const blank={item_name:'',category:'Packaging',sub_category:'',unit:'Nos',qty:0,min_qty:0,notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
-  useEffect(()=>{
-    sb.from('store_stock').select('*').order('category').then(({data})=>{setItems(data||[]);setLoading(false);});
-  },[]);
+  const load=async()=>{
+    const [{data},{data:st}]=await Promise.all([
+      sb.from('store_stock').select('*').order('category'),
+      sb.from('erp_settings').select('value').eq('key','store_subcat_order').maybeSingle(),
+    ]);
+    setItems(data||[]);
+    try{ setSubOrder(st&&st.value?JSON.parse(st.value):{}); }catch(e){ setSubOrder({}); }
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[]);
+
+  const sortItems=(arr)=>[...arr].sort((a,b)=>((a.sort_order??1e9)-(b.sort_order??1e9))||String(a.item_name).localeCompare(String(b.item_name)));
+
+  // Sub-categories of a category, in the order the user chose; empty ones are kept; items with none go last.
+  const groupsFor=(cat)=>{
+    const list=items.filter(x=>x.category===cat);
+    const order=(subOrder[cat]||[]).slice();
+    list.map(x=>x.sub_category).filter(Boolean).forEach(n=>{ if(!order.includes(n)) order.push(n); });
+    const groups=order.map(n=>({name:n,items:sortItems(list.filter(x=>x.sub_category===n))}));
+    const none=sortItems(list.filter(x=>!x.sub_category));
+    if(none.length||groups.length===0) groups.push({name:'',items:none});
+    return groups;
+  };
+  const subNames=(cat)=>groupsFor(cat).map(g=>g.name).filter(Boolean);
+
+  const saveOrder=async(next)=>{
+    setSubOrder(next);
+    const {error}=await sb.from('erp_settings').upsert({key:'store_subcat_order',value:JSON.stringify(next)},{onConflict:'key'});
+    if(error) alert(error.message);
+  };
+
+  const closeForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); };
+  const startAdd=()=>{
+    if(showForm){ closeForm(); return; }
+    setEditingId(null); setForm({...blank,category:filterCat!=='All'?filterCat:'Packaging'}); setShowForm(true);
+  };
+  const startEdit=(it)=>{
+    setEditingId(it.id);
+    setForm({item_name:it.item_name||'',category:it.category||'Miscellaneous',sub_category:it.sub_category||'',unit:it.unit||'Nos',qty:it.qty,min_qty:it.min_qty??0,notes:it.notes||''});
+    setShowForm(true); if(window.scrollTo) window.scrollTo(0,0);
+  };
+
+  const nextSort=(cat,sub)=>{
+    const g=items.filter(x=>x.category===cat&&(x.sub_category||'')===(sub||''));
+    return g.reduce((m,x)=>Math.max(m,Number(x.sort_order)||0),0)+10;
+  };
 
   const saveItem=async()=>{
-    if(!form.item_name) return alert('Item name required.');
+    const name=form.item_name.trim();
+    if(!name) return alert('Item name required.');
+    if(items.some(x=>x.id!==editingId&&String(x.item_name).trim().toLowerCase()===name.toLowerCase())&&!confirm(`Another item is already called "${name}". Save anyway?`)) return;
     setSaving(true);
-    const {data,error}=await sb.from('store_stock').insert(form).select().single();
-    if(error){alert(error.message);setSaving(false);return;}
-    setItems(p=>[...p,data]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('Store','create',`New item — ${form.item_name}`);
+    const sub=form.sub_category||null;
+    if(editingId){
+      const orig=items.find(x=>x.id===editingId);
+      const moved=!orig||orig.category!==form.category||(orig.sub_category||null)!==sub;
+      const upd={item_name:name,category:form.category,sub_category:sub,unit:form.unit,min_qty:Number(form.min_qty)||0,notes:form.notes,updated_at:new Date().toISOString()};
+      if(moved) upd.sort_order=nextSort(form.category,sub);
+      const {data,error}=await sb.from('store_stock').update(upd).eq('id',editingId).select().single();
+      if(error){ alert(error.message+' — have you run store_organize.sql?'); setSaving(false); return; }
+      setItems(p=>p.map(x=>x.id===editingId?data:x));
+      logActivity('Store','update',`Edited item — ${name}${orig&&orig.item_name!==name?` (was ${orig.item_name})`:''}`);
+    } else {
+      const row={item_name:name,category:form.category,sub_category:sub,unit:form.unit,qty:Number(form.qty)||0,min_qty:Number(form.min_qty)||0,notes:form.notes,sort_order:nextSort(form.category,sub)};
+      const {data,error}=await sb.from('store_stock').insert(row).select().single();
+      if(error){ alert(error.message+' — have you run store_organize.sql?'); setSaving(false); return; }
+      setItems(p=>[...p,data]);
+      logActivity('Store','create',`New item — ${name}`);
+    }
+    setSaving(false); closeForm();
   };
 
   const doTxn=async(item)=>{
@@ -2983,35 +3046,114 @@ function Store(){
     logActivity('Store','update',`${item.item_name} — ${txnForm.type} ${txnForm.qty}`);
   };
 
-  if(loading) return <Loading/>;
   const delItem=async(item)=>{
-  if(!ax('store','delete_item')) return;
-  const {data:rules,error:re}=await sb.from('product_packing_rules').select('product_id').eq('store_item_id',item.id);
-  if(re) return alert('Could not check packing rules: '+re.message);
-  if((rules||[]).length>0){
-    const ids=Array.from(new Set(rules.map(r=>r.product_id)));
-    const {data:pn}=await sb.from('product_master').select('id,product_name').in('id',ids);
-    const names=(pn||[]).map(p=>p.product_name);
-    return alert(`"${item.item_name}" cannot be deleted because production still deducts it automatically for:\n\n${(names.length?names:ids).join('\n')}\n\nOpen Product Recipes → Packing & consumables per bag, remove it (or switch it to another item) for these products, then delete it.`);
-  }
-  if(!confirm(`Delete "${item.item_name}" (${item.qty} ${item.unit}) from Store & Materials?\n\nIts movement history will be deleted too. This cannot be undone.`)) return;
-  setSaving(true);
-  const del=()=>sb.from('store_stock').delete().eq('id',item.id).select();
-  const clean=async()=>{
-    await sb.from('production_material_usage').delete().eq('store_item_id',item.id);
-    await sb.from('store_transactions').delete().eq('item_id',item.id);
+    if(!ax('store','delete_item')) return;
+    const {data:rules,error:re}=await sb.from('product_packing_rules').select('product_id').eq('store_item_id',item.id);
+    if(re) return alert('Could not check packing rules: '+re.message);
+    if((rules||[]).length>0){
+      const ids=Array.from(new Set(rules.map(r=>r.product_id)));
+      const {data:pn}=await sb.from('product_master').select('id,product_name').in('id',ids);
+      const names=(pn||[]).map(p=>p.product_name);
+      return alert(`"${item.item_name}" cannot be deleted because production still deducts it automatically for:\n\n${(names.length?names:ids).join('\n')}\n\nOpen Product Recipes → Packing & consumables per bag, remove it (or switch it to another item) for these products, then delete it.`);
+    }
+    if(!confirm(`Delete "${item.item_name}" (${item.qty} ${item.unit}) from Store & Materials?\n\nIts movement history will be deleted too. This cannot be undone.`)) return;
+    setSaving(true);
+    const del=()=>sb.from('store_stock').delete().eq('id',item.id).select();
+    const clean=async()=>{
+      await sb.from('production_material_usage').delete().eq('store_item_id',item.id);
+      await sb.from('store_transactions').delete().eq('item_id',item.id);
+    };
+    let r=await del();
+    if(r.error&&r.error.code==='23503'){ await clean(); r=await del(); }
+    else if(!r.error&&r.data&&r.data.length) await clean();
+    setSaving(false);
+    if(r.error) return alert('Could not delete: '+r.error.message);
+    if(!r.data||r.data.length===0) return alert('Not deleted — you are not permitted to delete this item. Nothing was changed.');
+    setItems(p=>p.filter(x=>x.id!==item.id));
+    logActivity('Store','delete',`Deleted item — ${item.item_name} (${item.qty} ${item.unit})`);
   };
-  let r=await del();
-  if(r.error&&r.error.code==='23503'){ await clean(); r=await del(); }
-  else if(!r.error&&r.data&&r.data.length) await clean();
-  setSaving(false);
-  if(r.error) return alert('Could not delete: '+r.error.message);
-  if(!r.data||r.data.length===0) return alert('Not deleted — you are not permitted to delete this item. Nothing was changed.');
-  setItems(p=>p.filter(x=>x.id!==item.id));
-  logActivity('Store','delete',`Deleted item — ${item.item_name} (${item.qty} ${item.unit})`);
-};
-const cats=['All',...CATS];
-  const filtered=filterCat==='All'?items:items.filter(x=>x.category===filterCat);
+
+  // ── ordering ──
+  const moveItem=async(group,idx,dir)=>{
+    const j=idx+dir; if(j<0||j>=group.length) return;
+    const arr=[...group]; [arr[idx],arr[j]]=[arr[j],arr[idx]];
+    const upd=arr.map((it,i)=>({id:it.id,sort_order:(i+1)*10})).filter((u,i)=>Number(arr[i].sort_order)!==u.sort_order);
+    setItems(p=>p.map(x=>{ const u=upd.find(z=>z.id===x.id); return u?{...x,sort_order:u.sort_order}:x; }));
+    const res=await Promise.all(upd.map(u=>sb.from('store_stock').update({sort_order:u.sort_order}).eq('id',u.id)));
+    const bad=res.find(r=>r.error);
+    if(bad){ alert(bad.error.message+' — have you run store_organize.sql?'); load(); }
+  };
+  const moveGroup=(cat,name,dir)=>{
+    const names=subNames(cat); const i=names.indexOf(name), j=i+dir;
+    if(i<0||j<0||j>=names.length) return;
+    [names[i],names[j]]=[names[j],names[i]];
+    saveOrder({...subOrder,[cat]:names});
+  };
+  const addSub=(cat)=>{
+    const name=(prompt(`New sub-category in "${cat}":`)||'').trim();
+    if(!name) return null;
+    if(subNames(cat).some(n=>n.toLowerCase()===name.toLowerCase())){ alert('That sub-category already exists.'); return null; }
+    saveOrder({...subOrder,[cat]:[...subNames(cat),name]});
+    logActivity('Store','create',`Sub-category added — ${cat} › ${name}`);
+    return name;
+  };
+  const renameSub=async(cat,old)=>{
+    const name=(prompt(`Rename "${old}" to:`,old)||'').trim();
+    if(!name||name===old) return;
+    if(subNames(cat).some(n=>n.toLowerCase()===name.toLowerCase())) return alert('A sub-category with that name already exists.');
+    const {error}=await sb.from('store_stock').update({sub_category:name}).eq('category',cat).eq('sub_category',old);
+    if(error) return alert(error.message);
+    setItems(p=>p.map(x=>x.category===cat&&x.sub_category===old?{...x,sub_category:name}:x));
+    await saveOrder({...subOrder,[cat]:subNames(cat).map(n=>n===old?name:n)});
+    logActivity('Store','update',`Sub-category renamed — ${cat}: ${old} → ${name}`);
+  };
+  const delSub=async(cat,name,count)=>{
+    if(!confirm(`Delete the sub-category "${name}"?${count?`\n\nIts ${count} item${count===1?'':'s'} will NOT be deleted — they move to "No sub-category".`:''}`)) return;
+    const {error}=await sb.from('store_stock').update({sub_category:null}).eq('category',cat).eq('sub_category',name);
+    if(error) return alert(error.message);
+    setItems(p=>p.map(x=>x.category===cat&&x.sub_category===name?{...x,sub_category:null}:x));
+    await saveOrder({...subOrder,[cat]:subNames(cat).filter(n=>n!==name)});
+    logActivity('Store','delete',`Sub-category deleted — ${cat} › ${name}`);
+  };
+
+  if(loading) return <Loading/>;
+
+  const cats=['All',...CATS];
+  const showCats=filterCat==='All'?CATS.filter(c=>items.some(x=>x.category===c)):[filterCat];
+  const canOrg=ax('store','organize');
+  const arrow={padding:'0 6px',minWidth:24};
+
+  const itemRow=(item,group,idx)=>{
+    const st=item.qty<=0?'Out':item.min_qty>0&&item.qty<=item.min_qty?'Low':'OK';
+    const col=st==='Out'?'var(--red)':st==='Low'?'var(--amber)':'var(--green)';
+    return(<tr key={item.id}>
+      <td style={{width:64,whiteSpace:'nowrap'}}>{canOrg&&<>
+        <button className="btn btn-ghost btn-sm" style={arrow} disabled={idx===0} onClick={()=>moveItem(group,idx,-1)} title="Move up">▲</button>
+        <button className="btn btn-ghost btn-sm" style={arrow} disabled={idx===group.length-1} onClick={()=>moveItem(group,idx,1)} title="Move down">▼</button>
+      </>}</td>
+      <td><strong>{item.item_name}</strong>{item.notes&&<div className="dim" style={{fontSize:11}}>{item.notes}</div>}</td>
+      <td><strong style={{color:col,fontFamily:'var(--mono)'}}>{item.qty} {item.unit}</strong></td>
+      <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
+      <td>
+        {ax('store','txn')&&<button className="btn btn-green btn-sm" onClick={()=>setShowTxn(item.id)}>+ / −</button>}
+        {ax('store','edit_item')&&<button className="btn btn-blue btn-sm" style={{marginLeft:6}} onClick={()=>startEdit(item)}>Edit</button>}
+        {ax('store','delete_item')&&<button className="btn btn-red btn-sm" style={{marginLeft:6}} onClick={()=>delItem(item)} disabled={saving}>✕</button>}
+        {showTxn===item.id&&(
+          <div style={{marginTop:8,padding:12,background:'var(--surface2)',borderRadius:6,border:'1px solid var(--border)'}}>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
+              <select style={{width:110}} value={txnForm.type} onChange={e=>setTxnForm(p=>({...p,type:e.target.value}))}>
+                <option>Received</option><option>Used / Issued</option><option>Damaged</option><option>Returned</option>
+              </select>
+              <input type="number" style={{width:80}} value={txnForm.qty} onChange={e=>setTxnForm(p=>({...p,qty:e.target.value}))}/>
+              <input type="date" style={{width:130}} value={txnForm.date} onChange={e=>setTxnForm(p=>({...p,date:e.target.value}))}/>
+              <button className="btn btn-green btn-sm" onClick={()=>doTxn(item)} disabled={saving}>Save</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setShowTxn(null)}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </td>
+    </tr>);
+  };
 
   return(<div className="page">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
@@ -3019,19 +3161,33 @@ const cats=['All',...CATS];
         <div className="page-label">Inventory</div>
         <div className="page-title">Store & materials</div>
       </div>
-      {ax('store','add_item')&&<button className="btn btn-amber" onClick={()=>setShowForm(v=>!v)}>+ Add item</button>}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        {canOrg&&filterCat!=='All'&&<button className="btn btn-ghost" onClick={()=>addSub(filterCat)}>+ Sub-category</button>}
+        {ax('store','add_item')&&<button className="btn btn-amber" onClick={startAdd}>+ Add item</button>}
+      </div>
     </div>
 
     {showForm&&(
-      <FormCard title="Add store item" col="var(--amber)" onSave={saveItem} onCancel={()=>setShowForm(false)} saving={saving}>
+      <FormCard title={editingId?'Edit store item':'Add store item'} col="var(--amber)" onSave={saveItem} onCancel={closeForm} saving={saving}>
         <div className="form-grid">
           <Field label="Item name ★"><input className="form-input" value={form.item_name} onChange={e=>f('item_name',e.target.value)}/></Field>
-          <Field label="Category"><select className="form-input" value={form.category} onChange={e=>f('category',e.target.value)}>{CATS.map(c=><option key={c}>{c}</option>)}</select></Field>
+          <Field label="Category"><select className="form-input" value={form.category} onChange={e=>setForm(p=>({...p,category:e.target.value,sub_category:''}))}>{CATS.map(c=><option key={c}>{c}</option>)}</select></Field>
+          <Field label="Sub-category">
+            <select className="form-input" value={form.sub_category} onChange={e=>{
+              if(e.target.value==='__new__'){ const n=addSub(form.category); if(n) f('sub_category',n); }
+              else f('sub_category',e.target.value);
+            }}>
+              <option value="">— None —</option>
+              {subNames(form.category).map(n=><option key={n} value={n}>{n}</option>)}
+              {canOrg&&<option value="__new__">+ New sub-category…</option>}
+            </select>
+          </Field>
           <Field label="Unit"><input className="form-input" value={form.unit} onChange={e=>f('unit',e.target.value)}/></Field>
-          <Field label="Current qty"><input type="number" className="form-input" value={form.qty} onChange={e=>f('qty',Number(e.target.value))}/></Field>
+          {!editingId&&<Field label="Current qty"><input type="number" className="form-input" value={form.qty} onChange={e=>f('qty',Number(e.target.value))}/></Field>}
           <Field label="Min. alert qty"><input type="number" className="form-input" value={form.min_qty} onChange={e=>f('min_qty',Number(e.target.value))}/></Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
+        {editingId&&<div className="dim" style={{fontSize:12,marginTop:10}}>Quantity is not edited here so the stock history stays accurate — use “+ / −” to receive or issue, or Stock Count to correct a difference.</div>}
       </FormCard>
     )}
 
@@ -3039,39 +3195,45 @@ const cats=['All',...CATS];
       {cats.map(c=><button key={c} className={`btn btn-sm ${filterCat===c?'btn-amber':'btn-ghost'}`} onClick={()=>setFilterCat(c)}>{c}</button>)}
     </div>
 
-    <TableWrap><table>
-      <thead><tr><th>Item</th><th>Category</th><th>Qty</th><th>Status</th><th>Actions</th></tr></thead>
-      <tbody>
-        {filtered.length===0&&<tr><td colSpan={5}><Empty/></td></tr>}
-        {filtered.map(item=>{
-          const st=item.qty<=0?'Out':item.min_qty>0&&item.qty<=item.min_qty?'Low':'OK';
-          const col=st==='Out'?'var(--red)':st==='Low'?'var(--amber)':'var(--green)';
-          return(<tr key={item.id}>
-            <td><strong>{item.item_name}</strong></td>
-            <td><span className="badge badge-muted">{item.category}</span></td>
-            <td><strong style={{color:col,fontFamily:'var(--mono)'}}>{item.qty} {item.unit}</strong></td>
-            <td><span className="badge" style={{background:col+'20',color:col}}>{st}</span></td>
-            <td>
-              {ax('store','txn')&&<button className="btn btn-green btn-sm" onClick={()=>setShowTxn(item.id)}>+ / −</button>}
-              {ax('store','delete_item')&&<button className="btn btn-red btn-sm" style={{marginLeft:6}} onClick={()=>delItem(item)} disabled={saving}>✕</button>}
-{showTxn===item.id&&(
-                <div style={{marginTop:8,padding:12,background:'var(--surface2)',borderRadius:6,border:'1px solid var(--border)'}}>
-                  <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
-                    <select style={{width:110}} value={txnForm.type} onChange={e=>setTxnForm(p=>({...p,type:e.target.value}))}>
-                      <option>Received</option><option>Used / Issued</option><option>Damaged</option><option>Returned</option>
-                    </select>
-                    <input type="number" style={{width:80}} value={txnForm.qty} onChange={e=>setTxnForm(p=>({...p,qty:e.target.value}))}/>
-                    <input type="date" style={{width:130}} value={txnForm.date} onChange={e=>setTxnForm(p=>({...p,date:e.target.value}))}/>
-                    <button className="btn btn-green btn-sm" onClick={()=>doTxn(item)} disabled={saving}>Save</button>
-                    <button className="btn btn-ghost btn-sm" onClick={()=>setShowTxn(null)}>Cancel</button>
-                  </div>
-                </div>
-              )}
-            </td>
-          </tr>);
-        })}
-      </tbody>
-    </table></TableWrap>
+    {showCats.length===0&&<TableWrap><table><tbody><tr><td><Empty/></td></tr></tbody></table></TableWrap>}
+
+    {showCats.map(cat=>{
+      const groups=groupsFor(cat);
+      const named=groups.filter(g=>g.name);
+      const total=items.filter(x=>x.category===cat).length;
+      return(<div key={cat} style={{marginBottom:24}}>
+        {filterCat==='All'&&<div className="section-label">{cat} · {total}</div>}
+        <TableWrap><table>
+          <thead><tr><th></th><th>Item</th><th>Qty</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>
+            {total===0&&named.length===0&&<tr><td colSpan={5}><Empty msg="No items in this category yet."/></td></tr>}
+            {groups.map(g=>{
+              const gi=named.findIndex(x=>x.name===g.name);
+              const showHead=!!g.name||named.length>0;
+              return(<React.Fragment key={g.name||'__none'}>
+                {showHead&&<tr style={{background:'var(--surface2)'}}>
+                  <td colSpan={5} style={{padding:'8px 14px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                      <span style={{fontFamily:'var(--mono)',fontSize:11,letterSpacing:'.1em',textTransform:'uppercase',color:g.name?'var(--text)':'var(--muted)',fontWeight:600}}>
+                        {g.name||'No sub-category'} <span className="dim" style={{fontWeight:400}}>· {g.items.length}</span>
+                      </span>
+                      {canOrg&&g.name&&<span style={{display:'flex',gap:4}}>
+                        <button className="btn btn-ghost btn-sm" style={arrow} disabled={gi===0} onClick={()=>moveGroup(cat,g.name,-1)} title="Move sub-category up">▲</button>
+                        <button className="btn btn-ghost btn-sm" style={arrow} disabled={gi===named.length-1} onClick={()=>moveGroup(cat,g.name,1)} title="Move sub-category down">▼</button>
+                        <button className="btn btn-ghost btn-sm" onClick={()=>renameSub(cat,g.name)}>Rename</button>
+                        <button className="btn btn-red btn-sm" onClick={()=>delSub(cat,g.name,g.items.length)}>✕</button>
+                      </span>}
+                    </div>
+                  </td>
+                </tr>}
+                {g.items.length===0&&g.name&&<tr><td colSpan={5} className="dim" style={{fontSize:12,padding:'8px 14px'}}>Empty — open an item, click Edit, and choose this sub-category.</td></tr>}
+                {g.items.map((it,i)=>itemRow(it,g.items,i))}
+              </React.Fragment>);
+            })}
+          </tbody>
+        </table></TableWrap>
+      </div>);
+    })}
   </div>);
 }
 
@@ -3887,6 +4049,7 @@ function Dashboard({name}){
       <WoaDashboardAlerts/>
       <ShutdownDashboardAlerts/>
       <QcDashboardAlerts/>
+            <PfDashboardAlerts/>
       {stockAlerts.map(r=>(
         <Alert key={r.product.id} type="amber" icon="⚠" title={`${r.product.product_name} — ${fmt(r.qty)} bags, within watch range`} sub={`Between min (${fmt(r.product.min_stock_alert)}) and max (${fmt(r.product.max_stock_alert)})`}/>
       ))}
@@ -6491,6 +6654,7 @@ function MyTasks({employeeId,onCount,role,onRenewed,onGo}){
     <RenewalAlerts employeeId={employeeId} role={role} onRenewed={onRenewed}/>
     <LiftingAlerts employeeId={employeeId} role={role}/>
     <QcAlerts employeeId={employeeId} role={role} onChanged={onRenewed}/>
+        <PfAlerts employeeId={employeeId} role={role} onChanged={onRenewed}/>
     <WoaAlerts employeeId={employeeId} role={role}/>
     <JobApprovalQueue employeeId={employeeId} role={role} onChanged={load}/>
     <div className="stat-grid">
@@ -10174,16 +10338,28 @@ function QualitySettings(){
 }
 
 // ══════════════════════════════════════════════════════════
-// ELECTRICAL · POWER FACTOR
-// Paste this whole block into the <script type="text/babel"> just ABOVE   function App(){
+// ELECTRICAL · POWER FACTOR  (v2)
 // PF for a period = Δ kWh ÷ Δ kVAh  (kVAh is apparent energy, so PF can never exceed 1)
 // ══════════════════════════════════════════════════════════
 const PF_KEY='power_factor_settings';
-const PF_DEFAULTS={target:0.95,minimum:0.90,multiplier:1,gap_hours:36};
+const PF_DEFAULTS={
+  target:0.95,minimum:0.90,multiplier:1,gap_hours:36,
+  alert_enabled:true,alert_below:0.90,critical_below:0.85,consecutive:1,recent_days:3,
+  person_ids:[],manager_id:'',manager_after_hours:4,notify_director:true,director_after_hours:12,
+  month_alert:true,month_below:0.95,month_min_days:3,
+  stale_hours:0,
+  show_tasks:true,show_dashboard:true
+};
 const PF_COL={good:'var(--green)',warn:'var(--amber)',low:'var(--red)',bad:'var(--purple)',na:'var(--muted)'};
 const PF_LABEL={good:'On target',warn:'Below target',low:'Below minimum',bad:'Check entry',na:'—'};
 const PF_BADGE={good:'badge-green',warn:'badge-amber',low:'badge-red',bad:'badge-blue',na:'badge-muted'};
 
+async function loadPfSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',PF_KEY).maybeSingle();
+  let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  return {...PF_DEFAULTS,...saved};
+}
+const pfPrepRows=(data)=>(data||[]).map(r=>({...r,t:new Date(r.reading_at).getTime(),kwh:Number(r.kwh),kvah:Number(r.kvah)}));
 const pfStatus=(pf,S)=>pf===null||pf===undefined?'na':pf>1.0005?'bad':pf>=S.target?'good':pf>=S.minimum?'warn':'low';
 const pf3=(v)=>(v===null||v===undefined||isNaN(v))?'—':Number(v).toFixed(3);
 const pfNowLocal=()=>{ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16); };
@@ -10333,10 +10509,9 @@ function PfBig({pf,S,label,sub}){
   </div>);
 }
 
-function PowerFactor({userEmail}){
+function PowerFactor({userEmail,employeeId,role}){
   const [rows,setRows]=useState([]);
   const [S,setS]=useState(PF_DEFAULTS);
-  const [sForm,setSForm]=useState(PF_DEFAULTS);
   const [loading,setLoading]=useState(true);
   const [err,setErr]=useState('');
   const [msg,setMsg]=useState('');
@@ -10356,23 +10531,18 @@ function PowerFactor({userEmail}){
 
   const load=useCallback(async()=>{
     try{
-      const [data,{data:st}]=await Promise.all([
+      const [data,cfg]=await Promise.all([
         fetchAllRows((a,b)=>sb.from('power_factor_readings').select('*').order('reading_at').order('id').range(a,b)),
-        sb.from('erp_settings').select('value').eq('key',PF_KEY).maybeSingle(),
+        loadPfSettings(),
       ]);
-      let saved={}; try{ saved=st&&st.value?JSON.parse(st.value):{}; }catch(e){}
-      const cfg={...PF_DEFAULTS,...saved};
-      setS(cfg); setSForm(cfg);
-      setRows(data.map(r=>({...r,t:new Date(r.reading_at).getTime(),kwh:Number(r.kwh),kvah:Number(r.kvah)})));
-      setErr('');
-    }catch(e){ setErr((e.message||String(e))+' — have you run power_factor.sql?'); }
+      setS(cfg); setRows(pfPrepRows(data)); setErr('');
+    }catch(e){ setErr((e.message||String(e))+' — have you run power_factor.sql and power_factor_alerts.sql?'); }
     setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
 
   const ivs=React.useMemo(()=>pfBuild(rows,S),[rows,S]);
 
-  // keep "now" fresh when the person opens the Record tab for a new entry
   useEffect(()=>{ if(tab==='record'&&!editingId) setForm(p=>(p.kwh===''&&p.kvah==='')?{...p,at:pfNowLocal()}:p); },[tab]);
 
   // ── validation + live preview ──
@@ -10407,6 +10577,7 @@ function PowerFactor({userEmail}){
           if(pf>1.0005) warnings.push(`Power factor works out to ${pf3(pf)}, which is above 1 and not possible. kWh and kVAh may be swapped or mistyped.`);
           if(dk===0) warnings.push('No kWh was consumed in this period (mill idle?), so the power factor is 0.');
           if(dh>S.gap_hours) warnings.push(`${pfDur(dh)} since the previous reading — this power factor is an average over a long period and hides the daily swings.`);
+          if(S.alert_enabled&&pf<=1.0005&&pf<Number(S.alert_below)) warnings.push(`This is below the alert limit of ${S.alert_below} — an alert will be raised for the people selected in Power Factor Settings.`);
         }
       }
     }
@@ -10425,6 +10596,7 @@ function PowerFactor({userEmail}){
       :await sb.from('power_factor_readings').insert({...payload,entered_by:userEmail||null});
     setSaving(false);
     if(res.error) return alert(res.error.code==='23505'?'A reading already exists for this exact time.':res.error.message);
+    pfBust();
     logActivity('Electrical',editingId?'update':'create',`Power factor reading ${editingId?'edited':'logged'} — ${fmt(payload.kwh,2)} kWh, ${fmt(payload.kvah,2)} kVAh at ${pfFmtDT(new Date(payload.reading_at).getTime())}${chk.pv?` (PF ${pf3(chk.pv.pf)})`:''}`);
     const wasEdit=!!editingId;
     resetForm();
@@ -10442,22 +10614,9 @@ function PowerFactor({userEmail}){
     if(!confirm(`Delete the reading of ${pfFmtDT(r.t)}?\n\nThe periods on either side will merge into one and be recalculated.`)) return;
     const {error}=await sb.from('power_factor_readings').delete().eq('id',r.id);
     if(error) return alert(error.message);
+    pfBust();
     logActivity('Electrical','delete',`Power factor reading deleted — ${pfFmtDT(r.t)}`);
     load();
-  };
-
-  const saveSettings=async()=>{
-    const n=(v)=>Number(v);
-    if(!(n(sForm.target)>0&&n(sForm.target)<=1)) return alert('Target must be between 0 and 1.');
-    if(!(n(sForm.minimum)>0&&n(sForm.minimum)<=n(sForm.target))) return alert('Minimum must be above 0 and not higher than the target.');
-    if(!(n(sForm.multiplier)>0)) return alert('Meter multiplier must be above 0 (use 1 if unsure).');
-    if(!(n(sForm.gap_hours)>=1)) return alert('Long-gap hours must be at least 1.');
-    const clean={target:n(sForm.target),minimum:n(sForm.minimum),multiplier:n(sForm.multiplier),gap_hours:n(sForm.gap_hours)};
-    setSaving(true);
-    const {error}=await sb.from('erp_settings').upsert({key:PF_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
-    setSaving(false);
-    if(error) return alert(error.message);
-    setS(clean); logActivity('Settings','update','Power factor settings updated'); flash('Settings saved.');
   };
 
   if(loading) return <Loading/>;
@@ -10523,8 +10682,8 @@ function PowerFactor({userEmail}){
   const cur=pfMonthStats(curKey,rows,ivs,method,S);
   const proj=method==='next'?pfProject(cur,S):null;
 
-  const csv=()=>downloadCSV(`power_factor_${today}.csv`,['Reading time','kWh reading','kVAh reading','Hours since previous','Δ kWh','Δ kVAh','Power factor','Avg kW','Avg kVA','Status','Notes'],
-    rows.map((r,i)=>{ const x=ivs[i]; return [pfFmtDT(r.t),r.kwh,r.kvah,x.valid?x.dh.toFixed(2):'',x.valid?r3(x.dk):'',x.valid?r3(x.dv):'',x.valid?x.pf.toFixed(4):'',x.valid?x.kw.toFixed(1):'',x.valid?x.kva.toFixed(1):'',x.valid?PF_LABEL[x.status]:(r.is_reset?'Meter reset':'Opening reading'),r.notes||'']; }));
+  const csv=()=>downloadCSV(`power_factor_${today}.csv`,['Reading time','kWh reading','kVAh reading','Hours since previous','Δ kWh','Δ kVAh','Power factor','Avg kW','Avg kVA','Status','Alert action','Notes'],
+    rows.map((r,i)=>{ const x=ivs[i]; return [pfFmtDT(r.t),r.kwh,r.kvah,x.valid?x.dh.toFixed(2):'',x.valid?r3(x.dk):'',x.valid?r3(x.dv):'',x.valid?x.pf.toFixed(4):'',x.valid?x.kw.toFixed(1):'',x.valid?x.kva.toFixed(1):'',x.valid?PF_LABEL[x.status]:(r.is_reset?'Meter reset':'Opening reading'),r.alert_ack_action||'',r.notes||'']; }));
 
   const last=rows[rows.length-1];
   const lastIv=[...ivs].reverse().find(x=>x.valid);
@@ -10548,6 +10707,8 @@ function PowerFactor({userEmail}){
     {err&&<Alert type="red" icon="⚠" title="Could not load power factor data" sub={err}/>}
     {msg&&<Alert type="green" icon="✓" title={msg}/>}
 
+    <PfAlertPanel rows={rows} ivs={ivs} S={S} employeeId={employeeId} role={role} onChanged={load}/>
+
     <div className="stat-grid">
       <StatCard label="Latest period PF" value={lastIv?pf3(lastIv.pf):'—'} sub={lastIv?PF_LABEL[lastIv.status]:'needs 2 readings'} col={lastIv?PF_COL[lastIv.status]:'var(--muted)'}/>
       <StatCard label="Overall (range)" value={pf3(agg.pf)} sub={`target ${S.target}`} col={agg.pf===null?'var(--muted)':PF_COL[pfStatus(agg.pf,S)]}/>
@@ -10560,7 +10721,6 @@ function PowerFactor({userEmail}){
       {tabBtn('overview','Overview & analysis')}
       {tabBtn('log','Reading log')}
       {tabBtn('monthly','Monthly')}
-      {ax('power-factor','settings')&&tabBtn('settings','Settings')}
     </div>
 
     {/* ───── RECORD ───── */}
@@ -10613,6 +10773,7 @@ function PowerFactor({userEmail}){
       {insights.length>0&&(<div style={{marginBottom:20}}>
         <div className="section-label">What the data says</div>
         {insights.map((x,i)=><Alert key={i} type={x.t==='good'?'green':x.t==='low'?'red':'amber'} icon={x.t==='good'?'✓':x.t==='info'?'💡':'⚠'} title={x.x}/>)}
+        <div className="dim" style={{fontSize:11}}>Targets and alert rules are set in Settings → Power Factor Settings.</div>
       </div>)}
 
       {agg.n>0&&(<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginBottom:20}}>
@@ -10643,7 +10804,7 @@ function PowerFactor({userEmail}){
     {tab==='log'&&(<>
       {rangeBar}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
-        <div className="dim" style={{fontSize:12}}>Newest first. Each row’s power factor covers the period since the reading above it in time (the row below).</div>
+        <div className="dim" style={{fontSize:12}}>Newest first. Each row’s power factor covers the period since the previous reading.</div>
         {ax('power-factor','download')&&<button className="btn btn-ghost btn-sm" onClick={csv} disabled={rows.length===0}>⬇ Download CSV</button>}
       </div>
       <TableWrap><table>
@@ -10659,7 +10820,7 @@ function PowerFactor({userEmail}){
               <td className="mono dim">{x.valid?pfDur(x.dh):'—'}</td>
               <td className="mono">{x.valid?fmt(x.dk,1):'—'}</td>
               <td className="mono">{x.valid?fmt(x.dv,1):'—'}</td>
-              <td>{x.valid?<><strong className="mono" style={{color:PF_COL[x.status],fontSize:14}}>{pf3(x.pf)}</strong> <span className={`badge ${PF_BADGE[x.status]}`}>{PF_LABEL[x.status]}</span>{x.longGap&&<div style={{fontSize:10,color:'var(--amber)'}}>long gap</div>}</>:<span className="badge badge-muted">{r.is_reset?'Meter reset':'Opening reading'}</span>}</td>
+              <td>{x.valid?<><strong className="mono" style={{color:PF_COL[x.status],fontSize:14}}>{pf3(x.pf)}</strong> <span className={`badge ${PF_BADGE[x.status]}`}>{PF_LABEL[x.status]}</span>{x.longGap&&<div style={{fontSize:10,color:'var(--amber)'}}>long gap</div>}{r.alert_ack_at&&<div style={{fontSize:10,color:'var(--green)'}}>✓ {r.alert_ack_action||'acknowledged'}</div>}</>:<span className="badge badge-muted">{r.is_reset?'Meter reset':'Opening reading'}</span>}</td>
               <td className="mono">{x.valid?fmt(x.kw,1):'—'}</td>
               <td style={{whiteSpace:'nowrap'}}>
                 {ax('power-factor','edit')&&<button className="btn btn-blue btn-sm" onClick={()=>startEdit(r)}>✎</button>}{' '}
@@ -10715,19 +10876,352 @@ function PowerFactor({userEmail}){
           }).filter(Boolean)}/>
       </>)}
     </>)}
+  </div>);
+}
 
-    {/* ───── SETTINGS ───── */}
-    {tab==='settings'&&ax('power-factor','settings')&&(<div className="card" style={{maxWidth:640}}>
-      <div className="section-label">Power factor settings</div>
+// ══════════════════════════════════════════════════════════
+// POWER FACTOR — ALERTS + SETTINGS PAGE
+// Paste this DIRECTLY BELOW the Power Factor component (still above  function App(){ )
+// ══════════════════════════════════════════════════════════
+const PF_ACTIONS=['Capacitor bank / APFC checked','Capacitor stage repaired or replaced','Load rescheduled / balanced','Electrician called','Temporary low load — no action needed','Other'];
+const PF_CACHE={t:0,v:null};
+const pfBust=()=>{ PF_CACHE.t=0; PF_CACHE.v=null; };
+
+// Open alerts: periods below the alert limit that nobody has acknowledged yet. One alert per streak.
+function pfOpenAlerts(ivs,S){
+  if(!S.alert_enabled) return [];
+  const limit=Number(S.alert_below), crit=Number(S.critical_below);
+  const cutoff=Date.now()-(Number(S.recent_days)||3)*864e5;
+  const need=Math.max(1,Number(S.consecutive)||1);
+  const low=(x)=>!!x&&x.valid&&x.status!=='bad'&&x.pf<limit;
+  const qual=new Set();
+  ivs.forEach((x,idx)=>{
+    if(!low(x)||x.row.t<cutoff||x.row.alert_ack_at) return;
+    for(let k=1;k<need;k++){ if(!low(ivs[idx-k])) return; }
+    qual.add(idx);
+  });
+  const out=[];
+  qual.forEach(idx=>{
+    if(qual.has(idx+1)) return;              // the newest interval of a streak represents it
+    const ids=[]; let minPf=ivs[idx].pf, j=idx;
+    while(j>=0&&low(ivs[j])){ ids.push(ivs[j].row.id); if(ivs[j].pf<minPf) minPf=ivs[j].pf; j--; }
+    const x=ivs[idx];
+    const made=new Date(x.row.created_at||x.row.reading_at).getTime();
+    out.push({x,ids,n:ids.length,minPf,critical:minPf<crit,hrs:(Date.now()-made)/3600000});
+  });
+  return out.sort((a,b)=>b.x.row.t-a.x.row.t);
+}
+
+function pfMonthAlert(rows,ivs,S){
+  if(!S.alert_enabled||!S.month_alert||rows.length<2) return null;
+  const st=pfMonthStats(pfMK(Date.now()),rows,ivs,'next',S);
+  if(!st||st.empty||!st.a||st.a.n===0||st.a.pf===null) return null;
+  if(st.a.h<(Number(S.month_min_days)||0)*24) return null;
+  if(st.a.pf>=Number(S.month_below)) return null;
+  return {pf:st.a.pf,hours:st.a.h,from:st.from,proj:pfProject(st,S)};
+}
+function pfStale(rows,S){
+  const h=Number(S.stale_hours)||0;
+  if(!S.alert_enabled||h<=0||rows.length===0) return null;
+  const last=rows[rows.length-1];
+  const hrs=(Date.now()-last.t)/3600000;
+  return hrs>h?{hrs,last}:null;
+}
+
+async function pfAlertData(){
+  if(PF_CACHE.v&&Date.now()-PF_CACHE.t<20000) return PF_CACHE.v;
+  const S=await loadPfSettings();
+  const since=new Date(Date.now()-75*864e5).toISOString();
+  const {data,error}=await sb.from('power_factor_readings').select('*').gte('reading_at',since).order('reading_at').order('id').limit(5000);
+  if(error) throw new Error(error.message);
+  const rows=pfPrepRows(data), ivs=pfBuild(rows,S);
+  const v={S,rows,ivs,open:pfOpenAlerts(ivs,S),month:pfMonthAlert(rows,ivs,S),stale:pfStale(rows,S)};
+  PF_CACHE.t=Date.now(); PF_CACHE.v=v; return v;
+}
+
+const pfWho=(S,employeeId,role)=>{
+  const me=(employeeId===null||employeeId===undefined)?'':String(employeeId);
+  return {me,
+    assignee:!!me&&(S.person_ids||[]).map(String).includes(me),
+    manager:!!me&&String(S.manager_id||'')===me,
+    director:role==='director'&&!!S.notify_director};
+};
+const pfCanAck=(S,employeeId,role)=>{ const w=pfWho(S,employeeId,role); return role==='director'||w.assignee||w.manager||ax('power-factor','ack'); };
+
+// Which open alerts should this person see? (person in charge always; manager after N hours; director if critical or after N hours)
+const pfAlertsFor=(open,S,employeeId,role)=>{
+  if(!S.alert_enabled) return [];
+  const w=pfWho(S,employeeId,role), out=[];
+  open.forEach(a=>{
+    let as=null;
+    if(w.assignee) as='assignee';
+    else if(w.manager&&a.hrs>=(Number(S.manager_after_hours)||0)) as='manager';
+    else if(w.director&&(a.critical||a.hrs>=(Number(S.director_after_hours)||0))) as='director';
+    if(as) out.push({...a,as});
+  });
+  return out;
+};
+
+async function pfTaskCount(employeeId,role){
+  const d=await pfAlertData();
+  if(!d.S.alert_enabled||!d.S.show_tasks) return 0;
+  const w=pfWho(d.S,employeeId,role);
+  let n=pfAlertsFor(d.open,d.S,employeeId,role).length;
+  if(d.month&&(w.assignee||w.manager||w.director)) n++;
+  if(d.stale&&w.assignee) n++;
+  return n;
+}
+
+async function pfAcknowledge(a,action,note){
+  const {data:{user}}=await sb.auth.getUser();
+  const {data,error}=await sb.from('power_factor_readings').update({alert_ack_by:user?.email||null,alert_ack_at:new Date().toISOString(),alert_ack_action:action,alert_ack_note:(note||'').trim()||null}).in('id',a.ids).is('alert_ack_at',null).select();
+  if(error){ alert(error.message+' — have you run power_factor_alerts.sql?'); return false; }
+  if(!data||!data.length){ alert('This alert was already acknowledged by someone else.'); return false; }
+  pfBust();
+  logActivity('Electrical','update',`Acknowledged low power factor (${pf3(a.minPf)}) at ${pfFmtDT(a.x.row.t)}: ${action}`);
+  return true;
+}
+
+function PfAckBox({a,onDone}){
+  const [act,setAct]=useState('');
+  const [note,setNote]=useState('');
+  const [busy,setBusy]=useState(false);
+  const submit=async()=>{
+    if(!act) return alert('Choose what action is being taken.');
+    if((act==='Other'||act.startsWith('Temporary'))&&!note.trim()) return alert('A short note is required for this action — say what happened or why no action is needed.');
+    setBusy(true); const ok=await pfAcknowledge(a,act,note); setBusy(false);
+    if(ok&&onDone) onDone();
+  };
+  return(<div style={{marginTop:10,padding:'10px 12px',borderRadius:6,background:'var(--surface2)',border:'1px solid var(--border)'}}>
+    <div className="form-label" style={{marginBottom:6}}>Acknowledge &amp; record the action taken</div>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+      <select style={{width:270}} value={act} onChange={e=>setAct(e.target.value)}>
+        <option value="">-- Action taken --</option>
+        {PF_ACTIONS.map(x=><option key={x}>{x}</option>)}
+      </select>
+      <input style={{flex:1,minWidth:200}} placeholder="Note (what was found / done)" value={note} onChange={e=>setNote(e.target.value)}/>
+      <button className="btn btn-green btn-sm" onClick={submit} disabled={busy}>{busy?'Saving…':'✓ Acknowledge'}</button>
+    </div>
+  </div>);
+}
+
+function PfAlertCard({a,S,canAck,onDone,who}){
+  const x=a.x, col=a.critical?'var(--red)':'#EA580C';
+  return(<div className="card" style={{marginBottom:12,borderLeft:`4px solid ${col}`}}>
+    <div style={{fontSize:15,fontWeight:600}}>⚡ {a.critical?'CRITICAL low':'Low'} power factor: {pf3(x.pf)}{a.n>1?` (lowest ${pf3(a.minPf)} over ${a.n} periods in a row)`:''}</div>
+    <div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{pfFmtDT(x.prev.t)} → {pfFmtDT(x.row.t)} · limit {S.alert_below}{a.critical?` · critical below ${S.critical_below}`:''}</div>
+    <div style={{fontSize:13,marginTop:6,color:col,fontWeight:500}}>Average load {fmt(x.kw,1)} kW · about {fmt(x.kvarReq,0)} kVAr of correction needed to reach {S.target} · unacknowledged for {pfDur(a.hrs)}</div>
+    {who&&<div style={{fontSize:12,marginTop:4}}>{who}</div>}
+    {x.row.notes&&<div className="dim" style={{fontSize:12,marginTop:4}}>📝 {x.row.notes}</div>}
+    {canAck?<PfAckBox a={a} onDone={onDone}/>:<div className="dim" style={{fontSize:12,marginTop:8}}>Waiting for the person in charge to acknowledge.</div>}
+  </div>);
+}
+
+// On the Power Factor page itself (everyone who can open the page sees open alerts)
+function PfAlertPanel({rows,ivs,S,employeeId,role,onChanged}){
+  const open=pfOpenAlerts(ivs,S);
+  const month=pfMonthAlert(rows,ivs,S), stale=pfStale(rows,S);
+  if(open.length===0&&!month&&!stale) return null;
+  const canAck=pfCanAck(S,employeeId,role);
+  return(<div style={{marginBottom:20}}>
+    <div className="section-label">Power factor alerts ({open.length+(month?1:0)+(stale?1:0)})</div>
+    {open.map(a=><PfAlertCard key={a.x.row.id} a={a} S={S} canAck={canAck} onDone={onChanged}/>)}
+    {month&&<Alert type="amber" icon="📅" title={`This month’s power factor is ${pf3(month.pf)}, below the monthly limit of ${S.month_below}`} sub={month.proj?(month.proj.req>1?'Even a perfect power factor for the rest of the month cannot bring it to target.':`The rest of the month needs an average of ${pf3(month.proj.req)} to finish at ${S.target}.`):''}/>}
+    {stale&&<Alert type="amber" icon="⏰" title={`No meter reading for ${pfDur(stale.hrs)}`} sub={`Last reading: ${pfFmtDT(stale.last.t)}. Readings should be taken at least every ${S.stale_hours} hours.`}/>}
+  </div>);
+}
+
+// Top of My Tasks
+function PfAlerts({employeeId,role,onChanged}){
+  const [d,setD]=useState(null);
+  const load=useCallback(async()=>{ try{ setD(await pfAlertData()); }catch(e){ console.error('Power factor alerts failed:',e.message); } },[]);
+  useEffect(()=>{load();},[load]);
+  if(!d||!d.S.alert_enabled||!d.S.show_tasks) return null;
+  const S=d.S, w=pfWho(S,employeeId,role);
+  const list=pfAlertsFor(d.open,S,employeeId,role);
+  const showMonth=d.month&&(w.assignee||w.manager||w.director);
+  const showStale=d.stale&&w.assignee;
+  if(list.length===0&&!showMonth&&!showStale) return null;
+  const done=()=>{ pfBust(); load(); if(onChanged) onChanged(); };
+  const canAck=pfCanAck(S,employeeId,role);
+  return(<div style={{marginBottom:24}}>
+    <div className="section-label">Power factor alerts ({list.length+(showMonth?1:0)+(showStale?1:0)})</div>
+    {list.map(a=>{
+      const who=a.as==='assignee'?'You are selected to handle power factor alerts.':a.as==='manager'?'Escalated to you as manager — not acknowledged yet.':'Escalated to the Director.';
+      return <PfAlertCard key={a.x.row.id} a={a} S={S} canAck={canAck} onDone={done} who={who}/>;
+    })}
+    {showMonth&&<div className="card" style={{marginBottom:12,borderLeft:'4px solid var(--amber)'}}>
+      <div style={{fontSize:14,fontWeight:600}}>📅 Month-to-date power factor {pf3(d.month.pf)} is below {S.month_below}</div>
+      <div style={{fontSize:12,marginTop:4}}>{d.month.proj?(d.month.proj.req>1?'Even a perfect power factor for the rest of the month cannot reach the target.':`The rest of the month needs an average of ${pf3(d.month.proj.req)} to finish at ${S.target}.`):''} Open Electrical → Power Factor → Monthly.</div>
+    </div>}
+    {showStale&&<div className="card" style={{marginBottom:12,borderLeft:'4px solid var(--amber)'}}>
+      <div style={{fontSize:14,fontWeight:600}}>⏰ Meter reading due — last one was {pfDur(d.stale.hrs)} ago</div>
+      <div style={{fontSize:12,marginTop:4}}>Last reading {pfFmtDT(d.stale.last.t)}. Please record kWh and kVAh in Electrical → Power Factor.</div>
+    </div>}
+  </div>);
+}
+
+// Dashboard
+function PfDashboardAlerts(){
+  const [d,setD]=useState(null);
+  useEffect(()=>{(async()=>{ try{ const x=await pfAlertData(); if(x.S.alert_enabled&&x.S.show_dashboard) setD(x); }catch(e){} })();},[]);
+  if(!d) return null;
+  return <>
+    {d.open.map(a=>(
+      <Alert key={a.x.row.id} type={a.critical?'red':'amber'} icon="⚡"
+        title={`Low power factor ${pf3(a.x.pf)}${a.n>1?` (${a.n} periods in a row)`:''} — ${pfFmtDT(a.x.row.t)}`}
+        sub={`Limit ${d.S.alert_below} · load ${fmt(a.x.kw,0)} kW · about ${fmt(a.x.kvarReq,0)} kVAr needed · not acknowledged yet`}/>
+    ))}
+    {d.month&&<Alert type="amber" icon="📅" title={`Monthly power factor so far: ${pf3(d.month.pf)} (limit ${d.S.month_below})`}/>}
+    {d.stale&&<Alert type="amber" icon="⏰" title={`No power factor reading for ${pfDur(d.stale.hrs)}`}/>}
+  </>;
+}
+
+// ══════════ Settings page (own sidebar item) ══════════
+function PowerFactorSettings(){
+  const [S,setS]=useState(PF_DEFAULTS);
+  const [emps,setEmps]=useState([]);
+  const [appUsers,setAppUsers]=useState([]);
+  const [rows,setRows]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+
+  useEffect(()=>{(async()=>{
+    const since=new Date(Date.now()-75*864e5).toISOString();
+    const [cfg,{data:e},{data:au},{data:rd}]=await Promise.all([
+      loadPfSettings(),
+      sb.from(EMP_TABLE).select('*').range(0,4999),
+      sb.from('app_users').select('*'),
+      sb.from('power_factor_readings').select('*').gte('reading_at',since).order('reading_at').limit(5000),
+    ]);
+    setS(cfg); setEmps((e||[]).filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b)))); setAppUsers(au||[]); setRows(pfPrepRows(rd)); setLoading(false);
+  })();},[]);
+
+  const linked=new Set(appUsers.filter(u=>u.employee_id!==null&&u.employee_id!==undefined).map(u=>String(u.employee_id)));
+  const nameOf=(id)=>{ const e=emps.find(x=>String(x.id)===String(id)); return e?empName(e):'Unknown'; };
+
+  const save=async()=>{
+    const n=(v)=>Number(v);
+    const tg=n(S.target), mn=n(S.minimum), ab=n(S.alert_below), cb=n(S.critical_below);
+    if(!(tg>0&&tg<=1)) return alert('Target must be between 0 and 1.');
+    if(!(mn>0&&mn<=tg)) return alert('Minimum must be above 0 and not higher than the target.');
+    if(!(n(S.multiplier)>0)) return alert('Meter multiplier must be above 0 (use 1 if unsure).');
+    if(!(n(S.gap_hours)>=1)) return alert('Long-gap hours must be at least 1.');
+    if(!(ab>0&&ab<=1)) return alert('The alert limit must be between 0 and 1.');
+    if(!(cb>0&&cb<=ab)) return alert('The critical limit must be above 0 and not higher than the alert limit.');
+    if(!Number.isInteger(n(S.consecutive))||n(S.consecutive)<1||n(S.consecutive)>20) return alert('“Periods in a row” must be a whole number from 1 to 20.');
+    if(!Number.isInteger(n(S.recent_days))||n(S.recent_days)<1||n(S.recent_days)>60) return alert('“Only alert for readings from the last N days” must be 1 to 60.');
+    if(!(n(S.manager_after_hours)>=0)||!(n(S.director_after_hours)>=0)) return alert('Escalation hours must be 0 or more.');
+    if(!(n(S.month_below)>0&&n(S.month_below)<=1)) return alert('The monthly limit must be between 0 and 1.');
+    if(!(n(S.month_min_days)>=0)||!(n(S.stale_hours)>=0)) return alert('Days and hours must be 0 or more.');
+    if(S.alert_enabled&&(S.person_ids||[]).length===0&&!confirm('Nobody is selected to receive power factor alerts, so only the manager (if chosen) and Director will see them. Save anyway?')) return;
+    if(ab<mn&&!confirm(`The alert limit (${ab}) is lower than the minimum (${mn}), so alerts only start for very poor power factor. Continue?`)) return;
+    const clean={...S,target:tg,minimum:mn,multiplier:n(S.multiplier),gap_hours:n(S.gap_hours),alert_below:ab,critical_below:cb,consecutive:n(S.consecutive),recent_days:n(S.recent_days),
+      manager_after_hours:n(S.manager_after_hours),director_after_hours:n(S.director_after_hours),month_below:n(S.month_below),month_min_days:n(S.month_min_days),stale_hours:n(S.stale_hours),
+      person_ids:(S.person_ids||[]).map(String),manager_id:S.manager_id?String(S.manager_id):''};
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:PF_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    setS(clean); pfBust();
+    logActivity('Settings','update','Power factor settings updated');
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000);
+  };
+  const reset=()=>{ if(confirm('Reset every field on this page to the defaults? (Nothing is saved until you press Save.)')) setS(PF_DEFAULTS); };
+
+  const num=(k,label,props)=>(<Field label={label}><input type="number" className="form-input" value={S[k]} onChange={e=>s(k,e.target.value)} {...(props||{})}/></Field>);
+  const chk=(k,label)=>(<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={!!S[k]} onChange={e=>s(k,e.target.checked)}/>{label}</label>);
+
+  if(loading) return <Loading/>;
+
+  const noLogin=[...(S.person_ids||[]).map(String),...(S.manager_id?[String(S.manager_id)]:[])].filter(id=>!linked.has(id));
+  const ivs=pfBuild(rows,S);
+  const open=pfOpenAlerts(ivs,S);
+  const month=pfMonthAlert(rows,ivs,S), stale=pfStale(rows,S);
+  const stageOf=(a)=>a.critical?'Person in charge + manager + Director now':a.hrs>=(Number(S.director_after_hours)||0)?'Director':a.hrs>=(Number(S.manager_after_hours)||0)?'Manager':'Person in charge';
+
+  return(<div className="page">
+    <div className="page-header"><div className="page-label">System Settings</div><div className="page-title">Power factor settings</div></div>
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.alert_enabled?'var(--green)':'var(--red)'}`}}>
+      {chk('alert_enabled','Power factor alerts are ON (untick to switch every alert off; readings and analysis still work)')}
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. Targets (used for colours and analysis)</div>
       <div className="form-grid">
-        <Field label="Target power factor"><input type="number" step="0.01" min="0" max="1" className="form-input" value={sForm.target} onChange={e=>setSForm(p=>({...p,target:e.target.value}))}/></Field>
-        <Field label="Minimum acceptable"><input type="number" step="0.01" min="0" max="1" className="form-input" value={sForm.minimum} onChange={e=>setSForm(p=>({...p,minimum:e.target.value}))}/></Field>
-        <Field label="Meter multiplier (MF / CT×PT)"><input type="number" step="any" min="0" className="form-input" value={sForm.multiplier} onChange={e=>setSForm(p=>({...p,multiplier:e.target.value}))}/></Field>
-        <Field label="Treat as a “long gap” after (hours)"><input type="number" min="1" className="form-input" value={sForm.gap_hours} onChange={e=>setSForm(p=>({...p,gap_hours:e.target.value}))}/></Field>
+        {num('target','Target power factor',{step:'0.01',min:0,max:1})}
+        {num('minimum','Minimum acceptable',{step:'0.01',min:0,max:1})}
+        {num('multiplier','Meter multiplier (MF / CT×PT)',{step:'any',min:0})}
+        {num('gap_hours','Treat as a “long gap” after (hours)',{min:1})}
       </div>
-      <div className="dim" style={{fontSize:12,marginTop:10}}>Target and minimum colour the results and drive the analysis (check your electricity board’s incentive/penalty limits). The multiplier only scales kWh, kVAh, kW and kVA shown; it never changes the power factor, so leave it at 1 if you enter the meter display directly.</div>
-      <div className="form-actions"><button className="btn btn-green" onClick={saveSettings} disabled={saving}>{saving?'Saving…':'Save settings'}</button></div>
-    </div>)}
+      <div className="dim" style={{fontSize:12,marginTop:8}}>Check your electricity board’s incentive and penalty limits. The multiplier only scales kWh, kVAh, kW and kVA shown; it never changes the power factor, so leave it at 1 if you enter the meter display directly.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. When to raise an alert</div>
+      <div className="form-grid">
+        {num('alert_below','Alert when a period’s power factor is below',{step:'0.01',min:0,max:1})}
+        {num('critical_below','CRITICAL when below (goes to the Director at once)',{step:'0.01',min:0,max:1})}
+        {num('consecutive','Only alert after this many periods in a row below the limit',{min:1})}
+        {num('recent_days','Only alert for readings from the last N days',{min:1})}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>An alert stays open until someone acknowledges it and records the action taken. Use “periods in a row” &gt; 1 to ignore one-off dips (for example while a motor starts). Older readings never raise alerts, so a backlog entered late will not flood anyone.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">3. Who gets alerted</div>
+      <div className="form-grid">
+        <Field label="People who receive power factor alerts (Ctrl/Cmd-click to pick several)">
+          <select multiple size={7} className="form-input" value={(S.person_ids||[]).map(String)} onChange={e=>s('person_ids',Array.from(e.target.selectedOptions).map(o=>o.value))}>
+            {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+          </select>
+        </Field>
+        <div>
+          <Field label="Manager (escalation)">
+            <select className="form-input" value={S.manager_id||''} onChange={e=>s('manager_id',e.target.value)}>
+              <option value="">-- None --</option>
+              {emps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+            </select>
+          </Field>
+          <div style={{height:8}}/>
+          {num('manager_after_hours','Escalate to manager if not acknowledged for (hours, 0 = at once)',{min:0})}
+        </div>
+      </div>
+      <div style={{marginTop:10}}>{chk('notify_director','Alert every Director when it is critical or still unacknowledged')}</div>
+      <div className="form-grid">{num('director_after_hours','Escalate to Director if not acknowledged for (hours)',{min:0})}</div>
+      {noLogin.length>0&&<div style={{fontSize:12,color:'var(--red)',marginTop:8}}>⚠ No login is linked to: {Array.from(new Set(noLogin)).map(nameOf).join(', ')}. They will see nothing until the Director links their login in the HR portal.</div>}
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">4. Monthly and reminder alerts</div>
+      {chk('month_alert','Alert when the month-to-date power factor is below the limit')}
+      <div className="form-grid">
+        {num('month_below','Monthly limit',{step:'0.01',min:0,max:1})}
+        {num('month_min_days','Start checking after the month has this many days of data',{min:0})}
+        {num('stale_hours','Remind the person in charge if no reading for (hours, 0 = off)',{min:0})}
+      </div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">5. Where alerts appear</div>
+      {chk('show_tasks','In My Tasks and the badge on the sidebar')}
+      {chk('show_dashboard','On the Dashboard alerts list (visible to everyone who opens the Dashboard)')}
+    </div>
+
+    <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:24,flexWrap:'wrap'}}>
+      {ax('power-factor-settings','edit')&&<button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':'Save settings'}</button>}
+      {ax('power-factor-settings','edit')&&<button className="btn btn-ghost" onClick={reset}>Reset to defaults</button>}
+      {msg&&<span style={{fontSize:12,color:'var(--green)'}}>{msg}</span>}
+    </div>
+
+    <div className="section-label">Live preview — alerts that would be open right now under these settings (unsaved changes included)</div>
+    <RTable head={['Period','Power factor','Streak','Open for','Who sees it']} empty="No open alerts under these settings."
+      rows={open.map(a=>[`${pfFmtDT(a.x.prev.t)} → ${pfFmtDT(a.x.row.t)}`,<span style={{color:a.critical?'var(--red)':'var(--amber)',fontWeight:700}}>{pf3(a.x.pf)}</span>,a.n,pfDur(a.hrs),stageOf(a)])}/>
+    {month&&<div style={{marginTop:10,fontSize:13}}>📅 Month alert would be active: month-to-date {pf3(month.pf)} is below {S.month_below}.</div>}
+    {stale&&<div style={{marginTop:6,fontSize:13}}>⏰ Reminder would be active: no reading for {pfDur(stale.hrs)}.</div>}
   </div>);
 }
 
@@ -10810,6 +11304,7 @@ function App(){
       }catch(e){}
       try{ n+=await sdTaskCount(access.employee_id,access.role); }catch(e){}
       try{ n+=await qcTaskCount(access.employee_id,access.role); }catch(e){}
+            try{ n+=await pfTaskCount(access.employee_id,access.role); }catch(e){}
       if(!cancelled&&!error) setRenewalCount(n);
     };
     fetchRenewals();
@@ -10924,7 +11419,8 @@ function App(){
     'stock-count':<StockCount role={access.role} userEmail={user.email} onPending={setPendingCounts}/>,
     'quality':<QualityControl role={access.role} employeeId={access.employee_id} userEmail={user.email}/>,
     'quality-settings':<QualitySettings/>,
-        'power-factor':<PowerFactor userEmail={user.email}/>,
+        'power-factor':<PowerFactor userEmail={user.email} employeeId={access.employee_id} role={access.role}/>,
+    'power-factor-settings':<PowerFactorSettings/>,
   };
 
   return(<div className="app">
