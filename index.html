@@ -8094,9 +8094,9 @@ function Reports(){
 
 const titleCase=(s)=>String(s||'').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
 
-function TaskBadge({n,compact}){
-  const cls=n===0?'tb-clear':n===1?'tb-one':n<=4?'tb-few':n<=9?'tb-many':'tb-crit';
-  const label=n===0?'✓':n>=10?`⚠ ${n}`:String(n);
+function TaskBadge({n,compact,alert}){
+  const cls=alert?'tb-crit':n===0?'tb-clear':n===1?'tb-one':n<=4?'tb-few':n<=9?'tb-many':'tb-crit';
+  const label=n===0?'✓':(n>=10||alert)?`⚠ ${n}`:String(n);
   const tip=n===0?'No pending tasks':`${n} pending task${n===1?'':'s'}`;
   return <span className={`task-badge ${cls}${compact?' compact':''}`} title={tip}>{label}</span>;
 }
@@ -11953,6 +11953,18 @@ function App(){
     const t=setInterval(f,60000);
     return ()=>{cancelled=true;clearInterval(t);};
   },[access?.role,tab,jobsTick]);
+  const [myOverdueN,setMyOverdueN]=useState(0);
+  useEffect(()=>{
+    if(!access||!access.role||access.role==='pending'||!access.employee_id){ setMyOverdueN(0); return; }
+    let cancelled=false;
+    const f=async()=>{
+      const {count,error}=await sb.from('job_cards').select('id',{count:'exact',head:true}).eq('assigned_to_id',String(access.employee_id)).neq('status','Done').neq('status','Awaiting Approval').not('deadline','is',null).lt('deadline',today);
+      if(!cancelled&&!error) setMyOverdueN(count||0);
+    };
+    f();
+    const t=setInterval(f,60000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role,access?.employee_id,tab,jobsTick]);
   const [myOverdue,setMyOverdue]=useState([]);
   const [overdueAcked,setOverdueAcked]=useState(false);
   useEffect(()=>{
@@ -12162,7 +12174,7 @@ function App(){
       </div>
     </div>)}
     <div className="mobile-bar">
-      <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰{((myOpenCount||0)+renewalCount)>0&&<TaskBadge n={(myOpenCount||0)+renewalCount} compact/>}</button>
+      <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰{((myOpenCount||0)+renewalCount)>0&&<TaskBadge n={(myOpenCount||0)+renewalCount} compact alert={myOverdueN>0}/>}</button>
       <div>
         <div style={{fontFamily:'var(--mono)',fontSize:11,fontWeight:700,letterSpacing:'.15em',color:'var(--amber)'}}>PRFM</div>
         <div style={{fontSize:12,color:'var(--muted)'}}>{(navItems.find(n=>n.id===activeTab)||{}).label||'Mill Operations'} · {firstName}</div>
@@ -12183,8 +12195,8 @@ function App(){
       </div>
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
-        return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
-          <span className="icon">{item.icon}</span>{item.label}{item.id==='job-cards'&&overdueJobs>0&&<span className="task-badge tb-crit" title={`${overdueJobs} overdue job${overdueJobs===1?'':'s'}`}>{overdueJobs}</span>}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&<TaskBadge n={(myOpenCount||0)+renewalCount}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
+        return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}><TaskBadge n={(myOpenCount||0)+renewalCount} alert={myOverdueN>0}/>
+          <span className="icon">{item.icon}</span>{item.label}{item.id==='job-cards'&&overdueJobs>0&&<span className="task-badge" style={{background:'#DC2626'}} title={`${overdueJobs} overdue job${overdueJobs===1?'':'s'}`}>{overdueJobs}</span>}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
         </button>);
       })}
       <div className="sidebar-footer">
