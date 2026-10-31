@@ -11941,6 +11941,18 @@ function App(){
     const [renewalCount,setRenewalCount]=useState(0);
   const [renewalTick,setRenewalTick]=useState(0);
   const [jobsTick,setJobsTick]=useState(0);
+  const [overdueJobs,setOverdueJobs]=useState(0);
+  useEffect(()=>{
+    if(!access||!access.role||access.role==='pending'){ setOverdueJobs(0); return; }
+    let cancelled=false;
+    const f=async()=>{
+      const {count,error}=await sb.from('job_cards').select('id',{count:'exact',head:true}).neq('status','Done').not('deadline','is',null).lt('deadline',today);
+      if(!cancelled&&!error) setOverdueJobs(count||0);
+    };
+    f();
+    const t=setInterval(f,60000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role,tab,jobsTick]);
   useEffect(()=>{
     if(!access||!access.role||access.role==='pending') return;
     let cancelled=false;
@@ -12140,7 +12152,7 @@ function App(){
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
         return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
-          <span className="icon">{item.icon}</span>{item.label}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&<TaskBadge n={(myOpenCount||0)+renewalCount}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
+          <span className="icon">{item.icon}</span>{item.label}{item.id==='job-cards'&&overdueJobs>0&&<span className="task-badge tb-crit" title={`${overdueJobs} overdue job${overdueJobs===1?'':'s'}`}>{overdueJobs}</span>}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&<TaskBadge n={(myOpenCount||0)+renewalCount}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
         </button>);
       })}
       <div className="sidebar-footer">
