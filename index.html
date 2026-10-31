@@ -12195,8 +12195,8 @@ function App(){
       </div>
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
-        return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}><TaskBadge n={(myOpenCount||0)+renewalCount} alert={myOverdueN>0}/>
-          <span className="icon">{item.icon}</span>{item.label}{item.id==='job-cards'&&overdueJobs>0&&<span className="task-badge" style={{background:'#DC2626'}} title={`${overdueJobs} overdue job${overdueJobs===1?'':'s'}`}>{overdueJobs}</span>}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
+        return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
+          <span className="icon">{item.icon}</span>{item.label}{item.id==='job-cards'&&overdueJobs>0&&<span className="task-badge" style={{background:'#DC2626'}} title={`${overdueJobs} overdue job${overdueJobs===1?'':'s'}`}>{overdueJobs}</span>}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&<TaskBadge n={(myOpenCount||0)+renewalCount} alert={myOverdueN>0}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
         </button>);
       })}
       <div className="sidebar-footer">
