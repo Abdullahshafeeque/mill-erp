@@ -11249,6 +11249,697 @@ function PowerFactorSettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// COMPANY TRUCK · PROFIT & LOSS  (monthly entry, import, analysis, settings)
+// Paste this ABOVE  function App(){   (and paste truck_history.js above it too)
+// ══════════════════════════════════════════════════════════
+const TRK_KEY='truck_settings';
+const TRK_GROUPS=['Running','Fixed & compliance','Repairs & parts','Other'];
+const TRK_GCOL={'Running':'var(--blue)','Fixed & compliance':'var(--purple)','Repairs & parts':'var(--amber)','Other':'var(--muted)'};
+const TRK_HEADS=[
+  {name:'Driver',group:'Running'},{name:'Diesel',group:'Running'},{name:'Coolie',group:'Running'},{name:'Ad Blu',group:'Running'},
+  {name:'Grease',group:'Running'},{name:'Air',group:'Running'},{name:'Power Oil',group:'Running'},{name:'Engine Oil',group:'Running'},{name:'Maveli Loading',group:'Running'},
+  {name:'AMC',group:'Fixed & compliance'},{name:'Tax',group:'Fixed & compliance'},{name:'Insurance',group:'Fixed & compliance'},{name:'Permit',group:'Fixed & compliance'},
+  {name:'Pollution',group:'Fixed & compliance'},{name:'FCI',group:'Fixed & compliance'},{name:'Welfare Fund',group:'Fixed & compliance'},
+  {name:'Service',group:'Repairs & parts'},{name:'Maintenance',group:'Repairs & parts'},{name:'Tyre',group:'Repairs & parts'},{name:'Battery',group:'Repairs & parts'},
+  {name:'Pedal',group:'Repairs & parts'},{name:'GPS',group:'Repairs & parts'},{name:'Tarpaulin',group:'Repairs & parts'},
+  {name:'Miscellaneous',group:'Other'}
+];
+const TRK_DEFAULTS={name:'Company Truck',reg_no:'',starting_odo:160554,driver_pct:20,service_interval_km:10000,last_service_odo:'',service_alert_km:1000,heads:TRK_HEADS};
+
+async function loadTruckSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',TRK_KEY).maybeSingle();
+  let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  const S={...TRK_DEFAULTS,...saved};
+  if(!Array.isArray(S.heads)||S.heads.length===0) S.heads=TRK_HEADS;
+  return S;
+}
+
+const trkRs=(n)=>{ const v=Number(n)||0; return (v<0?'-':'')+'₹'+Math.abs(Math.round(v)).toLocaleString('en-IN'); };
+const trkL=(n)=>{ const a=Math.abs(Number(n)||0); const s=a>=1e5?(a/1e5).toFixed(2)+' L':a>=1e3?(a/1e3).toFixed(1)+'k':String(Math.round(a)); return ((Number(n)||0)<0?'-':'')+'₹'+s; };
+const trkP=(v,d=1)=>(v===null||v===undefined||isNaN(v))?'—':v.toFixed(d)+'%';
+const trkPct=(a,b)=>b>0?a/b*100:null;
+const trkChg=(a,b)=>b>0?`${a>=b?'up':'down'} ${Math.abs((a/b-1)*100).toFixed(0)}%`:'';
+const trkDelta=(a,b)=>(b>0&&a!==null&&a!==undefined)?`${a>=b?'▲':'▼'} ${Math.abs((a/b-1)*100).toFixed(0)}% vs before`:'';
+const trkML=(k)=>{ const [y,m]=k.split('-').map(Number); return `${MONTH_NAMES[m-1].slice(0,3)} ${y}`; };
+const trkMS=(k)=>{ const [y,m]=k.split('-').map(Number); return `${MONTH_NAMES[m-1].slice(0,3)} '${String(y).slice(2)}`; };
+const trkFy=(k)=>{ const [y,m]=k.split('-').map(Number); const s=m>=4?y:y-1; return `${s}-${String(s+1).slice(2)}`; };
+const trkIdxLabel=(idx)=>`${MONTH_NAMES[idx%12]} ${Math.floor(idx/12)}`;
+const trkCol=(v)=>v<0?'var(--red)':'var(--green)';
+
+// Turns the stored rows into month records with all derived numbers.
+function trkPrep(rows,S){
+  const gOf=(h)=>(S.heads.find(x=>x.name===h)||{}).group||'Other';
+  let last=null;
+  return rows.map(r=>{
+    const key=String(r.month).slice(0,7);
+    const [y,mo]=key.split('-').map(Number);
+    const idx=y*12+mo-1;
+    const exp={}, g={}; let cost=0;
+    Object.keys(r.expenses||{}).forEach(h=>{ const a=Number(r.expenses[h])||0; if(a===0) return; exp[h]=a; cost+=a; const gg=gOf(h); g[gg]=(g[gg]||0)+a; });
+    const rev=Number(r.revenue)||0;
+    const odo=(r.odo_end===null||r.odo_end===undefined)?null:Number(r.odo_end);
+    let km=null;
+    if(odo!==null){
+      if(last&&idx-last.idx===1) km=odo-last.odo;
+      else if(!last&&Number(S.starting_odo)>0) km=odo-Number(S.starting_odo);
+      if(km!==null&&km<=0) km=null;
+      last={idx,odo};
+    }
+    return {id:r.id,raw:r,key,idx,y,mo,fy:trkFy(key),rev,exp,g,cost,run:g['Running']||0,profit:rev-cost,
+      trips:(r.trips===null||r.trips===undefined)?null:Number(r.trips),odo,km,
+      litres:(r.diesel_litres===null||r.diesel_litres===undefined)?null:Number(r.diesel_litres),notes:r.notes};
+  });
+}
+
+function trkAgg(list){
+  const a={n:list.length,rev:0,cost:0,profit:0,run:0,heads:{},loss:0,trips:0,tripN:0,tRev:0,tCost:0,tRun:0,km:0,kmN:0,kRev:0,kCost:0,kDiesel:0,litres:0,litreKm:0};
+  list.forEach(m=>{
+    a.rev+=m.rev; a.cost+=m.cost; a.profit+=m.profit; a.run+=m.run;
+    Object.keys(m.exp).forEach(h=>{ a.heads[h]=(a.heads[h]||0)+m.exp[h]; });
+    if(m.profit<0) a.loss++;
+    if(m.trips>0){ a.trips+=m.trips; a.tripN++; a.tRev+=m.rev; a.tCost+=m.cost; a.tRun+=m.run; }
+    if(m.km>0){ a.km+=m.km; a.kmN++; a.kRev+=m.rev; a.kCost+=m.cost; a.kDiesel+=(m.exp.Diesel||0); }
+    if(m.litres>0&&m.km>0){ a.litres+=m.litres; a.litreKm+=m.km; }
+  });
+  a.margin=trkPct(a.profit,a.rev);
+  a.avgRev=a.n?a.rev/a.n:0; a.avgProfit=a.n?a.profit/a.n:0; a.avgCost=a.n?a.cost/a.n:0;
+  a.contrib=a.rev-a.run; a.contribPct=trkPct(a.contrib,a.rev);
+  a.revTrip=a.trips>0?a.tRev/a.trips:null; a.profitTrip=a.trips>0?(a.tRev-a.tCost)/a.trips:null; a.costTrip=a.trips>0?a.tCost/a.trips:null;
+  a.dieselTrip=null; a.tripsPerMonth=a.tripN?a.trips/a.tripN:null;
+  a.costKm=a.km>0?a.kCost/a.km:null; a.revKm=a.km>0?a.kRev/a.km:null; a.dieselKm=a.km>0?a.kDiesel/a.km:null;
+  a.mileage=a.litres>0?a.litreKm/a.litres:null;
+  return a;
+}
+
+function trkSeason(all){
+  const b={};
+  all.forEach(m=>{ const o=b[m.mo]=b[m.mo]||{n:0,rev:0,contrib:0}; o.n++; o.rev+=m.rev; o.contrib+=(m.rev-m.run); });
+  return [4,5,6,7,8,9,10,11,12,1,2,3].map(mo=>{ const o=b[mo]; return {mo,label:MONTH_NAMES[mo-1].slice(0,3),n:o?o.n:0,avgRev:o?o.rev/o.n:null,avgContrib:o?o.contrib/o.n:null}; });
+}
+
+// Heads that hit in the same calendar month in 2+ different years → expect them again.
+function trkUpcoming(all,horizon){
+  const by={};
+  all.forEach(m=>Object.keys(m.exp).forEach(h=>{ if(m.exp[h]>=2000){ ((by[h]=by[h]||{})[m.mo]=by[h][m.mo]||[]).push({y:m.y,a:m.exp[h]}); } }));
+  const now=new Date(), cur=now.getFullYear()*12+now.getMonth(), out=[];
+  Object.keys(by).forEach(h=>Object.keys(by[h]).forEach(mo=>{
+    const L=by[h][mo]; if(new Set(L.map(x=>x.y)).size<2) return;
+    const lastY=Math.max(...L.map(x=>x.y)); const lastA=L.find(x=>x.y===lastY).a;
+    let idx=(lastY+1)*12+(Number(mo)-1); while(idx<cur) idx+=12;
+    if(idx-cur<=horizon) out.push({head:h,idx,inM:idx-cur,amt:lastA,seen:new Set(L.map(x=>x.y)).size});
+  }));
+  return out.sort((a,b)=>a.idx-b.idx);
+}
+
+function trkLossWhy(m,S){
+  const gOf=(h)=>(S.heads.find(x=>x.name===h)||{}).group||'Other';
+  const contrib=m.rev-m.run, lumpy=m.cost-m.run;
+  const top=Object.entries(m.exp).filter(([h])=>gOf(h)!=='Running').sort((a,b)=>b[1]-a[1])[0];
+  if(contrib<0) return `${trkML(m.key)}: loss of ${trkRs(-m.profit)} — revenue (${trkRs(m.rev)}) did not even cover running costs.`;
+  if(top&&lumpy>contrib) return `${trkML(m.key)}: loss of ${trkRs(-m.profit)}. The trips earned ${trkRs(contrib)} after running costs, but ${top[0]} (${trkRs(top[1])})${lumpy>top[1]+1?` and other one-off costs (${trkRs(lumpy)} in all)`:''} pushed it into loss.`;
+  return `${trkML(m.key)}: loss of ${trkRs(-m.profit)} — low earnings (${trkRs(contrib)} after running costs${m.trips?`, ${m.trips} trips`:''}).`;
+}
+
+function trkInsights(all,sel,prev,S,label,prevLabel){
+  const out=[]; const add=(t,x)=>out.push({t,x});
+  const A=trkAgg(sel); if(A.n===0) return out;
+  const P=prev&&prev.length?trkAgg(prev):null;
+  add(A.profit>=0?(A.margin>=15?'good':'warn'):'low',`${label}: revenue ${trkL(A.rev)}, cost ${trkL(A.cost)}, profit ${trkL(A.profit)} (${trkP(A.margin)} margin) over ${A.n} month${A.n===1?'':'s'} — ${trkRs(A.avgProfit)} a month on average.`);
+  if(P&&P.n>0&&P.rev>0){
+    const d=A.margin-P.margin;
+    add(d>=0?'good':'warn',`Compared with ${prevLabel}: margin ${d>=0?'up':'down'} ${Math.abs(d).toFixed(1)} points (${trkP(P.margin)} → ${trkP(A.margin)}). Per month, revenue is ${trkChg(A.avgRev,P.avgRev)} and cost is ${trkChg(A.avgCost,P.avgCost)}.`);
+  }
+  const heads=Object.entries(A.heads).sort((a,b)=>b[1]-a[1]);
+  if(heads[0]&&A.rev>0) add('info',`Biggest cost is ${heads[0][0]} at ${trkP(trkPct(heads[0][1],A.rev))} of revenue (${trkL(heads[0][1])}). Running costs together take ${trkP(trkPct(A.run,A.rev))} of revenue, so every trip keeps about ${trkP(A.contribPct)} before repairs and fixed costs.`);
+  // diesel per trip trend (whole history)
+  const dt=all.filter(m=>m.trips>0&&(m.exp.Diesel||0)>0);
+  if(dt.length>=12){
+    const r6=dt.slice(-6), p6=dt.slice(-12,-6);
+    const f=(l)=>l.reduce((s,m)=>s+m.exp.Diesel,0)/l.reduce((s,m)=>s+m.trips,0);
+    const a=f(r6), b=f(p6);
+    if(b>0&&Math.abs(a/b-1)>=0.08) add(a>b?'warn':'good',`Diesel per trip is ${trkRs(a)} over the last 6 months, ${a>b?'up':'down'} ${Math.abs((a/b-1)*100).toFixed(0)}% from ${trkRs(b)} in the 6 months before. ${a>b?'Check routes, load, idling, tyre pressure and diesel price.':'Nice improvement.'}`);
+  }
+  const rt=all.filter(m=>m.trips>0);
+  if(rt.length>=12){
+    const f=(l)=>l.reduce((s,m)=>s+m.rev,0)/l.reduce((s,m)=>s+m.trips,0);
+    const a=f(rt.slice(-6)), b=f(rt.slice(-12,-6));
+    if(b>0&&Math.abs(a/b-1)>=0.08) add(a>b?'good':'warn',`Revenue per trip is ${trkRs(a)} over the last 6 months, ${a>b?'up':'down'} ${Math.abs((a/b-1)*100).toFixed(0)}% from ${trkRs(b)} before.`);
+  }
+  if(A.km>0&&A.costKm!==null) add(A.revKm>A.costKm?'info':'low',`Per kilometre (${Math.round(A.km).toLocaleString('en-IN')} km with odometer data): you earn ${trkRs(A.revKm)}, spend ${trkRs(A.costKm)} and keep ${trkRs(A.revKm-A.costKm)}. Diesel alone costs ${trkRs(A.dieselKm)} per km.${A.mileage?` Mileage ${A.mileage.toFixed(2)} km/l.`:' Enter diesel litres in the monthly entry to see km per litre.'}`);
+  // lumpy costs and what to set aside
+  const lump=A.cost-A.run;
+  if(lump>0&&A.n>0){
+    const top=heads.filter(([h])=>((S.heads.find(x=>x.name===h)||{}).group||'Other')!=='Running').slice(0,3).map(([h,v])=>`${h} ${trkL(v)}`).join(', ');
+    add('info',`Non-running costs (repairs, tyres, insurance, tax…) came to ${trkL(lump)}, about ${trkRs(lump/A.n)} a month — mainly ${top}. They arrive in lumps, which is why single months can show a loss. Putting about ${trkRs(lump/A.n)} aside every month would smooth this out.`);
+  }
+  // break-even
+  if(A.tripN>=3&&A.trips>0){
+    const cpt=(A.tRev-A.tRun)/A.trips;
+    const fixed=(A.cost-A.run)/A.n;
+    if(cpt>0){
+      const need=fixed/cpt, have=A.trips/A.tripN;
+      add(have>=need?'good':'low',`Break-even: each trip leaves about ${trkRs(cpt)} after running costs, and non-running costs average ${trkRs(fixed)} a month — so you need about ${need.toFixed(0)} trips a month to cover them. You are doing ${have.toFixed(0)}${have>=need?` (${(have-need).toFixed(0)} above break-even)`:` — below break-even`}.`);
+    }
+  }
+  // driver rate
+  const dp=A.rev>0?trkPct(A.heads.Driver||0,A.rev):null;
+  if(dp!==null&&Number(S.driver_pct)>0&&Math.abs(dp-Number(S.driver_pct))>=1.5){
+    const off=sel.filter(m=>m.rev>0&&Math.abs(trkPct(m.exp.Driver||0,m.rev)-Number(S.driver_pct))>=1.5).length;
+    add('warn',`Driver pay is ${trkP(dp)} of revenue against your usual ${S.driver_pct}%; ${off} month${off===1?' differs':'s differ'} by more than 1.5 points. Worth checking those entries.`);
+  }
+  // loss months
+  const losses=sel.filter(m=>m.profit<0);
+  losses.slice(-4).forEach(m=>add('low',trkLossWhy(m,S)));
+  if(losses.length>4) add('info',`…and ${losses.length-4} earlier loss month${losses.length-4===1?'':'s'} in this period (see the Monthly tab).`);
+  // seasonality
+  const se=trkSeason(all).filter(x=>x.n>=2&&x.avgRev!==null);
+  if(se.length>=8){
+    const hi=se.reduce((a,b)=>b.avgRev>a.avgRev?b:a), lo=se.reduce((a,b)=>b.avgRev<a.avgRev?b:a);
+    if(hi.avgRev>lo.avgRev*1.15) add('info',`Seasonality: ${hi.label} is usually your strongest month (average revenue ${trkL(hi.avgRev)}) and ${lo.label} your weakest (${trkL(lo.avgRev)}). Plan big repairs for slow months.`);
+  }
+  // upcoming annual costs
+  trkUpcoming(all,4).forEach(u=>add(u.inM<=1?'warn':'info',`${u.head} (about ${trkRs(u.amt)}) has come up every ${MONTH_NAMES[u.idx%12]} in ${u.seen} years — expect it ${u.inM===0?'this month':u.inM===1?'next month':`in ${trkIdxLabel(u.idx)}`}.`));
+  // service due
+  const lastOdo=[...all].reverse().find(m=>m.odo!==null);
+  const iv=Number(S.service_interval_km), ls=Number(S.last_service_odo);
+  if(lastOdo&&iv>0&&ls>0){
+    const rem=ls+iv-lastOdo.odo;
+    add(rem<=0?'low':rem<=Number(S.service_alert_km||0)?'warn':'good',rem<=0?`Service is overdue by ${Math.round(-rem).toLocaleString('en-IN')} km (due at ${(ls+iv).toLocaleString('en-IN')} km, odometer was ${lastOdo.odo.toLocaleString('en-IN')} at ${trkML(lastOdo.key)}).`:`Next service at ${(ls+iv).toLocaleString('en-IN')} km — ${Math.round(rem).toLocaleString('en-IN')} km to go (odometer ${lastOdo.odo.toLocaleString('en-IN')} at ${trkML(lastOdo.key)}).`);
+  }
+  // missing entry
+  const now=new Date(), curIdx=now.getFullYear()*12+now.getMonth(), lastIdx=all[all.length-1].idx;
+  if(curIdx-lastIdx>=2||(curIdx-lastIdx===1&&now.getDate()>=5)) add('warn',`No entry yet for ${trkIdxLabel(lastIdx+1)}${curIdx-lastIdx>2?` and later`:''}. Latest month recorded is ${trkIdxLabel(lastIdx)}.`);
+  return out;
+}
+
+// ── charts ──
+const TRK_LAB={fontSize:10,fill:'var(--muted)',fontFamily:'var(--mono)'};
+const trkTicks=(mn,mx,n)=>Array.from({length:n+1},(_,i)=>mn+(mx-mn)*i/n);
+
+function TrkProfitChart({list}){
+  if(list.length===0) return <div className="dim" style={{padding:24,textAlign:'center',fontSize:13}}>No months in this period.</div>;
+  const W=720,H=250,L=58,R=10,T=14,B=30;
+  const vals=list.map(m=>m.profit);
+  const ma=vals.map((_,i)=>{ const s=vals.slice(Math.max(0,i-2),i+1); return s.reduce((a,b)=>a+b,0)/s.length; });
+  const mx=Math.max(0,...vals,...ma), mn=Math.min(0,...vals,...ma), span=(mx-mn)||1;
+  const y=(v)=>T+(mx-v)/span*(H-T-B);
+  const bw=(W-L-R)/list.length, step=Math.ceil(list.length/12);
+  return(<div style={{overflowX:'auto'}}><svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:560,height:'auto'}}>
+    {trkTicks(mn,mx,4).map((v,i)=>(<g key={i}><line x1={L} x2={W-R} y1={y(v)} y2={y(v)} style={{stroke:'var(--border)'}}/><text x={L-6} y={y(v)+3} textAnchor="end" style={TRK_LAB}>{trkL(v)}</text></g>))}
+    <line x1={L} x2={W-R} y1={y(0)} y2={y(0)} style={{stroke:'var(--border2)',strokeWidth:1.5}}/>
+    {list.map((m,i)=>(<rect key={m.key} x={L+i*bw+bw*0.15} y={Math.min(y(m.profit),y(0))} width={bw*0.7} height={Math.max(1,Math.abs(y(m.profit)-y(0)))} rx={2} style={{fill:m.profit<0?'var(--red)':'var(--green)',opacity:0.85}}><title>{`${trkML(m.key)}: ${trkRs(m.profit)} (revenue ${trkRs(m.rev)}, cost ${trkRs(m.cost)})`}</title></rect>))}
+    <polyline points={ma.map((v,i)=>`${L+i*bw+bw/2},${y(v)}`).join(' ')} style={{fill:'none',stroke:'var(--blue)',strokeWidth:2}}/>
+    {list.map((m,i)=>i%step===0&&<text key={'x'+m.key} x={L+i*bw+bw/2} y={H-9} textAnchor="middle" style={TRK_LAB}>{trkMS(m.key)}</text>)}
+  </svg><div className="dim" style={{fontSize:11}}>Bars = profit each month (red = loss). Blue line = 3-month moving average, which shows the real direction without the lumpy months.</div></div>);
+}
+
+function TrkRevCost({list}){
+  if(list.length<2) return <div className="dim" style={{padding:24,textAlign:'center',fontSize:13}}>Needs at least two months.</div>;
+  const W=720,H=230,L=58,R=10,T=14,B=30;
+  const mx=Math.max(...list.map(m=>Math.max(m.rev,m.cost)),1), y=(v)=>T+(mx-v)/mx*(H-T-B);
+  const x=(i)=>L+i*(W-L-R)/(list.length-1), step=Math.ceil(list.length/12);
+  const pts=(f)=>list.map((m,i)=>`${x(i)},${y(f(m))}`).join(' ');
+  return(<div style={{overflowX:'auto'}}><svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:560,height:'auto'}}>
+    {trkTicks(0,mx,4).map((v,i)=>(<g key={i}><line x1={L} x2={W-R} y1={y(v)} y2={y(v)} style={{stroke:'var(--border)'}}/><text x={L-6} y={y(v)+3} textAnchor="end" style={TRK_LAB}>{trkL(v)}</text></g>))}
+    <polyline points={pts(m=>m.rev)} style={{fill:'none',stroke:'var(--green)',strokeWidth:2.5}}/>
+    <polyline points={pts(m=>m.cost)} style={{fill:'none',stroke:'var(--red)',strokeWidth:2.5}}/>
+    {list.length<=36&&list.map((m,i)=>(<g key={m.key}><circle cx={x(i)} cy={y(m.rev)} r={3} style={{fill:'var(--green)'}}><title>{`${trkML(m.key)} revenue ${trkRs(m.rev)}`}</title></circle><circle cx={x(i)} cy={y(m.cost)} r={3} style={{fill:'var(--red)'}}><title>{`${trkML(m.key)} cost ${trkRs(m.cost)}`}</title></circle></g>))}
+    {list.map((m,i)=>i%step===0&&<text key={'x'+m.key} x={x(i)} y={H-9} textAnchor="middle" style={TRK_LAB}>{trkMS(m.key)}</text>)}
+    <text x={W-R} y={T+4} textAnchor="end" style={{...TRK_LAB,fill:'var(--green)'}}>— revenue</text>
+    <text x={W-R} y={T+16} textAnchor="end" style={{...TRK_LAB,fill:'var(--red)'}}>— cost</text>
+  </svg><div className="dim" style={{fontSize:11}}>The gap between the green and red lines is your profit.</div></div>);
+}
+
+function TrkHBars({items,max,fmtV}){
+  if(items.length===0) return <div className="dim" style={{fontSize:13}}>No costs in this period.</div>;
+  const mx=max||Math.max(...items.map(i=>i.value),1);
+  return(<div>{items.map(it=>(<div key={it.label} style={{display:'flex',alignItems:'center',gap:10,marginBottom:6,fontSize:13}}>
+    <div style={{width:130,flex:'none',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={it.label}>{it.label}</div>
+    <div style={{flex:1,background:'var(--border)',borderRadius:4,height:14,overflow:'hidden'}}><div style={{width:Math.max(1,it.value/mx*100)+'%',height:'100%',background:it.col||'var(--amber)',borderRadius:4}}/></div>
+    <div className="mono" style={{width:150,flex:'none',textAlign:'right',fontSize:12}}>{(fmtV||trkL)(it.value)}{it.sub?<span className="dim"> · {it.sub}</span>:null}</div>
+  </div>))}</div>);
+}
+
+function TrkSeasonChart({data}){
+  const ok=data.filter(d=>d.avgRev!==null);
+  if(ok.length<4) return <div className="dim" style={{fontSize:13}}>Needs a few months of history.</div>;
+  const mx=Math.max(...ok.map(d=>d.avgRev)), avg=ok.reduce((s,d)=>s+d.avgRev,0)/ok.length;
+  return(<div style={{display:'flex',gap:6,alignItems:'flex-end',height:150}}>
+    {data.map(d=>(<div key={d.mo} style={{flex:1,textAlign:'center',display:'flex',flexDirection:'column',justifyContent:'flex-end',height:'100%'}} title={d.avgRev!==null?`${d.label}: average revenue ${trkRs(d.avgRev)} over ${d.n} month(s)`:'no data'}>
+      {d.avgRev!==null&&<div className="mono" style={{fontSize:9,color:'var(--muted)'}}>{trkL(d.avgRev)}</div>}
+      <div style={{height:d.avgRev!==null?(d.avgRev/mx*100)+'%':'2%',minHeight:2,background:d.avgRev===null?'var(--border)':d.avgRev>=avg?'var(--green)':'var(--amber)',borderRadius:'3px 3px 0 0',marginTop:2}}/>
+      <div style={{fontSize:10,color:'var(--muted)',marginTop:3}}>{d.label}</div>
+    </div>))}
+  </div>);
+}
+
+// ══════════ main page ══════════
+function Truck({userEmail}){
+  const [rows,setRows]=useState([]);
+  const [S,setS]=useState(TRK_DEFAULTS);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [msg,setMsg]=useState('');
+  const [saving,setSaving]=useState(false);
+  const [tab,setTab]=useState('overview');
+  const [period,setPeriod]=useState('last12');
+  const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
+  const [open,setOpen]=useState(null);
+  const [showN,setShowN]=useState(24);
+  const blankForm=()=>({month:'',revenue:'',trips:'',odo:'',litres:'',notes:'',exp:{}});
+  const [form,setForm]=useState(blankForm);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const flash=(t)=>{ setMsg(t); setTimeout(()=>setMsg(''),5000); };
+
+  const load=useCallback(async()=>{
+    try{
+      const [data,cfg]=await Promise.all([
+        fetchAllRows((a,b)=>sb.from('truck_months').select('*').order('month').order('id').range(a,b)),
+        loadTruckSettings(),
+      ]);
+      setS(cfg); setRows(data); setErr('');
+    }catch(e){ setErr((e.message||String(e))+' — have you run truck.sql?'); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const all=React.useMemo(()=>trkPrep(rows,S),[rows,S]);
+  const lastIdx=all.length?all[all.length-1].idx:0;
+
+  // every head in use: configured ones first, then any found in data
+  const headList=(()=>{ const names=S.heads.map(h=>h.name); const extra=[]; all.forEach(m=>Object.keys(m.exp).forEach(h=>{ if(!names.includes(h)&&!extra.includes(h)) extra.push(h); })); return [...S.heads,...extra.map(n=>({name:n,group:'Other'}))]; })();
+
+  const fys=Array.from(new Set(all.map(m=>m.fy))).sort();
+  const prevFy=(fy)=>{ const s=Number(fy.slice(0,4))-1; return `${s}-${String(s+1).slice(2)}`; };
+  let sel=[], prevSel=[], label='', prevLabel='';
+  if(period==='all'){ sel=all; label='All time'; }
+  else if(period==='last12'){ sel=all.filter(m=>m.idx>lastIdx-12); prevSel=all.filter(m=>m.idx<=lastIdx-12&&m.idx>lastIdx-24); label='The last 12 months'; prevLabel='the 12 months before'; }
+  else { const fy=period.slice(3); sel=all.filter(m=>m.fy===fy); prevSel=all.filter(m=>m.fy===prevFy(fy)); label=`FY ${fy}`; prevLabel=`FY ${prevFy(fy)}`; }
+  const A=trkAgg(sel), P=prevSel.length?trkAgg(prevSel):null;
+
+  // ── form ──
+  const startNew=()=>{
+    let m=''; if(all.length){ const idx=lastIdx+1; m=`${Math.floor(idx/12)}-${String(idx%12+1).padStart(2,'0')}`; }
+    const now=new Date(), cur=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    if(!m||m>cur) m=cur;
+    setEditingId(null); setForm({...blankForm(),month:m}); setShowForm(true); setTab('monthly');
+    if(window.scrollTo) window.scrollTo(0,0);
+  };
+  const startEdit=(m)=>{
+    const exp={}; Object.keys(m.exp).forEach(h=>{ exp[h]=String(m.exp[h]); });
+    setEditingId(m.id);
+    setForm({month:m.key,revenue:String(m.rev),trips:m.trips===null?'':String(m.trips),odo:m.odo===null?'':String(m.odo),litres:m.litres===null?'':String(m.litres),notes:m.notes||'',exp});
+    setShowForm(true); setTab('monthly'); if(window.scrollTo) window.scrollTo(0,0);
+  };
+  const closeForm=()=>{ setShowForm(false); setEditingId(null); setForm(blankForm()); };
+  const setExp=(h,v)=>setForm(p=>({...p,exp:{...p.exp,[h]:v}}));
+  const copyLast=()=>{
+    const prev=[...all].reverse().find(m=>m.key<form.month);
+    if(!prev) return alert('There is no earlier month to copy from.');
+    const exp={}; Object.keys(prev.exp).forEach(h=>{ exp[h]=String(prev.exp[h]); });
+    setForm(p=>({...p,exp}));
+  };
+  const driverFill=()=>{
+    const r=Number(form.revenue); if(!(r>0)) return alert('Enter the revenue first.');
+    setExp('Driver',String(Math.round(r*Number(S.driver_pct)/100)));
+  };
+
+  const fCost=Object.values(form.exp).reduce((s,v)=>s+(Number(v)||0),0);
+  const fRev=Number(form.revenue)||0;
+  const fProfit=fRev-fCost;
+  const chkForm=(()=>{
+    const errors=[],warnings=[];
+    const now=new Date(), cur=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    if(!/^\d{4}-\d{2}$/.test(form.month)) errors.push('Choose the month.');
+    else{
+      if(form.month>cur) errors.push('That month has not started yet.');
+      if(all.some(m=>m.key===form.month&&m.id!==editingId)) errors.push(`${trkML(form.month)} already has an entry. Edit it from the list instead.`);
+    }
+    if(form.revenue===''||isNaN(fRev)||fRev<0) errors.push('Enter the total revenue (0 or more).');
+    Object.keys(form.exp).forEach(h=>{ const v=form.exp[h]; if(v!==''&&(isNaN(Number(v))||Number(v)<0)) errors.push(`${h}: amount must be a number, 0 or more.`); });
+    if(form.trips!==''&&(!Number.isInteger(Number(form.trips))||Number(form.trips)<0)) errors.push('Trips must be a whole number.');
+    if(form.odo!==''&&(isNaN(Number(form.odo))||Number(form.odo)<=0)) errors.push('Odometer must be a positive number.');
+    if(form.litres!==''&&(isNaN(Number(form.litres))||Number(form.litres)<0)) errors.push('Diesel litres must be 0 or more.');
+    if(!errors.length&&form.odo!==''){
+      const before=[...all].reverse().find(m=>m.key<form.month&&m.odo!==null), after=all.find(m=>m.key>form.month&&m.odo!==null);
+      if(before&&Number(form.odo)<=before.odo) errors.push(`Odometer (${Number(form.odo).toLocaleString('en-IN')}) must be higher than ${trkML(before.key)} (${before.odo.toLocaleString('en-IN')}).`);
+      if(after&&Number(form.odo)>=after.odo) errors.push(`Odometer must be lower than ${trkML(after.key)} (${after.odo.toLocaleString('en-IN')}).`);
+      if(!before&&Number(S.starting_odo)>0&&Number(form.odo)<=Number(S.starting_odo)) errors.push(`Odometer must be higher than the starting reading (${Number(S.starting_odo).toLocaleString('en-IN')}).`);
+    }
+    if(!errors.length){
+      if(fRev>0&&fCost===0) warnings.push('No expenses entered — profit will equal revenue.');
+      if(fRev===0&&fCost>0) warnings.push('Revenue is 0 but there are expenses.');
+      if(fRev>0&&Number(S.driver_pct)>0){ const dp=(Number(form.exp.Driver)||0)/fRev*100; if(Math.abs(dp-Number(S.driver_pct))>=1.5) warnings.push(`Driver pay is ${dp.toFixed(1)}% of revenue (your usual rate is ${S.driver_pct}%).`); }
+      const last12=all.filter(m=>m.key!==form.month).slice(-12);
+      if(last12.length>=6&&fRev>0){ const av=last12.reduce((s,m)=>s+m.rev,0)/last12.length; if(fRev>av*1.6||fRev<av*0.5) warnings.push(`Revenue is very different from your recent average (${trkRs(av)}). Please double-check.`); }
+    }
+    return {errors,warnings};
+  })();
+
+  const save=async()=>{
+    if(chkForm.errors.length) return alert('Please fix:\n\n• '+chkForm.errors.join('\n• '));
+    if(chkForm.warnings.length&&!confirm('Please note:\n\n• '+chkForm.warnings.join('\n• ')+'\n\nSave anyway?')) return;
+    const expenses={}; Object.keys(form.exp).forEach(h=>{ const v=Number(form.exp[h]); if(v>0) expenses[h]=v; });
+    const payload={month:form.month+'-01',revenue:fRev,trips:form.trips===''?null:Number(form.trips),odo_end:form.odo===''?null:Number(form.odo),diesel_litres:form.litres===''?null:Number(form.litres),expenses,notes:form.notes.trim()||null};
+    setSaving(true);
+    const res=editingId
+      ?await sb.from('truck_months').update({...payload,updated_by:userEmail||null,updated_at:new Date().toISOString()}).eq('id',editingId)
+      :await sb.from('truck_months').insert({...payload,created_by:userEmail||null});
+    setSaving(false);
+    if(res.error) return alert(res.error.code==='23505'?'This month already has an entry.':res.error.message);
+    logActivity('Truck',editingId?'update':'create',`${editingId?'Edited':'Added'} ${trkML(form.month)} — revenue ${trkRs(fRev)}, cost ${trkRs(fCost)}, profit ${trkRs(fProfit)}`);
+    closeForm(); flash(`${trkML(form.month)} saved — ${fProfit>=0?'profit':'LOSS'} ${trkRs(Math.abs(fProfit))}.`); load();
+  };
+  const del=async(m)=>{
+    if(!confirm(`Delete the entry for ${trkML(m.key)} (profit ${trkRs(m.profit)})? This cannot be undone.`)) return;
+    const {error}=await sb.from('truck_months').delete().eq('id',m.id);
+    if(error) return alert(error.message);
+    logActivity('Truck','delete',`Deleted ${trkML(m.key)}`); load();
+  };
+
+  const importHistory=async()=>{
+    if(typeof TRUCK_HISTORY==='undefined') return alert('The history data is not in the app yet — paste truck_history.js above the Truck component first.');
+    const have=new Set(rows.map(r=>String(r.month).slice(0,7)));
+    const todo=TRUCK_HISTORY.filter(h=>!have.has(h.m));
+    if(todo.length===0) return alert('All the historical months are already in the system.');
+    if(!confirm(`Import ${todo.length} months (${trkML(todo[0].m)} to ${trkML(todo[todo.length-1].m)}) from your spreadsheet?\n\n${TRUCK_HISTORY.length-todo.length} month(s) already here will be left untouched.`)) return;
+    setSaving(true);
+    const payload=todo.map(h=>({month:h.m+'-01',revenue:h.rev,trips:h.trips,odo_end:h.odo,expenses:h.exp,notes:'Imported from spreadsheet',created_by:userEmail||null}));
+    for(let i=0;i<payload.length;i+=25){
+      const {error}=await sb.from('truck_months').upsert(payload.slice(i,i+25),{onConflict:'month',ignoreDuplicates:true});
+      if(error){ setSaving(false); load(); return alert('Import stopped: '+error.message+'. Months before this point were saved; run Import again to continue.'); }
+    }
+    setSaving(false);
+    logActivity('Truck','create',`Imported ${todo.length} months of history from the spreadsheet`);
+    flash(`Imported ${todo.length} months.`); load();
+  };
+
+  const csv=()=>downloadCSV(`truck_pnl_${today}.csv`,['Month','Revenue','Trips','Odometer','Km','Diesel litres',...headList.map(h=>h.name),'Total cost','Profit','Margin %'],
+    all.map(m=>[trkML(m.key),m.rev,m.trips??'',m.odo??'',m.km??'',m.litres??'',...headList.map(h=>m.exp[h.name]||''),m.cost,m.profit,m.rev>0?(m.profit/m.rev*100).toFixed(1):'']));
+
+  if(loading) return <Loading/>;
+
+  const tabBtn=(id,l)=><button key={id} className={`btn btn-sm ${tab===id?'btn-amber':'btn-ghost'}`} onClick={()=>setTab(id)}>{l}</button>;
+  const insights=trkInsights(all,sel,prevSel,S,label,prevLabel);
+  const lastOdo=[...all].reverse().find(m=>m.odo!==null);
+
+  const periodBar=(<div className="card" style={{marginBottom:16,display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+    <div className="form-label" style={{marginBottom:0}}>Period</div>
+    <select style={{width:200}} value={period} onChange={e=>setPeriod(e.target.value)}>
+      <option value="last12">Last 12 months</option>
+      {[...fys].reverse().map(fy=><option key={fy} value={'fy:'+fy}>Financial year {fy}</option>)}
+      <option value="all">All time</option>
+    </select>
+    <span className="dim" style={{fontSize:12}}>Financial years run April to March. Comparisons use the matching earlier period.</span>
+  </div>);
+
+  const kpi=(l,v,sub,col)=><StatCard key={l} label={l} value={v} sub={sub} col={col}/>;
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Company truck{S.reg_no?` · ${S.reg_no}`:''}</div>
+        <div className="page-title">{S.name||'Truck'} — profit &amp; loss</div>
+      </div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        {ax('truck','download')&&<button className="btn btn-ghost" onClick={csv} disabled={all.length===0}>⬇ CSV</button>}
+        {ax('truck','add')&&<button className="btn btn-amber" onClick={startNew}>+ Add month</button>}
+      </div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load truck data" sub={err}/>}
+    {msg&&<Alert type="green" icon="✓" title={msg}/>}
+
+    {all.length===0&&!err&&(<div className="card" style={{marginBottom:20,borderLeft:'3px solid var(--amber)'}}>
+      <div style={{fontSize:15,fontWeight:600}}>No truck data yet</div>
+      <div style={{fontSize:13,marginTop:6}}>You can bring in all your existing spreadsheet history (Dec 2022 – Sep 2026, 46 months) in one click, or start by adding a month.</div>
+      <div style={{marginTop:10,display:'flex',gap:8,flexWrap:'wrap'}}>
+        {ax('truck','import')&&<button className="btn btn-green" onClick={importHistory} disabled={saving}>{saving?'Importing…':'⬇ Import existing spreadsheet data'}</button>}
+        {ax('truck','add')&&<button className="btn btn-ghost" onClick={startNew}>+ Add a month</button>}
+      </div>
+    </div>)}
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:16}}>
+      {tabBtn('overview','Overview & insights')}
+      {tabBtn('monthly','Monthly')}
+      {tabBtn('costs','Costs')}
+      {tabBtn('years','Year by year')}
+    </div>
+
+    {/* ───── OVERVIEW ───── */}
+    {tab==='overview'&&all.length>0&&(<>
+      {periodBar}
+      <div className="stat-grid">
+        {kpi('Revenue',trkL(A.rev),`${trkRs(A.avgRev)} / month${P?` · ${trkDelta(A.avgRev,P.avgRev)}`:''}`,'var(--blue)')}
+        {kpi('Total cost',trkL(A.cost),`${trkP(trkPct(A.cost,A.rev))} of revenue`,'var(--amber)')}
+        {kpi('Profit',trkL(A.profit),`${trkP(A.margin)} margin`,trkCol(A.profit))}
+        {kpi('Avg monthly profit',trkRs(A.avgProfit),P?trkDelta(A.avgProfit,P.avgProfit):`${A.loss} loss month${A.loss===1?'':'s'}`,trkCol(A.avgProfit))}
+        {A.trips>0&&kpi('Revenue / trip',trkRs(A.revTrip),`${A.tripsPerMonth.toFixed(0)} trips a month`,'var(--blue)')}
+        {A.trips>0&&kpi('Profit / trip',trkRs(A.profitTrip),`cost ${trkRs(A.costTrip)} / trip`,trkCol(A.profitTrip))}
+        {A.km>0&&kpi('Cost / km',trkRs(A.costKm),`earns ${trkRs(A.revKm)} / km`,'var(--purple)')}
+        {A.mileage&&kpi('Mileage',A.mileage.toFixed(2)+' km/l',`diesel ${trkRs(A.dieselKm)} / km`,'var(--green)')}
+        {lastOdo&&kpi('Odometer',lastOdo.odo.toLocaleString('en-IN'),`as of ${trkML(lastOdo.key)}`,'var(--muted)')}
+      </div>
+
+      {insights.length>0&&(<div style={{marginBottom:20}}>
+        <div className="section-label">Expert analysis — what the numbers say</div>
+        {insights.map((x,i)=><Alert key={i} type={x.t==='good'?'green':x.t==='low'?'red':'amber'} icon={x.t==='good'?'✓':x.t==='info'?'💡':x.t==='low'?'✕':'⚠'} title={x.x}/>)}
+      </div>)}
+
+      <div className="card" style={{marginBottom:16}}><div className="section-label">Profit by month</div><TrkProfitChart list={sel}/></div>
+      <div className="card" style={{marginBottom:16}}><div className="section-label">Revenue vs cost</div><TrkRevCost list={sel}/></div>
+      <div className="card" style={{marginBottom:16}}>
+        <div className="section-label">Seasonality — average revenue by calendar month (all history)</div>
+        <TrkSeasonChart data={trkSeason(all)}/>
+      </div>
+    </>)}
+
+    {/* ───── MONTHLY ───── */}
+    {tab==='monthly'&&(<>
+      {showForm&&(<div className="card" style={{marginBottom:16,borderLeft:`3px solid ${fRev>0||fCost>0?trkCol(fProfit):'var(--amber)'}`}}>
+        <div className="section-label">{editingId?`Edit ${trkML(form.month)}`:'New month'}</div>
+        <div className="form-grid">
+          <Field label="Month ★"><input type="month" className="form-input" disabled={!!editingId} value={form.month} max={today.slice(0,7)} onChange={e=>f('month',e.target.value)}/></Field>
+          <Field label="Total revenue (₹) ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.revenue} onChange={e=>f('revenue',e.target.value)}/></Field>
+          <Field label="Trips"><input type="number" className="form-input" value={form.trips} onChange={e=>f('trips',e.target.value)}/></Field>
+          <Field label="Odometer at month end"><input type="number" className="form-input" value={form.odo} onChange={e=>f('odo',e.target.value)} placeholder={lastOdo?`last ${lastOdo.odo.toLocaleString('en-IN')}`:''}/></Field>
+          <Field label="Diesel bought (litres)"><input type="number" className="form-input" value={form.litres} onChange={e=>f('litres',e.target.value)}/></Field>
+        </div>
+
+        <div style={{display:'flex',gap:8,alignItems:'center',margin:'16px 0 8px',flexWrap:'wrap'}}>
+          <div className="section-label" style={{marginBottom:0}}>Expenses (₹) — leave blank for none</div>
+          <button className="btn btn-ghost btn-sm" onClick={driverFill}>Driver @ {S.driver_pct}%</button>
+          <button className="btn btn-ghost btn-sm" onClick={copyLast}>Copy previous month’s amounts</button>
+        </div>
+        {TRK_GROUPS.map(g=>{ const hs=headList.filter(h=>h.group===g); if(!hs.length) return null; const sub=hs.reduce((s,h)=>s+(Number(form.exp[h.name])||0),0);
+          return(<div key={g} style={{marginBottom:12,padding:'10px 12px',border:'1px solid var(--border)',borderLeft:`3px solid ${TRK_GCOL[g]}`,borderRadius:6}}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>{g} <span className="dim" style={{fontWeight:400}}>· {trkRs(sub)}</span></div>
+            <div className="form-grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))'}}>
+              {hs.map(h=>(<Field key={h.name} label={h.name}><input type="number" className="form-input" value={form.exp[h.name]??''} onChange={e=>setExp(h.name,e.target.value)}/></Field>))}
+            </div>
+          </div>); })}
+        <div className="dim" style={{fontSize:11,marginBottom:8}}>Need another cost head? Add it in Settings → Truck Settings.</div>
+        <Field label="Notes (optional)"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)} placeholder="e.g. new tyres fitted, accident repair"/></Field>
+
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginTop:14}}>
+          <div className="stat-card"><div className="stat-label">Revenue</div><div style={{fontSize:18,fontWeight:600}}>{trkRs(fRev)}</div></div>
+          <div className="stat-card"><div className="stat-label">Total cost</div><div style={{fontSize:18,fontWeight:600}}>{trkRs(fCost)}</div></div>
+          <div className="stat-card" style={{borderTop:`2px solid ${trkCol(fProfit)}`}}><div className="stat-label">{fProfit<0?'Loss':'Profit'}</div><div style={{fontSize:18,fontWeight:700,color:trkCol(fProfit)}}>{trkRs(fProfit)}</div><div className="stat-sub">{fRev>0?trkP(fProfit/fRev*100)+' margin':''}</div></div>
+        </div>
+        {chkForm.errors.map((x,i)=><div key={'e'+i} style={{fontSize:12,color:'var(--red)',marginTop:6}}>✕ {x}</div>)}
+        {chkForm.warnings.map((x,i)=><div key={'w'+i} style={{fontSize:12,color:'var(--amber)',marginTop:6}}>⚠ {x}</div>)}
+        <div className="form-actions">
+          <button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':editingId?'Save changes':'Save month'}</button>
+          <button className="btn btn-ghost" onClick={closeForm}>Cancel</button>
+        </div>
+      </div>)}
+
+      {all.length>0&&ax('truck','import')&&typeof TRUCK_HISTORY!=='undefined'&&TRUCK_HISTORY.some(h=>!all.some(m=>m.key===h.m))&&(
+        <div className="card" style={{marginBottom:16,borderLeft:'3px solid var(--blue)',display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+          <div style={{fontSize:13}}>Some months from your spreadsheet are not in the system yet.</div>
+          <button className="btn btn-blue btn-sm" onClick={importHistory} disabled={saving}>{saving?'Importing…':'⬇ Import the missing months'}</button>
+        </div>)}
+
+      <TableWrap><table>
+        <thead><tr><th>Month</th><th>Trips</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>Margin</th><th>Km</th><th>Cost / km</th><th></th></tr></thead>
+        <tbody>
+          {all.length===0&&<tr><td colSpan={9}><Empty msg="No months yet."/></td></tr>}
+          {[...all].reverse().slice(0,showN).map(m=>{
+            const isOpen=open===m.id;
+            return(<React.Fragment key={m.id}>
+              <tr style={{cursor:'pointer'}} onClick={()=>setOpen(isOpen?null:m.id)}>
+                <td><strong>{trkML(m.key)}</strong><div className="dim" style={{fontSize:10}}>FY {m.fy}</div></td>
+                <td className="mono">{m.trips??'—'}</td>
+                <td className="mono">{trkRs(m.rev)}</td>
+                <td className="mono">{trkRs(m.cost)}</td>
+                <td className="mono" style={{fontWeight:700,color:trkCol(m.profit)}}>{trkRs(m.profit)}</td>
+                <td className="mono" style={{color:trkCol(m.profit)}}>{m.rev>0?trkP(m.profit/m.rev*100):'—'}</td>
+                <td className="mono dim">{m.km?m.km.toLocaleString('en-IN'):'—'}</td>
+                <td className="mono dim">{m.km?trkRs(m.cost/m.km):'—'}</td>
+                <td className="dim">{isOpen?'▴':'▾'}</td>
+              </tr>
+              {isOpen&&<tr><td colSpan={9} style={{background:'var(--surface2)'}}>
+                <div style={{padding:'6px 4px'}}>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+                    {Object.entries(m.exp).sort((a,b)=>b[1]-a[1]).map(([h,v])=>{ const g=(headList.find(x=>x.name===h)||{}).group||'Other'; return <span key={h} className="badge" style={{background:`color-mix(in srgb, ${TRK_GCOL[g]} 15%, transparent)`,color:TRK_GCOL[g]}}>{h} {trkRs(v)} · {trkP(trkPct(v,m.rev),0)}</span>; })}
+                    {Object.keys(m.exp).length===0&&<span className="dim" style={{fontSize:12}}>No expenses recorded.</span>}
+                  </div>
+                  {m.profit<0&&<div style={{fontSize:12,color:'var(--red)',marginBottom:6}}>{trkLossWhy(m,S)}</div>}
+                  <div style={{fontSize:12,color:'var(--muted)'}}>Running costs {trkRs(m.run)} · after running costs the trips kept {trkRs(m.rev-m.run)} ({trkP(trkPct(m.rev-m.run,m.rev))}){m.litres&&m.km?` · mileage ${(m.km/m.litres).toFixed(2)} km/l`:''}{m.odo?` · odometer ${m.odo.toLocaleString('en-IN')}`:''}</div>
+                  {m.notes&&<div style={{fontSize:12,marginTop:4}}>📝 {m.notes}</div>}
+                  <div style={{display:'flex',gap:6,marginTop:8}}>
+                    {ax('truck','edit')&&<button className="btn btn-blue btn-sm" onClick={(e)=>{ e.stopPropagation(); startEdit(m); }}>Edit</button>}
+                    {ax('truck','delete')&&<button className="btn btn-red btn-sm" onClick={(e)=>{ e.stopPropagation(); del(m); }}>Delete</button>}
+                  </div>
+                </div>
+              </td></tr>}
+            </React.Fragment>);
+          })}
+        </tbody>
+      </table></TableWrap>
+      {all.length>showN&&<div style={{textAlign:'center',marginTop:12}}><button className="btn btn-ghost btn-sm" onClick={()=>setShowN(n=>n+24)}>Show more ({all.length-showN} left)</button></div>}
+    </>)}
+
+    {/* ───── COSTS ───── */}
+    {tab==='costs'&&all.length>0&&(<>
+      {periodBar}
+      <div className="stat-grid">
+        {TRK_GROUPS.map(g=>{ const v=Object.entries(A.heads).filter(([h])=>((headList.find(x=>x.name===h)||{}).group||'Other')===g).reduce((s,[,x])=>s+x,0); return kpi(g,trkL(v),`${trkP(trkPct(v,A.rev))} of revenue`,TRK_GCOL[g]); })}
+      </div>
+      <div className="card" style={{marginBottom:16}}>
+        <div className="section-label">Where the money goes — {label}</div>
+        <TrkHBars items={Object.entries(A.heads).sort((a,b)=>b[1]-a[1]).map(([h,v])=>({label:h,value:v,sub:trkP(trkPct(v,A.rev)),col:TRK_GCOL[(headList.find(x=>x.name===h)||{}).group||'Other']}))}/>
+        <div className="dim" style={{fontSize:11,marginTop:6}}>Percentages are of revenue. Colours: blue = running, purple = fixed &amp; compliance, amber = repairs &amp; parts.</div>
+      </div>
+      <RTable head={['Cost head','Group','Total','% of revenue','Per month','Per trip','Months used','vs '+(prevLabel||'before')]}
+        rows={Object.entries(A.heads).sort((a,b)=>b[1]-a[1]).map(([h,v])=>{
+          const g=(headList.find(x=>x.name===h)||{}).group||'Other';
+          const used=sel.filter(m=>m.exp[h]>0).length;
+          const pv=P?(P.heads[h]||0):null, pPer=P&&P.n?pv/P.n:null, cPer=A.n?v/A.n:0;
+          const chg=pPer>0?((cPer/pPer-1)*100):null;
+          return [<strong>{h}</strong>,<span style={{color:TRK_GCOL[g]}}>{g}</span>,trkRs(v),trkP(trkPct(v,A.rev)),trkRs(cPer),A.trips>0?trkRs(v/A.trips*(A.tripN?A.trips/A.tripN*A.tripN/A.trips:1)):'—',`${used}/${A.n}`,chg===null?(P?'new':'—'):<span style={{color:chg>10?'var(--red)':chg<-10?'var(--green)':'var(--muted)'}}>{chg>0?'▲':'▼'} {Math.abs(chg).toFixed(0)}%</span>];
+        })}
+        foot={['Total','',trkRs(A.cost),trkP(trkPct(A.cost,A.rev)),trkRs(A.avgCost),'','','']}/>
+      <div className="dim" style={{fontSize:12,marginTop:10}}>“vs” compares the average cost per month with the same head in {prevLabel||'the earlier period'}, so partial years compare fairly. Red = more than 10% higher.</div>
+    </>)}
+
+    {/* ───── YEARS ───── */}
+    {tab==='years'&&all.length>0&&(<>
+      <div className="section-label">Financial years (April – March)</div>
+      <RTable head={['Year','Months','Revenue','Cost','Profit','Margin','Avg profit / month','Trips','Revenue / trip','Diesel % of revenue','Loss months']}
+        rows={fys.map((fy,i)=>{ const a=trkAgg(all.filter(m=>m.fy===fy)); const pa=i>0?trkAgg(all.filter(m=>m.fy===fys[i-1])):null;
+          return [<strong>{fy}</strong>,a.n,trkRs(a.rev),trkRs(a.cost),<strong style={{color:trkCol(a.profit)}}>{trkRs(a.profit)}</strong>,trkP(a.margin),<span>{trkRs(a.avgProfit)}{pa&&pa.avgProfit>0?<span style={{color:a.avgProfit>=pa.avgProfit?'var(--green)':'var(--red)',fontSize:11}}> {a.avgProfit>=pa.avgProfit?'▲':'▼'}{Math.abs((a.avgProfit/pa.avgProfit-1)*100).toFixed(0)}%</span>:null}</span>,a.trips||'—',a.revTrip?trkRs(a.revTrip):'—',trkP(trkPct(a.heads.Diesel||0,a.rev)),a.loss]; })}/>
+      <div className="dim" style={{fontSize:12,marginTop:6}}>The first year (2022-23) only has data from December; the current year is still running, so compare years using the “per month” columns.</div>
+
+      <div className="section-label" style={{marginTop:24}}>Every cost head, year by year</div>
+      <RTable head={['Cost head',...fys.map(y=>y)]}
+        rows={headList.filter(h=>all.some(m=>m.exp[h.name]>0)).map(h=>[<strong>{h.name}</strong>,...fys.map(fy=>{ const v=all.filter(m=>m.fy===fy).reduce((s,m)=>s+(m.exp[h.name]||0),0); return v>0?trkRs(v):'—'; })])}
+        foot={['Total',...fys.map(fy=>trkRs(all.filter(m=>m.fy===fy).reduce((s,m)=>s+m.cost,0)))]}/>
+    </>)}
+  </div>);
+}
+
+// ══════════ settings page ══════════
+function TruckSettings(){
+  const [S,setS]=useState(TRK_DEFAULTS);
+  const [usage,setUsage]=useState({});
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [nh,setNh]=useState({name:'',group:'Running'});
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+
+  useEffect(()=>{(async()=>{
+    const cfg=await loadTruckSettings();
+    let u={};
+    try{ const data=await fetchAllRows((a,b)=>sb.from('truck_months').select('id,expenses').order('id').range(a,b)); data.forEach(r=>Object.keys(r.expenses||{}).forEach(h=>{ if(Number(r.expenses[h])>0) u[h]=(u[h]||0)+1; })); }catch(e){}
+    setS(cfg); setUsage(u); setLoading(false);
+  })();},[]);
+
+  const setGroup=(name,group)=>s('heads',S.heads.map(h=>h.name===name?{...h,group}:h));
+  const delHead=(name)=>{ if(usage[name]) return alert(`${name} is used in ${usage[name]} month(s) of history, so it cannot be removed.`); s('heads',S.heads.filter(h=>h.name!==name)); };
+  const addHead=()=>{
+    const n=nh.name.trim(); if(!n) return alert('Enter a name for the cost head.');
+    if(S.heads.some(h=>h.name.toLowerCase()===n.toLowerCase())) return alert('That cost head already exists.');
+    s('heads',[...S.heads,{name:n,group:nh.group}]); setNh({name:'',group:nh.group});
+  };
+
+  const save=async()=>{
+    const n=(v)=>Number(v);
+    if(S.starting_odo!==''&&!(n(S.starting_odo)>=0)) return alert('Starting odometer must be a number.');
+    if(!(n(S.driver_pct)>=0&&n(S.driver_pct)<=100)) return alert('Driver rate must be between 0 and 100.');
+    if(!(n(S.service_interval_km)>=0)||!(n(S.service_alert_km)>=0)) return alert('Service distances must be 0 or more.');
+    if(S.last_service_odo!==''&&!(n(S.last_service_odo)>=0)) return alert('Last service odometer must be a number.');
+    const clean={...S,starting_odo:S.starting_odo===''?'':n(S.starting_odo),driver_pct:n(S.driver_pct),service_interval_km:n(S.service_interval_km),service_alert_km:n(S.service_alert_km),last_service_odo:S.last_service_odo===''?'':n(S.last_service_odo),name:String(S.name||'').trim()||'Company Truck',reg_no:String(S.reg_no||'').trim()};
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:TRK_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    setS(clean); logActivity('Settings','update','Truck settings updated');
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000);
+  };
+
+  const num=(k,label,props)=>(<Field label={label}><input type="number" className="form-input" value={S[k]} onChange={e=>s(k,e.target.value)} {...(props||{})}/></Field>);
+  if(loading) return <Loading/>;
+
+  return(<div className="page">
+    <div className="page-header"><div className="page-label">System Settings</div><div className="page-title">Truck settings</div></div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. The truck</div>
+      <div className="form-grid">
+        <Field label="Name"><input className="form-input" value={S.name} onChange={e=>s('name',e.target.value)}/></Field>
+        <Field label="Registration number"><input className="form-input" value={S.reg_no} onChange={e=>s('reg_no',e.target.value.toUpperCase())} placeholder="KL 13 ..."/></Field>
+        {num('starting_odo','Odometer at the start of the first month with odometer data',{min:0})}
+        {num('driver_pct','Usual driver pay (% of revenue)',{min:0,max:100,step:'0.5'})}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>The starting odometer lets the first odometer entry work out its kilometres. Your sheet shows 160,554 before April 2026. The driver rate powers the “Driver @ …%” button and the pay check.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. Service reminder (from the odometer)</div>
+      <div className="form-grid">
+        {num('service_interval_km','Service every (km, 0 = off)',{min:0})}
+        {num('last_service_odo','Odometer at the last service',{min:0})}
+        {num('service_alert_km','Warn when this many km are left',{min:0})}
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>Shown in the insights on the Truck page. For licences and insurance renewals, keep using Licenses &amp; Renewals.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">3. Cost heads and groups</div>
+      <div className="dim" style={{fontSize:12,marginBottom:10}}><strong>Running</strong> costs are what each trip causes (driver, diesel…). The analysis keeps them apart from <strong>fixed &amp; compliance</strong> and <strong>repairs &amp; parts</strong>, which arrive in lumps. This split drives break-even, “money to set aside” and the loss explanations. Names cannot be renamed (history is stored under them), but groups can be changed.</div>
+      <TableWrap><table>
+        <thead><tr><th>Cost head</th><th>Group</th><th>Used in</th><th></th></tr></thead>
+        <tbody>
+          {S.heads.map(h=>(<tr key={h.name}>
+            <td><strong>{h.name}</strong></td>
+            <td><select style={{width:190}} value={h.group} onChange={e=>setGroup(h.name,e.target.value)}>{TRK_GROUPS.map(g=><option key={g}>{g}</option>)}</select></td>
+            <td className="dim">{usage[h.name]?`${usage[h.name]} month${usage[h.name]===1?'':'s'}`:'unused'}</td>
+            <td><button className="btn btn-red btn-sm" onClick={()=>delHead(h.name)}>✕</button></td>
+          </tr>))}
+        </tbody>
+      </table></TableWrap>
+      <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap',marginTop:12}}>
+        <Field label="New cost head"><input className="form-input" style={{width:220}} value={nh.name} onChange={e=>setNh(p=>({...p,name:e.target.value}))}/></Field>
+        <Field label="Group"><select className="form-input" style={{width:190}} value={nh.group} onChange={e=>setNh(p=>({...p,group:e.target.value}))}>{TRK_GROUPS.map(g=><option key={g}>{g}</option>)}</select></Field>
+        <button className="btn btn-ghost" onClick={addHead}>+ Add</button>
+      </div>
+    </div>
+
+    <div style={{display:'flex',gap:8,alignItems:'center'}}>
+      {ax('truck-settings','edit')&&<button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':'Save settings'}</button>}
+      {msg&&<span style={{fontSize:12,color:'var(--green)'}}>{msg}</span>}
+    </div>
+  </div>);
+}
+
+// Truck history from Truck_Profit_and_Loss.xlsx — 46 months, Dec 2022 – Sep 2026 (every month's profit matches your sheet exactly).
+// 'Greece' was merged into 'Grease' and 'Maintainance' was spelled 'Maintenance'.
+const TRUCK_HISTORY=[{"m":"2022-12","rev":125505.0,"trips":null,"odo":null,"exp":{"Driver":24105.0,"Diesel":48000.0,"Coolie":3740.0,"Miscellaneous":160.0}},{"m":"2023-01","rev":103365.0,"trips":null,"odo":null,"exp":{"Driver":20673.0,"Diesel":45000.0,"Coolie":3300.0,"Ad Blu":800.0,"AMC":35400.0,"Miscellaneous":390.0}},{"m":"2023-02","rev":70610.0,"trips":null,"odo":null,"exp":{"Driver":14125.0,"Diesel":29000.0,"Coolie":2235.0,"Tax":14100.0}},{"m":"2023-03","rev":102310.0,"trips":null,"odo":null,"exp":{"Driver":20962.0,"Diesel":50000.0,"Coolie":3030.0}},{"m":"2023-04","rev":141660.0,"trips":null,"odo":null,"exp":{"Driver":28330.0,"Diesel":66800.0,"Coolie":4400.0,"Maintenance":4316.0}},{"m":"2023-05","rev":107015.0,"trips":null,"odo":null,"exp":{"Driver":21403.0,"Diesel":33670.0,"Coolie":3600.0,"Maintenance":2820.0}},{"m":"2023-06","rev":131030.0,"trips":null,"odo":null,"exp":{"Driver":26208.0,"Diesel":47000.0,"Coolie":4000.0,"Maintenance":1350.0}},{"m":"2023-07","rev":90975.0,"trips":null,"odo":null,"exp":{"Driver":18198.0,"Diesel":53580.0,"Coolie":3000.0,"Maintenance":1850.0}},{"m":"2023-08","rev":89305.0,"trips":null,"odo":null,"exp":{"Driver":17865.0,"Diesel":32250.0,"Coolie":3000.0,"Maintenance":7690.0}},{"m":"2023-09","rev":98690.0,"trips":null,"odo":null,"exp":{"Driver":20250.0,"Diesel":37290.0,"Coolie":3200.0,"Insurance":35900.0,"Maintenance":35132.0}},{"m":"2023-10","rev":102720.0,"trips":null,"odo":null,"exp":{"Driver":22545.0,"Diesel":45200.0,"Coolie":3100.0,"Ad Blu":1200.0,"Permit":5500.0,"Maintenance":25800.0}},{"m":"2023-11","rev":119260.0,"trips":null,"odo":null,"exp":{"Driver":23850.0,"Diesel":51800.0,"Coolie":3700.0,"Ad Blu":1400.0,"Air":100.0}},{"m":"2023-12","rev":86840.0,"trips":null,"odo":null,"exp":{"Driver":17295.0,"Diesel":42050.0,"Coolie":2900.0,"Miscellaneous":1150.0}},{"m":"2024-01","rev":103405.0,"trips":null,"odo":null,"exp":{"Driver":20684.0,"Diesel":40850.0,"Coolie":3500.0,"Ad Blu":800.0,"AMC":33630.0}},{"m":"2024-02","rev":108070.0,"trips":null,"odo":null,"exp":{"Driver":21610.0,"Diesel":49800.0,"Coolie":3600.0,"Ad Blu":1600.0,"Tyre":10700.0}},{"m":"2024-03","rev":108495.0,"trips":null,"odo":null,"exp":{"Driver":21704.0,"Diesel":40900.0,"Coolie":3600.0,"Tax":3390.0,"Service":270.0}},{"m":"2024-04","rev":100310.0,"trips":null,"odo":null,"exp":{"Driver":20065.0,"Diesel":43050.0,"Coolie":2900.0,"Ad Blu":1500.0,"Air":150.0}},{"m":"2024-05","rev":97890.0,"trips":null,"odo":null,"exp":{"Driver":19575.0,"Diesel":45000.0,"Coolie":3200.0,"Grease":300.0,"Tarpaulin":5500.0}},{"m":"2024-06","rev":72500.0,"trips":null,"odo":null,"exp":{"Driver":14500.0,"Diesel":29400.0,"Coolie":2200.0}},{"m":"2024-07","rev":130980.0,"trips":null,"odo":null,"exp":{"Driver":26196.0,"Diesel":60020.0,"Coolie":4000.0,"Ad Blu":1500.0,"Grease":300.0,"Power Oil":190.0}},{"m":"2024-08","rev":119985.0,"trips":null,"odo":null,"exp":{"Driver":23989.0,"Diesel":60540.0,"Coolie":3800.0,"Air":50.0,"Pedal":4206.0,"FCI":30.0,"Miscellaneous":250.0}},{"m":"2024-09","rev":82500.0,"trips":null,"odo":null,"exp":{"Driver":16500.0,"Diesel":26250.0,"Coolie":2800.0,"Ad Blu":1500.0,"Insurance":39800.0}},{"m":"2024-10","rev":131645.0,"trips":null,"odo":null,"exp":{"Driver":26831.0,"Diesel":58420.0,"Coolie":4200.0,"Tax":3390.0,"Air":500.0,"Pollution":180.0,"Permit":1500.0}},{"m":"2024-11","rev":87885.0,"trips":null,"odo":null,"exp":{"Driver":17580.0,"Diesel":34000.0,"Coolie":2900.0,"Air":300.0}},{"m":"2024-12","rev":114080.0,"trips":null,"odo":null,"exp":{"Driver":23317.0,"Diesel":54210.0,"Coolie":3400.0,"Service":1600.0,"Tyre":2750.0}},{"m":"2025-01","rev":65235.0,"trips":null,"odo":null,"exp":{"Driver":15000.0,"Diesel":27900.0,"Coolie":2350.0,"Ad Blu":890.0,"Tax":3540.0,"Tyre":250.0,"Welfare Fund":13669.0}},{"m":"2025-02","rev":136715.0,"trips":null,"odo":null,"exp":{"Driver":27342.0,"Diesel":59000.0,"Coolie":4400.0,"Grease":250.0}},{"m":"2025-03","rev":109475.0,"trips":null,"odo":null,"exp":{"Driver":21900.0,"Diesel":52000.0,"Coolie":3200.0,"Ad Blu":700.0,"Tyre":11400.0,"Maveli Loading":1600.0}},{"m":"2025-04","rev":106805.0,"trips":35,"odo":null,"exp":{"Driver":21365.0,"Diesel":52000.0,"Coolie":3500.0,"Ad Blu":780.0,"Tax":4994.0,"Grease":150.0,"Air":50.0}},{"m":"2025-05","rev":75598.0,"trips":23,"odo":null,"exp":{"Driver":15120.0,"Diesel":34000.0,"Coolie":2800.0}},{"m":"2025-06","rev":123172.0,"trips":40,"odo":null,"exp":{"Driver":24634.0,"Diesel":60780.0,"Coolie":4000.0,"Grease":450.0,"Tyre":18450.0}},{"m":"2025-07","rev":86680.0,"trips":30,"odo":null,"exp":{"Driver":17835.0,"Diesel":42000.0,"Coolie":3000.0,"Ad Blu":670.0,"Tax":5000.0,"Maintenance":11634.0}},{"m":"2025-08","rev":126745.0,"trips":40,"odo":null,"exp":{"Driver":25347.0,"Diesel":63600.0,"Coolie":4000.0,"Ad Blu":670.0,"Grease":250.0}},{"m":"2025-09","rev":91500.0,"trips":32,"odo":null,"exp":{"Driver":18300.0,"Diesel":42000.0,"Coolie":3250.0,"Ad Blu":650.0,"Insurance":31600.0,"Grease":250.0,"Maintenance":2800.0}},{"m":"2025-10","rev":54655.0,"trips":18,"odo":null,"exp":{"Driver":15000.0,"Diesel":27000.0,"Coolie":1800.0,"Tax":5000.0,"GPS":5500.0,"Miscellaneous":1100.0,"Maintenance":28555.0,"Battery":5500.0}},{"m":"2025-11","rev":151120.0,"trips":45,"odo":null,"exp":{"Driver":30224.0,"Diesel":67000.0,"Coolie":4500.0,"Ad Blu":670.0,"Grease":250.0}},{"m":"2025-12","rev":128045.0,"trips":41,"odo":null,"exp":{"Driver":25609.0,"Diesel":60000.0,"Coolie":4100.0,"Ad Blu":700.0,"Grease":250.0,"Power Oil":400.0,"Engine Oil":340.0}},{"m":"2026-01","rev":179090.0,"trips":50,"odo":null,"exp":{"Driver":35818.0,"Diesel":75000.0,"Coolie":5000.0,"Ad Blu":883.0,"Grease":200.0,"Tyre":9200.0,"Air":100.0,"Power Oil":300.0}},{"m":"2026-02","rev":155270.0,"trips":44,"odo":null,"exp":{"Driver":31054.0,"Diesel":68300.0,"Coolie":4400.0,"Tax":3829.0,"Grease":220.0,"Miscellaneous":100.0,"Welfare Fund":1942.0,"Maintenance":16916.0}},{"m":"2026-03","rev":164855.0,"trips":46,"odo":null,"exp":{"Driver":32971.0,"Diesel":75000.0,"Coolie":4600.0,"Ad Blu":1513.0,"Grease":250.0,"Tyre":53800.0,"Miscellaneous":900.0,"Maintenance":1450.0}},{"m":"2026-04","rev":153570.0,"trips":39,"odo":162884.0,"exp":{"Driver":30714.0,"Diesel":57550.0,"Coolie":3900.0,"Tax":3390.0,"Miscellaneous":500.0,"Welfare Fund":1934.0,"Maintenance":5330.0}},{"m":"2026-05","rev":165070.0,"trips":51,"odo":166011.0,"exp":{"Driver":33014.0,"Diesel":67550.0,"Coolie":5100.0,"Grease":450.0,"Tyre":31200.0,"Air":100.0,"Power Oil":500.0,"Maintenance":1157.0}},{"m":"2026-06","rev":144175.0,"trips":45,"odo":168789.0,"exp":{"Driver":28835.0,"Diesel":64621.0,"Coolie":4500.0,"Ad Blu":300.0,"Service":500.0}},{"m":"2026-07","rev":151520.0,"trips":47,"odo":171564.0,"exp":{"Driver":30304.0,"Diesel":70950.0,"Coolie":4700.0,"Ad Blu":1050.0,"Service":1500.0,"Grease":170.0,"Maintenance":9066.0}},{"m":"2026-08","rev":130100.0,"trips":37,"odo":173748.0,"exp":{"Driver":26020.0,"Diesel":55500.0,"Coolie":3700.0,"Ad Blu":650.0,"Service":3298.0,"Air":100.0,"Engine Oil":190.0}},{"m":"2026-09","rev":141945.0,"trips":41,"odo":176613.0,"exp":{"Driver":28397.0,"Diesel":59050.0,"Coolie":4100.0,"Insurance":37500.0,"Service":600.0,"Grease":250.0,"Power Oil":200.0,"Maintenance":1360.0}}];
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
