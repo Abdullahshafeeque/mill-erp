@@ -210,6 +210,7 @@ const NAV = [
   { id:'stock-count', label:'Stock Count', icon:'⚖️' },
   { section:'Finance' },
   { id:'ledger', label:'Daily Cash Book', icon:'₹' },
+  { id:'truck', label:'Company Truck', icon:'🚚' },
   { section:'Reports' },
   { id:'reports', label:'Reports', icon:'📈' },
     { section:'Organisation' },
@@ -225,6 +226,7 @@ const NAV = [
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
   { id:'quality-settings', label:'Quality Settings', icon:'🔬' },
     { id:'power-factor-settings', label:'Power Factor Settings', icon:'⚡' },
+    { id:'truck-settings', label:'Truck Settings', icon:'🚚' },
   { id:'whatsapp-settings', label:'WhatsApp Alerts', icon:'💬' },
   { id:'product-recipes', label:'Product Recipes', icon:'🧮' },
   { id:'activity-log', label:'Activity Log', icon:'📜' },
@@ -279,6 +281,8 @@ const AX_MILL=[
   {key:'mill:power-factor',label:'Electrical · Power Factor',acts:[['view','Open page','MS'],['enter','Record a reading','MS'],['edit','Edit a reading','M'],['delete','Delete a reading','M'],['ack','Acknowledge low PF alert','M'],['download','Download CSV','MS']]},
  {key:'mill:power-factor-settings',label:'Power Factor Settings',acts:[['view','Open page','M'],['edit','Change & save settings','M']]},
  {key:'mill:ledger',label:'Daily Cash Book',acts:[['view','Open page','MA'],['add_receipt','Add receipt','MA'],['add_payment','Add payment','MA'],['link_hr','Link payment to an employee (syncs to HR)','MA'],['edit_entry','Edit entry','MA'],['delete_entry','Delete entry','MA'],['add_type','Add new transaction type','MA'],['submit_day','Submit day','MA']]},
+ {key:'mill:truck',label:'Company Truck',acts:[['view','Open page','M'],['add','Add month','M'],['edit','Edit month','M'],['delete','Delete month','M'],['import','Import spreadsheet history','M'],['download','Download CSV','M']]},
+ {key:'mill:truck-settings',label:'Truck Settings',acts:[['view','Open page','M'],['edit','Change & save settings','M']]},
 ];
 
 // HR portal group — the SAME text must be pasted in the HR portal file (see 2_hr_access_core.js)
@@ -12136,6 +12140,8 @@ function App(){
     'quality-settings':<QualitySettings/>,
         'power-factor':<PowerFactor userEmail={user.email} employeeId={access.employee_id} role={access.role}/>,
     'power-factor-settings':<PowerFactorSettings/>,
+    'truck':<Truck userEmail={user.email}/>,
+    'truck-settings':<TruckSettings/>,
   };
 
   return(<div className="app">
