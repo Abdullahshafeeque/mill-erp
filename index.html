@@ -11953,6 +11953,18 @@ function App(){
     const t=setInterval(f,60000);
     return ()=>{cancelled=true;clearInterval(t);};
   },[access?.role,tab,jobsTick]);
+  const [myOverdue,setMyOverdue]=useState([]);
+  const [overdueAcked,setOverdueAcked]=useState(false);
+  useEffect(()=>{
+    if(!user||!access||!access.role||access.role==='pending'||!access.employee_id){ setMyOverdue([]); return; }
+    if(sessionStorage.getItem('overdueAck')===user.id){ setOverdueAcked(true); return; }
+    let cancelled=false;
+    (async()=>{
+      const {data,error}=await sb.from('job_cards').select('id,title,deadline,priority,location').eq('assigned_to_id',String(access.employee_id)).neq('status','Done').neq('status','Awaiting Approval').not('deadline','is',null).lt('deadline',today).order('deadline');
+      if(!cancelled&&!error){ setMyOverdue(data||[]); setOverdueAcked(false); }
+    })();
+    return ()=>{cancelled=true;};
+  },[user?.id,access?.role,access?.employee_id]);
   useEffect(()=>{
     if(!access||!access.role||access.role==='pending') return;
     let cancelled=false;
@@ -12062,7 +12074,7 @@ function App(){
 
   useEffect(()=>{
     sb.auth.getSession().then(({data:{session}})=>{setUser(session?.user??null);setAuthLoading(false);});
-    sb.auth.onAuthStateChange((_,session)=>setUser(session?.user??null));
+    sb.auth.onAuthStateChange((_,session)=>{ if(!session) sessionStorage.removeItem('overdueAck'); setUser(session?.user??null); });
   },[]);
 
   if(authLoading) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'var(--muted)'}}>loading…</div>;
@@ -12128,7 +12140,27 @@ function App(){
     'truck-settings':<TruckSettings/>,
   };
 
+  const showOverdue=myOverdue.length>0&&!overdueAcked;
+  const ackOverdue=()=>{
+    sessionStorage.setItem('overdueAck',user.id);
+    logActivity('Job Cards','update',`Acknowledged overdue job reminder (${myOverdue.length} job${myOverdue.length===1?'':'s'})`);
+    setOverdueAcked(true); setTab('my-tasks');
+  };
   return(<div className="app">
+    {showOverdue&&(<div className="modal-overlay" style={{zIndex:3000}}>
+      <div className="card" style={{maxWidth:520,width:'100%',maxHeight:'90vh',overflowY:'auto',borderTop:'4px solid var(--red)'}}>
+        <div style={{fontSize:32,textAlign:'center'}}>⏰</div>
+        <div style={{fontSize:18,fontWeight:600,textAlign:'center',marginTop:4}}>You have {myOverdue.length} overdue job{myOverdue.length===1?'':'s'}</div>
+        <div style={{fontSize:13,color:'var(--muted)',textAlign:'center',marginTop:6,marginBottom:14}}>Hi {firstName}, the work below has passed its deadline. Please complete it at the earliest.</div>
+        {myOverdue.map(j=>{ const d=-daysUntil(j.deadline); return(
+          <div key={j.id} style={{padding:'10px 12px',marginBottom:8,border:'1px solid var(--border)',borderLeft:'4px solid var(--red)',borderRadius:6}}>
+            <div style={{fontWeight:600,fontSize:14}}>{j.title}</div>
+            <div style={{fontSize:12,color:'var(--red)',fontWeight:500,marginTop:2}}>Overdue by {d} day{d===1?'':'s'} (deadline {j.deadline})</div>
+            {(j.priority||j.location)&&<div style={{fontSize:12,color:'var(--muted)',marginTop:2}}>{[j.priority,j.location].filter(Boolean).join(' · ')}</div>}
+          </div>); })}
+        <button className="btn btn-amber" style={{width:'100%',marginTop:10,padding:'10px'}} onClick={ackOverdue}>I understand — I will clear these at the earliest</button>
+      </div>
+    </div>)}
     <div className="mobile-bar">
       <button className="btn btn-ghost" style={{fontSize:18,padding:'4px 12px'}} onClick={()=>setMenuOpen(true)}>☰{((myOpenCount||0)+renewalCount)>0&&<TaskBadge n={(myOpenCount||0)+renewalCount} compact/>}</button>
       <div>
