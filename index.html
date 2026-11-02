@@ -213,6 +213,7 @@ const NAV = [
   { id:'truck', label:'Company Truck', icon:'🚚' },
   { section:'Reports' },
   { id:'reports', label:'Reports', icon:'📈' },
+  { id:'analysis', label:'Executive Analysis', icon:'🧠' },
     { section:'Organisation' },
   { id:'org-chart', label:'Roles & Responsibilities', icon:'🧭' },
   { section:'Settings' },
@@ -266,6 +267,7 @@ const AX_MILL=[
  {key:'mill:store',label:'Store & Materials',acts:[['view','Open page','MST'],['add_item','Add store item','MT'],['edit_item','Edit store item','MT'],['organize','Sub-categories & ordering','MT'],['delete_item','Delete store item','M'],['txn','Receive / issue stock (+/−)','MT']]},
  {key:'mill:stock-count',label:'Stock Count',acts:[['view','Open page','MST'],['start_count','Load book stock','MST'],['submit','Submit count for approval','MST']]},
  {key:'mill:reports',label:'Reports',acts:[['view','Open page','M'],['tab_yield','Milling yield report','M'],['tab_wheat','Wheat movement report','M'],['tab_dispatch','Dispatch summary report','M'],['download','Download CSV','M']]},
+ {key:'mill:analysis',label:'Executive Analysis',acts:[['view','Open page','M'],['download','Download CSV','M']]},
  {key:'mill:product-master',label:'Product Master',acts:[['view','Open page','M'],['add','Add product','M'],['edit','Edit product','M'],['archive','Archive / activate','M']]},
  {key:'mill:product-recipes',label:'Product Recipes',acts:[['view','Open page','M'],['edit_recipe','Edit recipes','M'],['edit_packing','Edit packing rules','M'],['packing_start','Change packing start date','M']]},
  {key:'mill:depot-settings',label:'Depots',acts:[['view','Open page','M'],['add','Add depot','M'],['delete','Delete depot','M']]},
@@ -11916,6 +11918,681 @@ function TruckSettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// EXECUTIVE ANALYSIS
+// ══════════════════════════════════════════════════════════
+const anSum=(a,f)=>a.reduce((s,x,i)=>s+(f?f(x,i):x),0);
+const anMean=(a)=>a.length?anSum(a)/a.length:0;
+const anStd=(a)=>{ if(a.length<2) return 0; const m=anMean(a); return Math.sqrt(anSum(a,x=>(x-m)*(x-m))/(a.length-1)); };
+const anCv=(a)=>{ const m=anMean(a); return m!==0?anStd(a)/Math.abs(m):0; };
+const anMed=(a)=>{ if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); const h=s.length>>1; return s.length%2?s[h]:(s[h-1]+s[h])/2; };
+const anMad=(a)=>{ const m=anMed(a); return anMed(a.map(x=>Math.abs(x-m))); };
+const anPctl=(a,p)=>{ if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); const i=(s.length-1)*p; const lo=Math.floor(i), hi=Math.ceil(i); return s[lo]+(s[hi]-s[lo])*(i-lo); };
+const anCorr=(a,b)=>{ const n=Math.min(a.length,b.length); if(n<5) return null; const x=a.slice(0,n), y=b.slice(0,n); const mx=anMean(x), my=anMean(y); let sxy=0,sxx=0,syy=0; for(let i=0;i<n;i++){ sxy+=(x[i]-mx)*(y[i]-my); sxx+=(x[i]-mx)*(x[i]-mx); syy+=(y[i]-my)*(y[i]-my); } return sxx>0&&syy>0?sxy/Math.sqrt(sxx*syy):null; };
+const anReg=(y)=>{ const n=y.length; if(n<3) return {slope:0,r2:0}; const xs=y.map((_,i)=>i); const mx=anMean(xs), my=anMean(y); let sxy=0,sxx=0,syy=0; for(let i=0;i<n;i++){ sxy+=(xs[i]-mx)*(y[i]-my); sxx+=(xs[i]-mx)*(xs[i]-mx); syy+=(y[i]-my)*(y[i]-my); } return {slope:sxx?sxy/sxx:0,r2:(sxx&&syy)?(sxy*sxy)/(sxx*syy):0}; };
+const anDates=(a,b)=>{ const o=[]; let c=a,g=0; while(c<=b&&g<1500){ o.push(c); c=licShift(c,1); g++; } return o; };
+const anAdd=(m,k,v)=>{ m[k]=(m[k]||0)+v; };
+const anRng=(seed)=>{ let a=seed>>>0; return ()=>{ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; };
+const anWeekStart=(d)=>licShift(d,-((rjD(d).getDay()+6)%7));
+const anMA=(v,k)=>v.map((_,i)=>i<k-1?null:anMean(v.slice(i-k+1,i+1)));
+const anDl=(a,b)=>(b>0)?`${a>=b?'▲':'▼'} ${Math.abs((a/b-1)*100).toFixed(1)}% vs prior period`:'';
+const anDc=(a,b,inv)=>{ if(!(b>0)) return 'var(--blue)'; const up=a>=b; return (inv?!up:up)?'var(--green)':'var(--red)'; };
+const anScoreCol=(s)=>s>=85?'var(--green)':s>=70?'var(--blue)':s>=55?'var(--amber)':'var(--red)';
+const AN_Z={'90':1.282,'95':1.645,'97.5':1.96,'99':2.326};
+
+// Individuals / moving-range control chart with Western-Electric style rules
+const anSpc=(v)=>{
+  const n=v.length, mean=anMean(v); let mr=0;
+  for(let i=1;i<n;i++) mr+=Math.abs(v[i]-v[i-1]);
+  const sig=n>1?mr/(n-1)/1.128:0, ucl=mean+3*sig, lcl=mean-3*sig, fl=[];
+  v.forEach((x,i)=>{ if(sig>0&&(x>ucl||x<lcl)) fl.push({i,r:'Beyond 3σ limit'}); });
+  let run=0,side=0;
+  v.forEach((x,i)=>{ const s=x>mean?1:x<mean?-1:0; if(s!==0&&s===side) run++; else { run=s===0?0:1; side=s; } if(run===8&&!fl.some(f=>f.i===i)) fl.push({i,r:'8 in a row on one side of the mean'}); });
+  for(let i=2;i<n;i++){ const w=[v[i-2],v[i-1],v[i]]; const up=w.filter(x=>x>mean+2*sig).length, dn=w.filter(x=>x<mean-2*sig).length; if(sig>0&&(up>=2||dn>=2)&&!fl.some(f=>f.i===i)) fl.push({i,r:'2 of 3 beyond 2σ'}); }
+  return {mean,sig,ucl,lcl,flags:fl};
+};
+// Holt's linear (double exponential) smoothing with 80% prediction band
+const anHolt=(y,h)=>{
+  if(y.length<5) return null;
+  const al=0.4,be=0.2; let l=y[0], b=y[1]-y[0]; const res=[];
+  for(let i=1;i<y.length;i++){ const f=l+b; res.push(y[i]-f); const ln=al*y[i]+(1-al)*(l+b); b=be*(ln-l)+(1-be)*b; l=ln; }
+  const sd=anStd(res), out=[];
+  for(let k=1;k<=h;k++){ const m=l+k*b, e=1.2816*sd*Math.sqrt(k); out.push({k,f:Math.max(0,m),lo:Math.max(0,m-e),hi:Math.max(0,m+e)}); }
+  return {out,sd,trend:b};
+};
+// Monte-Carlo (bootstrap) simulators
+const anSimStock=(stock,dS,pS,pProd,H,N,seed)=>{
+  const rnd=anRng(seed); let a7=0,a14=0,aH=0; const fin=[];
+  for(let s=0;s<N;s++){
+    let st=stock,hit=0;
+    for(let d=1;d<=H;d++){ st-=dS[Math.floor(rnd()*dS.length)]; if(pS.length&&rnd()<pProd) st+=pS[Math.floor(rnd()*pS.length)]; if(st<0&&!hit) hit=d; }
+    if(hit){ aH++; if(hit<=14) a14++; if(hit<=7) a7++; }
+    fin.push(st);
+  }
+  return {p7:a7/N*100,p14:a14/N*100,pH:aH/N*100,lo:anPctl(fin,0.1),mid:anPctl(fin,0.5),hi:anPctl(fin,0.9)};
+};
+const anSimWheat=(stock,use,pProd,seed)=>{
+  const rnd=anRng(seed), N=1000, cap=120, ds=[];
+  for(let s=0;s<N;s++){ let st=stock,d=0; while(st>0&&d<cap){ d++; if(rnd()<pProd) st-=use[Math.floor(rnd()*use.length)]; } ds.push(d); }
+  return {lo:anPctl(ds,0.1),mid:anPctl(ds,0.5),hi:anPctl(ds,0.9),capHit:ds.filter(x=>x>=cap).length/N*100};
+};
+const anSimCash=(bal,net,H,seed)=>{
+  const rnd=anRng(seed), N=1000; let neg=0; const fin=[];
+  for(let s=0;s<N;s++){ let b=bal,hit=false; for(let d=0;d<H;d++){ b+=net[Math.floor(rnd()*net.length)]; if(b<0) hit=true; } if(hit) neg++; fin.push(b); }
+  return {pNeg:neg/N*100,lo:anPctl(fin,0.1),mid:anPctl(fin,0.5),hi:anPctl(fin,0.9)};
+};
+
+async function anLoad(from,to){
+  const n=rjDiff(from,to)+1;
+  const pFrom=licShift(from,-n), pTo=licShift(from,-1);
+  const q=(t,sel,col)=>fetchAllRows((a,b)=>sb.from(t).select(sel).gte(col,pFrom).lte(col,to).order(col).order('id').range(a,b));
+  const soft=(p)=>p.catch(()=>[]);
+  const [logs,sd,pd,ret,fci,pin,led,qc]=await Promise.all([
+    q('daily_production_log','*, product:product_id(*)','date'),
+    q('supplyco_dispatches','*, product:product_id(*)','date'),
+    q('private_dispatches','*, product:product_id(*)','date'),
+    q('product_returns','date,product_id,qty_bags','date'),
+    q('fci_inwards','id,date,scheme,received_kg','date'),
+    q('private_inwards','id,date,qty_kg,material_id','date'),
+    q('daily_ledger','id,date,direction,amount,txn_type,party_name,created_at','date'),
+    soft(q('qc_tests','*','test_date')),
+  ]);
+  const [products,recipes,lines,cs,ss,lo,lic,addins,cb]=await Promise.all([
+    sb.from('product_master').select('*').then(repMust),
+    sb.from('product_recipes').select('*').then(repMust),
+    sb.from('recipe_lines').select('*').then(repMust),
+    sb.from('current_stock').select('*').then(repMust),
+    sb.from('raw_material_scheme_stock').select('*').then(repMust),
+    sb.from('lifting_orders').select('*, material:material_id(*)').then(repMust),
+    sb.from('licenses').select('*').eq('status','Active').then(repMust),
+    soft(fetchAllRows((a,b)=>sb.from('production_addins').select('*').gte('log_date',pFrom).lte('log_date',to).order('id').range(a,b))),
+    sb.from('cash_book_days').select('date,closing_balance').order('date',{ascending:false}).limit(1).then(r=>r.data||[]),
+  ]);
+  let adj=[]; try{ adj=await fetchWheatAdjustments(from,to); }catch(e){}
+  let woBoard=[]; try{ const WS=await loadWoaSettings(); woBoard=woaBoard(await loadWoaBase(),WS); }catch(e){}
+  let pf=null;
+  try{
+    const S=await loadPfSettings();
+    const rows=pfPrepRows(await fetchAllRows((a,b)=>sb.from('power_factor_readings').select('*').gte('reading_at',from+'T00:00:00').order('reading_at').order('id').range(a,b)));
+    const a=pfAgg(pfBuild(rows,S),S);
+    if(a.n>0) pf={S,a};
+  }catch(e){}
+  return {from,to,n,pFrom,pTo,logs,sd,pd,ret,fci,pin,led,qc,products,recipes,lines,cs,ss,lo,lic,addins,adj,woBoard,pf,cashClose:cb.length?Number(cb[0].closing_balance):null};
+}
+
+function anCompute(D){
+  const {from,to,pFrom,pTo}=D;
+  const cur=anDates(from,to), prv=anDates(pFrom,pTo), all=[...prv,...cur];
+  const inC=(d)=>d>=from&&d<=to, inP=(d)=>d>=pFrom&&d<=pTo;
+  const pb={}; D.products.forEach(p=>{pb[String(p.id)]=p;});
+  const isWheat=(id)=>{ const p=pb[String(id)]; return !!(p&&p.is_raw_material&&p.has_schemes); };
+  const prodKg={},dispKg={},grainBy={},cIn={},cOut={},prodByP={},dispByP={};
+
+  D.logs.forEach(r=>{ const b=Number(r.production_bags)||0; if(!b) return; anAdd(prodKg,r.date,b*packSizeOf(r.product||pb[String(r.product_id)])); const m=prodByP[r.product_id]=prodByP[r.product_id]||{}; anAdd(m,r.date,b); });
+  const addDisp=(r,priv)=>{ const p=r.product||pb[String(r.product_id)]; if(priv&&p&&p.is_raw_material) return; const bags=Number(r.qty_bags)||0; anAdd(dispKg,r.date,bags*packSizeOf(p)); if(bags){ const m=dispByP[r.product_id]=dispByP[r.product_id]||{}; anAdd(m,r.date,bags); } };
+  D.sd.forEach(r=>addDisp(r,false)); D.pd.forEach(r=>addDisp(r,true));
+  D.led.forEach(e=>{ if(e.direction==='in') anAdd(cIn,e.date,Number(e.amount)||0); else anAdd(cOut,e.date,Number(e.amount)||0); });
+
+  const lg=(f)=>D.logs.filter(r=>f(r.date));
+  const yAll=computeYield(D.logs,D.recipes,D.lines,D.products,D.addins);
+  const yC=computeYield(lg(inC),D.recipes,D.lines,D.products,D.addins);
+  const yP=computeYield(lg(inP),D.recipes,D.lines,D.products,D.addins);
+  yAll.dates.forEach(d=>anAdd(grainBy,d.date,d.grain));
+  const recov=(y)=>y.T.grain>0?y.T.finishedCov/y.T.grain*100:null;
+  const ser=(m,ds)=>ds.map(d=>(m||{})[d]||0);
+  const per=(ds,y)=>{ const pk=ser(prodKg,ds), pdv=pk.filter(x=>x>0); return {prod:anSum(pk),disp:anSum(ser(dispKg,ds)),days:pdv.length,avg:anMean(pdv),cv:anCv(pdv),best:pdv.length?Math.max(...pdv):0,wd:liftWorkingDays(ds[0],ds[ds.length-1],[0]),rec:recov(y),grain:y.T.grain,cin:anSum(ser(cIn,ds)),cout:anSum(ser(cOut,ds))}; };
+  const K=per(cur,yC), Kp=per(prv,yP);
+  const cap90=anPctl(ser(prodKg,all).filter(x=>x>0),0.9);
+  const util=cap90>0?K.avg/cap90:null;
+
+  const sPK=ser(prodKg,cur), sDK=ser(dispKg,cur);
+  const daily=cur.map((d,i)=>({date:d,prod:sPK[i],disp:sDK[i],grain:grainBy[d]||0,cin:cIn[d]||0,cout:cOut[d]||0}));
+  const wkSeries=(m)=>{ const o={}; all.forEach(d=>anAdd(o,anWeekStart(d),(m||{})[d]||0)); return Object.keys(o).sort().filter(w=>w>=all[0]&&licShift(w,6)<=to).map(w=>({w,v:o[w]})); };
+  const wkP=wkSeries(prodKg), wkD=wkSeries(dispKg);
+  const hP=anHolt(wkP.map(x=>x.v),4), hD=anHolt(wkD.map(x=>x.v),4);
+  const trendP=anReg(wkP.map(x=>x.v));
+  const wdOf=(m,ds)=>[1,2,3,4,5,6,0].map(w=>{ const v=ds.filter(d=>rjD(d).getDay()===w).map(d=>m[d]||0); return {name:RJ_DOW[w],v:anMean(v),n:v.length}; });
+  const wdP=wdOf(prodKg,cur), wdD=wdOf(dispKg,cur);
+
+  // yield SPC
+  const recSeries=yAll.dates.filter(d=>d.grain>0).map(d=>({date:d.date,v:d.finishedCov/d.grain*100}));
+  const spc=anSpc(recSeries.map(x=>x.v));
+
+  // variance bridge
+  const eDays=(K.days-Kp.days)*Kp.avg, eRate=(K.avg-Kp.avg)*K.days;
+
+  // finished goods
+  const last28=all.slice(-28), l28=new Set(last28);
+  const fin=D.products.filter(p=>!p.is_raw_material&&p.is_active!==false&&p.include_in_production_log!==false);
+  const stockBy={}; D.cs.forEach(r=>{ stockBy[String(r.product_id)]=Number(r.qty_bags)||0; });
+  const sumM=(m,ds)=>anSum(ds,d=>(m||{})[d]||0);
+  const fg=fin.map((p,i)=>{
+    const k=String(p.id), sz=packSizeOf(p), dm=dispByP[k]||{}, pm=prodByP[k]||{};
+    const dC=sumM(dm,cur), dP=sumM(dm,prv), bC=sumM(pm,cur), bP=sumM(pm,prv);
+    const d28=sumM(dm,last28)/28, p28=sumM(pm,last28)/28, st=stockBy[k]||0;
+    const wk=wkSeries(dm).map(x=>x.v);
+    const dS=last28.map(d=>dm[d]||0), pS=last28.map(d=>pm[d]||0).filter(x=>x>0);
+    const mc=dS.some(x=>x>0)?anSimStock(st,dS,pS,pS.length/28,30,1000,7+i):null;
+    return {p,k,name:p.product_name,sz,st,dC,dP,bC,bP,d28,p28,cover:d28>0?st/d28:null,kg:dC*sz,wkCv:wk.length>=4?anCv(wk):null,dSd:anStd(dS),mc};
+  }).filter(x=>x.dC>0||x.dP>0||x.bC>0||x.st>0||x.d28>0);
+  const fgS=[...fg].sort((a,b)=>b.kg-a.kg); const fgTot=anSum(fgS,x=>x.kg)||1; let cb0=0;
+  fgS.forEach(x=>{ x.abc=cb0/fgTot*100<80?'A':cb0/fgTot*100<95?'B':'C'; cb0+=x.kg; x.xyz=x.wkCv===null?'—':x.wkCv<0.5?'X':x.wkCv<1?'Y':'Z'; });
+  const mixTot=anSum(fg,x=>x.bC*x.sz)||1, mixTotP=anSum(fg,x=>x.bP*x.sz)||1;
+  const mix=[...fg].filter(x=>x.bC>0||x.bP>0).sort((a,b)=>b.bC*b.sz-a.bC*a.sz);
+  let cm=0; mix.forEach(x=>{ x.share=x.bC*x.sz/mixTot*100; x.pshare=x.bP*x.sz/mixTotP*100; cm+=x.share; x.cum=cm; });
+
+  // dispatch concentration
+  const sdC=D.sd.filter(r=>inC(r.date)), sdP=D.sd.filter(r=>inP(r.date));
+  const grp=(rows,f)=>{ const o={}; rows.forEach(r=>{ const k=f(r)||'—'; const bags=Number(r.qty_bags)||0; const q=o[k]=o[k]||{kg:0,bags:0,n:0,days:new Set()}; q.kg+=bags*packSizeOf(r.product||pb[String(r.product_id)]); q.bags+=bags; q.n++; q.days.add(r.date); }); return o; };
+  const pareto=(o,po)=>{ const arr=Object.entries(o).map(([k,v])=>({k,kg:v.kg,bags:v.bags,n:v.n,days:v.days.size,pk:po&&po[k]?po[k].kg:0})).sort((a,b)=>b.kg-a.kg); const tot=anSum(arr,x=>x.kg)||1; let c=0; arr.forEach(x=>{ x.share=x.kg/tot*100; x.cb=c; c+=x.share; x.cum=c; x.cls=x.cb<80?'A':x.cb<95?'B':'C'; }); return {arr,tot,hhi:anSum(arr,x=>Math.pow(x.share/100,2)),top3:anSum(arr.slice(0,3),x=>x.share)}; };
+  const depot=pareto(grp(sdC,r=>r.depot_name),grp(sdP,r=>r.depot_name));
+  const district=pareto(grp(sdC,r=>r.district),grp(sdP,r=>r.district));
+  const scheme=pareto(grp(sdC,r=>r.scheme),grp(sdP,r=>r.scheme));
+
+  // private party segmentation
+  const parties={};
+  D.pd.forEach(r=>{ const p=r.product||pb[String(r.product_id)]; const kg=(p&&p.is_raw_material)?(Number(r.qty_kg)||0):(Number(r.qty_bags)||0)*packSizeOf(p); const k=(r.party_name||'—').trim(); const q=parties[k]=parties[k]||{k,kgC:0,kgP:0,days:new Set(),first:r.date,last:r.date}; q.days.add(r.date); if(r.date<q.first) q.first=r.date; if(r.date>q.last) q.last=r.date; if(inC(r.date)) q.kgC+=kg; else q.kgP+=kg; });
+  const partyRows=Object.values(parties).map(q=>{ const f=q.days.size, span=rjDiff(q.first,q.last), gap=f>1?span/(f-1):null, rec=rjDiff(q.last,to); let seg='Occasional'; if(f===1&&rec<=30) seg='New / one-off'; else if(gap!==null){ if(rec>gap*4&&rec>45) seg='Lapsed'; else if(rec>gap*2&&rec>21) seg='At risk'; else if(f>=6) seg='Champion'; else seg='Active'; } return {k:q.k,kgC:q.kgC,kgP:q.kgP,f,gap,rec,seg,last:q.last}; }).sort((a,b)=>(b.kgC+b.kgP)-(a.kgC+a.kgP));
+  const pTot=anSum(partyRows,x=>x.kgC)||1, pTop=partyRows.length?Math.max(...partyRows.map(x=>x.kgC))/pTot*100:0;
+  const pHhi=anSum(partyRows,x=>Math.pow(x.kgC/pTot,2));
+
+  // returns
+  const retBy={}; D.ret.filter(r=>inC(r.date)).forEach(r=>anAdd(retBy,String(r.product_id),Number(r.qty_bags)||0));
+  const retRows=fg.map(x=>({name:x.name,ret:retBy[x.k]||0,disp:x.dC,rate:x.dC>0?(retBy[x.k]||0)/x.dC*100:null})).filter(x=>x.ret>0).sort((a,b)=>b.ret-a.ret);
+
+  // work-order completion forecast
+  const rateSch={}; D.sd.filter(r=>l28.has(r.date)).forEach(r=>anAdd(rateSch,r.scheme||'—',Number(r.qty_bags)||0));
+  const queue={}, woRows=[];
+  D.woBoard.filter(x=>!x.complete&&x.wo.deadline).sort((a,b)=>a.wo.deadline.localeCompare(b.wo.deadline)).forEach(x=>{
+    const s=x.wo.scheme||'—', rate=(rateSch[s]||0)/28; queue[s]=(queue[s]||0)+x.balBags;
+    const eta=rate>0?queue[s]/rate:Infinity, slack=x.daysLeft-eta;
+    woRows.push({x,rate,eta,slack,st:rate<=0?'No dispatch pace':slack>=2?'On track':slack>=0?'Tight':'Will miss'});
+  });
+
+  // wheat
+  const wi={},wu={},wa={},wsk={},wsold={};
+  D.fci.filter(r=>inC(r.date)).forEach(r=>anAdd(wi,r.scheme||'—',Number(r.received_kg)||0));
+  D.pin.filter(r=>inC(r.date)&&isWheat(r.material_id)).forEach(r=>anAdd(wi,'Private',Number(r.qty_kg)||0));
+  D.pd.filter(r=>inC(r.date)&&isWheat(r.product_id)).forEach(r=>anAdd(wsold,'Private',Number(r.qty_kg)||0));
+  Object.keys(yC.schemes).forEach(k=>{ if(yC.schemes[k].grain>0) wu[k]=yC.schemes[k].grain; });
+  D.adj.forEach(l=>anAdd(wa,l.scheme||'—',Number(l.diff)||0));
+  D.ss.forEach(r=>anAdd(wsk,r.scheme,Number(r.qty_kg)||0));
+  const pend={}; D.lo.forEach(o=>anAdd(pend,o.scheme,Math.max(0,Number(o.allotted_kg)-Number(o.lifted_kg))));
+  const wheat=Array.from(new Set([...Object.keys(wi),...Object.keys(wu),...Object.keys(wa),...Object.keys(wsk)])).sort().map(k=>{ const use=(wu[k]||0)+(wsold[k]||0), perDay=use/cur.length; return {k,inw:wi[k]||0,used:wu[k]||0,sold:wsold[k]||0,adj:wa[k]||0,stock:wsk[k]||0,perDay,cover:perDay>0?(wsk[k]||0)/perDay:null,shrink:(wu[k]||0)>0?-(wa[k]||0)/wu[k]*100:null,pend:pend[k]||0,turns:(wsk[k]||0)>0&&perDay>0?perDay*365/wsk[k]:null}; });
+  const wStock=anSum(Object.values(wsk)), gS=last28.map(d=>grainBy[d]||0).filter(x=>x>0);
+  const wmc=wStock>0&&gS.length?anSimWheat(wStock,gS,gS.length/28,11):null;
+  const grainPerDay=anSum(last28,d=>grainBy[d]||0)/28;
+
+  // cash
+  const catOf=(dir,f)=>{ const o={}; D.led.forEach(e=>{ if(!f(e.date)||((e.direction==='in')!==(dir==='in'))) return; anAdd(o,e.txn_type||'—',Number(e.amount)||0); }); return o; };
+  const catPar=(dir)=>{ const c=catOf(dir,inC), p=catOf(dir,inP); const arr=Object.keys(c).map(k=>({k,v:c[k],pv:p[k]||0})).sort((a,b)=>b.v-a.v); const tot=anSum(arr,x=>x.v)||1; arr.forEach(x=>{ x.share=x.v/tot*100; }); return {arr,tot}; };
+  const catIn=catPar('in'), catOut=catPar('out');
+  const burn=(K.cout-K.cin)/cur.length;
+  const runway=D.cashClose!==null&&burn>0?D.cashClose/burn:null;
+  const netS=all.slice(-60).map(d=>(cIn[d]||0)-(cOut[d]||0));
+  const cmc=D.cashClose!==null&&netS.length?anSimCash(D.cashClose,netS,30,23):null;
+  const wdC=[1,2,3,4,5,6,0].map(w=>({name:RJ_DOW[w],v:anMean(cur.filter(d=>rjD(d).getDay()===w).map(d=>cOut[d]||0))}));
+
+  // forensics
+  const bc=Array(9).fill(0); let bn=0;
+  D.led.forEach(e=>{ const a=Math.abs(Number(e.amount)||0); if(a>=10){ const dg=Number(String(Math.floor(a))[0]); if(dg>=1){ bc[dg-1]++; bn++; } } });
+  const bExp=[1,2,3,4,5,6,7,8,9].map(d=>Math.log10(1+1/d));
+  let bMad=null,bChi=null,bVerdict='Too few entries (need 100+)';
+  if(bn>=100){ bMad=0; bChi=0; for(let i=0;i<9;i++){ bMad+=Math.abs(bc[i]/bn-bExp[i])/9; bChi+=Math.pow(bc[i]-bn*bExp[i],2)/(bn*bExp[i]); } bVerdict=bMad<0.006?'Close conformity':bMad<0.012?'Acceptable conformity':bMad<0.015?'Marginal conformity':'Non-conformity — review entries'; }
+  const dupMap={}; D.led.forEach(e=>{ const a=Number(e.amount)||0; if(a<1000) return; const k=e.direction+'|'+a+'|'+(e.party_name||'').trim().toLowerCase(); (dupMap[k]=dupMap[k]||[]).push(e); });
+  const dups=[]; Object.values(dupMap).forEach(l=>{ l.sort((a,b)=>a.date.localeCompare(b.date)); for(let i=1;i<l.length;i++){ const g=rjDiff(l[i-1].date,l[i].date); if(g<=3&&inC(l[i].date)) dups.push({a:l[i-1],b:l[i],g}); } });
+  const byT={}; D.led.forEach(e=>{ const k=e.direction+'|'+(e.txn_type||'—'); (byT[k]=byT[k]||[]).push(e); });
+  const cashOut2=[]; Object.values(byT).forEach(l=>{ if(l.length<8) return; const v=l.map(e=>Number(e.amount)||0), md=anMed(v), mad=anMad(v); l.forEach(e=>{ const z=mad>0?0.6745*((Number(e.amount)||0)-md)/mad:0; if(z>3.5&&inC(e.date)) cashOut2.push({e,z,md}); }); });
+  const backd=D.led.filter(e=>inC(e.date)&&e.created_at&&rjDiff(e.date,String(e.created_at).slice(0,10))>2);
+  const bigPay=D.led.filter(e=>inC(e.date)&&e.direction!=='in'&&Number(e.amount)>=5000);
+  const roundShare=bigPay.length?bigPay.filter(e=>Number(e.amount)%1000===0).length/bigPay.length*100:null;
+
+  // quality
+  const qcC=D.qc.filter(t=>inC(t.test_date)), qcP=D.qc.filter(t=>inP(t.test_date));
+  const qcStat=(l)=>({n:l.length,pass:l.filter(t=>t.status==='Pass').length,warn:l.filter(t=>t.status==='Warning').length,fail:l.filter(t=>t.status==='Fail').length});
+  const qS=qcStat(qcC), qSp=qcStat(qcP);
+  const cp={}; qcC.forEach(t=>(t.results||[]).forEach(r=>{ const k=t.product_name+'|'+r.name; const q=cp[k]=cp[k]||{prod:t.product_name,name:r.name,unit:r.unit,v:[],min:qcNum(r.min),max:qcNum(r.max)}; q.v.push(Number(r.value)); }));
+  const cpkRows=Object.values(cp).filter(q=>q.v.length>=5&&(q.min!==null||q.max!==null)).map(q=>{ const m=anMean(q.v), s=anStd(q.v), a=[]; if(q.max!==null&&s>0) a.push((q.max-m)/(3*s)); if(q.min!==null&&s>0) a.push((m-q.min)/(3*s)); return {prod:q.prod,name:q.name,unit:q.unit,n:q.v.length,m,s,cpk:a.length?Math.min(...a):null}; }).sort((a,b)=>(a.cpk===null?99:a.cpk)-(b.cpk===null?99:b.cpk));
+
+  // lag correlation production -> dispatch
+  const aP=ser(prodKg,all), aD=ser(dispKg,all);
+  const lags=[0,1,2,3,4,5,6,7].map(k=>({k,r:anCorr(aP.slice(0,aP.length-k),aD.slice(k))}));
+  const bestLag=lags.filter(x=>x.r!==null).sort((a,b)=>Math.abs(b.r)-Math.abs(a.r))[0]||null;
+
+  // anomalies
+  const an=[]; const AN=(sev,cat,date,text)=>an.push({sev,cat,date,text});
+  const dayAnom=(m,label)=>{ const ds=all.filter(d=>(m[d]||0)>0), v=ds.map(d=>m[d]); if(v.length<10) return; const md=anMed(v), mad=anMad(v); ds.forEach(d=>{ const z=mad>0?0.6745*(m[d]-md)/mad:0; if(Math.abs(z)>3.5&&inC(d)) AN(Math.abs(z)>6?3:2,label,d,`${label} ${repMt(m[d])} MT vs typical ${repMt(md)} MT (robust z ${z.toFixed(1)})`); }); };
+  dayAnom(prodKg,'Production'); dayAnom(dispKg,'Dispatch');
+  spc.flags.forEach(f=>{ const r=recSeries[f.i]; if(r&&inC(r.date)) AN(2,'Yield',r.date,`Recovery ${r.v.toFixed(2)}% — ${f.r} (limits ${spc.lcl.toFixed(2)}–${spc.ucl.toFixed(2)}%)`); });
+  cashOut2.forEach(o=>AN(o.z>6?3:2,'Cash',o.e.date,`${o.e.direction==='in'?'Receipt':'Payment'} ₹${fmt(o.e.amount)} (${o.e.txn_type}${o.e.party_name?' · '+o.e.party_name:''}) vs typical ₹${fmt(o.md)} — z ${o.z.toFixed(1)}`));
+  dups.forEach(d=>AN(2,'Cash',d.b.date,`Possible duplicate: ₹${fmt(d.b.amount)} ${d.b.direction==='in'?'received from':'paid to'} ${d.b.party_name||'(no party)'} — same amount ${d.g===0?'on the same day':d.g+' day(s) earlier'}`));
+  backd.forEach(e=>AN(2,'Control',e.date,`Entry for ${e.date} was keyed ${rjDiff(e.date,String(e.created_at).slice(0,10))} days later: ₹${fmt(e.amount)} ${e.txn_type}`));
+  D.cs.filter(r=>Number(r.qty_bags)<0).forEach(r=>{ const p=pb[String(r.product_id)]; AN(3,'Integrity',today,`Negative finished stock: ${p?p.product_name:r.product_id} = ${fmt(r.qty_bags,1)} bags`); });
+  D.ss.filter(r=>Number(r.qty_kg)<0).forEach(r=>AN(3,'Integrity',today,`Negative wheat stock in scheme ${r.scheme}: ${repMt(r.qty_kg)} MT`));
+  if(bMad!==null&&bMad>=0.015) AN(2,'Forensics',today,`Cash-book digits deviate from Benford's law (MAD ${bMad.toFixed(4)}). Review round or repeated amounts.`);
+  an.sort((a,b)=>b.sev-a.sev||String(b.date).localeCompare(String(a.date)));
+
+  // risk register
+  const risks=[]; const R=(cat,name,L,I,detail)=>risks.push({cat,name,L,I,s:L*I,detail});
+  D.lic.forEach(l=>{ const x=licInfo(l); if(x.daysLeft<0) R('Compliance',`${l.name} expired`,5,4,licDaysText(x.daysLeft)); else if(x.stage>=1) R('Compliance',`${l.name} renewal`,x.stage>=2?4:3,3,licDaysText(x.daysLeft)); else if(x.daysLeft<=60) R('Compliance',`${l.name} renewal`,2,3,licDaysText(x.daysLeft)); });
+  D.lo.forEach(o=>{ const bal=Number(o.allotted_kg)-Number(o.lifted_kg); if(!o.deadline||bal<=Number(o.allotted_kg)*0.01) return; const dl=daysUntil(o.deadline); if(dl<0) R('Supply',`Lifting order ${o.order_no} overdue`,5,4,`${fmtMT(bal)} still to lift`); else if(dl<=7) R('Supply',`Lifting order ${o.order_no}`,4,3,`${fmtMT(bal)} to lift in ${dl} days`); else if(dl<=15) R('Supply',`Lifting order ${o.order_no}`,3,3,`${fmtMT(bal)} to lift in ${dl} days`); });
+  woRows.forEach(w=>{ if(w.x.daysLeft<0) R('Service',`Work order ${w.x.wo.work_order_no} overdue`,5,4,`${fmt(w.x.balPkts)} packets pending`); else if(w.st==='Will miss') R('Service',`Work order ${w.x.wo.work_order_no} likely to miss deadline`,4,4,`ETA ${isFinite(w.eta)?Math.ceil(w.eta)+' days':'never at current pace'} vs ${w.x.daysLeft} days left`); else if(w.st==='Tight') R('Service',`Work order ${w.x.wo.work_order_no} is tight`,3,3,`slack ${w.slack.toFixed(1)} days`); });
+  fg.forEach(x=>{ if(x.cover!==null){ if(x.cover<3) R('Supply',`${x.name} stock cover`,4,4,`${x.cover.toFixed(1)} days of cover`); else if(x.cover<7) R('Supply',`${x.name} stock cover`,3,3,`${x.cover.toFixed(1)} days of cover`); } if(x.mc&&x.mc.p14>=25) R('Supply',`${x.name} stock-out probability`,Math.min(5,Math.ceil(x.mc.p14/20)),4,`${x.mc.p14.toFixed(0)}% within 14 days (Monte-Carlo)`); });
+  wheat.forEach(w=>{ if(w.cover!==null){ if(w.cover<7) R('Supply',`Wheat ${w.k} cover`,4,5,`${w.cover.toFixed(1)} days`); else if(w.cover<14) R('Supply',`Wheat ${w.k} cover`,3,4,`${w.cover.toFixed(1)} days`); } if(w.shrink!==null&&w.shrink>0.5) R('Loss',`Wheat ${w.k} shrinkage`,3,3,`${w.shrink.toFixed(2)}% of wheat used`); });
+  if(runway!==null&&runway<30) R('Finance','Cash runway',4,4,`about ${runway.toFixed(0)} days at current burn`);
+  if(cmc&&cmc.pNeg>=20) R('Finance','Cash may go negative',Math.min(5,Math.ceil(cmc.pNeg/20)),4,`${cmc.pNeg.toFixed(0)}% probability within 30 days`);
+  if(qS.n>=5&&qS.fail/qS.n>0.05) R('Quality','Elevated quality failure rate',3,4,`${(qS.fail/qS.n*100).toFixed(1)}% of ${qS.n} tests failed`);
+  if(depot.arr.length>=3&&depot.hhi>0.25) R('Concentration','Dispatch concentrated in few depots',3,3,`HHI ${depot.hhi.toFixed(2)}, top 3 = ${depot.top3.toFixed(0)}%`);
+  if(partyRows.length>=3&&pTop>40) R('Concentration','Private sales depend on one party',3,3,`largest party = ${pTop.toFixed(0)}% of private volume`);
+  if(K.wd>0&&K.days/K.wd<0.7) R('Operations','Low plant availability',3,4,`${K.days} of ${K.wd} working days produced`);
+  const recentFlags=spc.flags.filter(f=>recSeries[f.i]&&recSeries[f.i].date>=licShift(to,-14)).length;
+  if(recentFlags>0) R('Operations','Yield process out of control',3,3,`${recentFlags} control-chart signal(s) in the last 14 days`);
+  const nInt=an.filter(a=>a.cat==='Integrity').length; if(nInt>0) R('Data integrity','Negative stock balances',4,3,`${nInt} item(s)`);
+  if(backd.length>0) R('Control','Back-dated cash entries',2,3,`${backd.length} entries keyed 3+ days late`);
+  if(bMad!==null&&bMad>=0.015) R('Control','Cash-book digit pattern abnormal',3,3,`Benford MAD ${bMad.toFixed(4)}`);
+  risks.sort((a,b)=>b.s-a.s);
+
+  // scorecard
+  const sc=[]; const push=(label,score,detail)=>{ if(score!==null&&score!==undefined&&!isNaN(score)) sc.push({label,score:Math.max(0,Math.min(100,score)),detail}); };
+  push('Availability',K.wd?K.days/K.wd*100:null,`${K.days} of ${K.wd} working days produced`);
+  push('Stability',K.days>=5?100-K.cv*100:null,`daily output CV ${(K.cv*100).toFixed(0)}%`);
+  push('Yield control',recSeries.length>=8&&spc.mean>0?100-(spc.sig/spc.mean*100)*20:null,`σ ${spc.sig.toFixed(2)} pts around ${spc.mean.toFixed(2)}%`);
+  const wOver=D.woBoard.filter(x=>x.wo.deadline&&!x.complete&&x.daysLeft<0).length, wTot=D.woBoard.filter(x=>x.wo.deadline).length;
+  push('Service level',wTot?100-wOver/wTot*100:null,`${wOver} of ${wTot} work orders overdue`);
+  const cv2=fg.filter(x=>x.cover!==null);
+  push('FG cover',cv2.length?anMean(cv2.map(x=>x.cover>=7&&x.cover<=30?100:x.cover<7?x.cover/7*100:Math.max(40,100-(x.cover-30)))):null,'target band 7–30 days');
+  const wc=wheat.filter(w=>w.cover!==null);
+  push('Wheat cover',wc.length?Math.min(...wc.map(w=>Math.min(100,w.cover/14*100))):null,'14+ days = full marks');
+  push('Cash cover',K.cout>0?Math.min(100,K.cin/K.cout*100):null,`receipts ÷ payments ${K.cout>0?(K.cin/K.cout).toFixed(2):'—'}`);
+  push('Quality',qS.n>0?qS.pass/qS.n*100:null,`${qS.pass}/${qS.n} tests passed`);
+  const nl=D.lic.length, expd=D.lic.filter(l=>licInfo(l).daysLeft<0).length, esc=D.lic.filter(l=>licInfo(l).stage>=2&&licInfo(l).daysLeft>=0).length;
+  push('Compliance',nl?100-(expd+esc*0.5)/nl*100:null,`${expd} expired, ${esc} escalated`);
+  if(D.pf) push('Power factor',D.pf.a.pf>=D.pf.S.target?100:100-(D.pf.S.target-D.pf.a.pf)*500,`PF ${pf3(D.pf.a.pf)} vs target ${D.pf.S.target}`);
+  const score=sc.length?anMean(sc.map(x=>x.score)):0, grade=score>=85?'A':score>=70?'B':score>=55?'C':'D';
+
+  // insights engine
+  const ins=[]; const I=(t,x)=>ins.push({t,x});
+  const dOut=Kp.prod>0?(K.prod/Kp.prod-1)*100:null;
+  if(dOut!==null) I(dOut>=0?'good':Math.abs(dOut)>15?'low':'warn',`Output was ${repMt(K.prod)} MT, ${dOut>=0?'up':'down'} ${Math.abs(dOut).toFixed(1)}% on the prior period (${repMt(Kp.prod)} MT). ${Math.abs(eDays)>=Math.abs(eRate)?'Production days':'Daily run-rate'} explains most of the change.`);
+  if(util!==null) I(util<0.7?'warn':'info',`Average output on a running day is ${(util*100).toFixed(0)}% of your demonstrated capacity (P90 ${repMt(cap90)} MT/day), leaving about ${repMt(Math.max(0,cap90-K.avg)*K.days)} MT of unused capacity over the period.`);
+  if(K.rec!==null&&Kp.rec!==null){ const d=K.rec-Kp.rec; I(Math.abs(d)<0.1?'info':d>0?'good':'warn',`Recovery is ${K.rec.toFixed(2)}% (${d>=0?'+':''}${d.toFixed(2)} pts vs prior). ${recentFlags>0?recentFlags+' control-chart signal(s) in the last 14 days — the process may be drifting.':'No recent control-chart signals.'}`); }
+  if(depot.arr.length>=3) I(depot.hhi>0.25?'warn':'info',`Top 3 depots take ${depot.top3.toFixed(0)}% of Supplyco dispatch (HHI ${depot.hhi.toFixed(2)} — ${depot.hhi<0.15?'diversified':depot.hhi<0.25?'moderate':'concentrated'}).`);
+  const so=fg.filter(x=>x.mc&&x.mc.p14>=15).sort((a,b)=>b.mc.p14-a.mc.p14)[0];
+  if(so) I(so.mc.p14>=40?'low':'warn',`${so.name} has a ${so.mc.p14.toFixed(0)}% simulated chance of running out within 14 days (stock ${fmt(so.st)} bags, ${fmt(so.d28,1)} bags/day dispatched).`);
+  if(wmc) I(wmc.mid<14?'low':'info',`With no new wheat inward, simulated stock lasts a median ${wmc.mid.toFixed(0)} days (P10 ${wmc.lo.toFixed(0)} days, P90 ${wmc.hi.toFixed(0)}).`);
+  if(cmc) I(cmc.pNeg>=20?'low':'info',`Cash simulation: ${cmc.pNeg.toFixed(0)}% probability the cash balance dips below zero within 30 days; median balance in 30 days ₹${fmt(cmc.mid)}.`);
+  const miss=woRows.filter(w=>w.st==='Will miss').length; if(miss>0) I('low',`${miss} work order${miss===1?'':'s'} will miss the deadline at the current dispatch pace.`);
+  if(hP&&wkP.length>=4){ const last4=anMean(wkP.slice(-4).map(x=>x.v)), nxt=anMean(hP.out.map(o=>o.f)); if(last4>0) I('info',`Forecast: next 4 weeks average ${repMt(nxt)} MT/week against ${repMt(last4)} MT/week over the last 4 (${(nxt/last4-1)*100>=0?'+':''}${((nxt/last4-1)*100).toFixed(1)}%).`); }
+  if(bestLag&&Math.abs(bestLag.r)>=0.3) I('info',`Dispatch follows production with a lag of ${bestLag.k} day${bestLag.k===1?'':'s'} (correlation ${bestLag.r.toFixed(2)}).`);
+  I(an.filter(a=>a.sev===3).length>0?'low':an.length>0?'warn':'good',`${an.length} anomaly flag(s) in this period (${an.filter(a=>a.sev===3).length} high severity). Benford test: ${bVerdict.toLowerCase()}.`);
+
+  return {cur,prv,all,K,Kp,cap90,util,daily,sPK,sDK,wkP,wkD,hP,hD,trendP,wdP,wdD,wdC,recSeries,spc,eDays,eRate,fg:fgS,mix,depot,district,scheme,partyRows,pHhi,pTop,retRows,woRows,wheat,wmc,grainPerDay,catIn,catOut,burn,runway,cmc,closing:D.cashClose,bc,bn,bExp,bMad,bChi,bVerdict,dups,cashOut2,backd,roundShare,qS,qSp,cpkRows,lags,bestLag,an,risks,sc,score,grade,ins,yC,yP,pf:D.pf};
+}
+
+// ── chart helpers ──
+function AnChart({vals,labels,hLines,flags,col,band,s2,lo,hi,h,fmtY}){
+  const H=h||220;
+  const v=vals.map(x=>(x===null||x===undefined||isNaN(x))?null:x);
+  const nn=(a)=>(a||[]).filter(x=>x!==null&&x!==undefined&&!isNaN(x));
+  const ok=[...nn(v),...nn(s2),...nn(lo),...nn(hi)];
+  if(nn(v).length<2) return <div className="dim" style={{padding:20,textAlign:'center',fontSize:13}}>Not enough data for this chart.</div>;
+  const W=720,L=56,R=14,T=12,B=26;
+  const ex=(hLines||[]).map(l=>l.y);
+  let mn=Math.min(...ok,...ex), mx=Math.max(...ok,...ex); if(mn===mx){ mn-=1; mx+=1; } const pd=(mx-mn)*0.08; mn-=pd; mx+=pd;
+  const x=(i)=>L+i*(W-L-R)/Math.max(1,v.length-1), y=(q)=>T+(mx-q)/(mx-mn)*(H-T-B);
+  const f=fmtY||((q)=>Number(q.toFixed(2)));
+  const line=(arr)=>{ let p='',pen=false; arr.forEach((q,i)=>{ if(q===null||q===undefined||isNaN(q)){ pen=false; return; } p+=(pen?'L':'M')+x(i).toFixed(1)+' '+y(q).toFixed(1)+' '; pen=true; }); return p; };
+  let bandPts='';
+  if(lo&&hi){ const idx=hi.map((q,i)=>(q!==null&&q!==undefined)?i:-1).filter(i=>i>=0); if(idx.length>=2) bandPts=idx.map(i=>x(i)+','+y(hi[i])).concat(idx.slice().reverse().map(i=>x(i)+','+y(lo[i]))).join(' '); }
+  const fl=new Set((flags||[]).map(z=>z.i));
+  const lab={fontSize:10,fill:'var(--muted)',fontFamily:'var(--mono)'};
+  const xl=[0,Math.floor((v.length-1)/2),v.length-1].filter((q,i,a)=>a.indexOf(q)===i);
+  return(<div style={{overflowX:'auto'}}><svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:520,height:'auto'}}>
+    {band&&<rect x={L} y={y(band[1])} width={W-L-R} height={Math.max(0,y(band[0])-y(band[1]))} style={{fill:'var(--green)',opacity:0.08}}/>}
+    {[0,1,2,3,4].map(i=>{ const t=mn+(mx-mn)*i/4; return <g key={i}><line x1={L} x2={W-R} y1={y(t)} y2={y(t)} style={{stroke:'var(--border)'}}/><text x={L-6} y={y(t)+3} textAnchor="end" style={lab}>{f(t)}</text></g>; })}
+    {bandPts&&<polygon points={bandPts} style={{fill:'var(--amber)',opacity:0.15}}/>}
+    {(hLines||[]).map((l,i)=>(<g key={'h'+i}><line x1={L} x2={W-R} y1={y(l.y)} y2={y(l.y)} style={{stroke:l.col||'var(--muted)',strokeDasharray:l.dash===false?'none':'5 4',strokeWidth:1.5}}/><text x={W-R-2} y={y(l.y)-3} textAnchor="end" style={{...lab,fill:l.col||'var(--muted)'}}>{l.label}</text></g>))}
+    <path d={line(v)} style={{fill:'none',stroke:col||'var(--blue)',strokeWidth:2}}/>
+    {s2&&<path d={line(s2)} style={{fill:'none',stroke:'var(--amber)',strokeWidth:2,strokeDasharray:'6 3'}}/>}
+    {v.length<=100&&v.map((q,i)=>q===null?null:<circle key={i} cx={x(i)} cy={y(q)} r={fl.has(i)?5:2.5} style={{fill:fl.has(i)?'var(--red)':(col||'var(--blue)'),stroke:'var(--surface)',strokeWidth:1}}><title>{`${labels?labels[i]:i}: ${f(q)}${fl.has(i)?' — signal':''}`}</title></circle>)}
+    {v.length>100&&v.map((q,i)=>fl.has(i)?<circle key={i} cx={x(i)} cy={y(q)} r={4} style={{fill:'var(--red)'}}><title>{`${labels?labels[i]:i}: ${f(q)}`}</title></circle>:null)}
+    {labels&&xl.map(i=><text key={'x'+i} x={x(i)} y={H-8} textAnchor={i===0?'start':i===v.length-1?'end':'middle'} style={lab}>{labels[i]}</text>)}
+  </svg></div>);
+}
+function AnGauge({score,grade}){
+  const r=52,c=2*Math.PI*r,o=c*(1-score/100),col=anScoreCol(score);
+  return(<svg viewBox="0 0 140 140" style={{width:150,height:150,flex:'none'}}>
+    <circle cx="70" cy="70" r={r} fill="none" strokeWidth="12" style={{stroke:'var(--border)'}}/>
+    <circle cx="70" cy="70" r={r} fill="none" strokeWidth="12" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={o} transform="rotate(-90 70 70)" style={{stroke:col}}/>
+    <text x="70" y="72" textAnchor="middle" style={{fontSize:32,fontWeight:700,fill:col}}>{Math.round(score)}</text>
+    <text x="70" y="92" textAnchor="middle" style={{fontSize:11,fill:'var(--muted)'}}>Grade {grade}</text>
+  </svg>);
+}
+function AnRadar({items}){
+  const n=items.length; if(n<3) return null;
+  const cx=150,cy=130,R=95;
+  const pt=(i,v)=>{ const a=-Math.PI/2+2*Math.PI*i/n; return [cx+R*v/100*Math.cos(a),cy+R*v/100*Math.sin(a)]; };
+  const poly=(g)=>items.map((it,i)=>pt(i,g===null?it.score:g).join(',')).join(' ');
+  return(<svg viewBox="0 0 300 260" style={{width:'100%',maxWidth:360}}>
+    {[25,50,75,100].map(g=><polygon key={g} points={poly(g)} style={{fill:'none',stroke:'var(--border)'}}/>)}
+    {items.map((it,i)=>{ const p=pt(i,100); return <line key={i} x1={cx} y1={cy} x2={p[0]} y2={p[1]} style={{stroke:'var(--border)'}}/>; })}
+    <polygon points={poly(null)} style={{fill:'var(--blue)',fillOpacity:0.18,stroke:'var(--blue)',strokeWidth:2}}/>
+    {items.map((it,i)=>{ const p=pt(i,118); return <text key={i} x={p[0]} y={p[1]+3} textAnchor="middle" style={{fontSize:9,fill:'var(--muted)',fontFamily:'var(--mono)'}}>{it.label}</text>; })}
+  </svg>);
+}
+function AnHeatCal({dates,vals,col}){
+  const mx=Math.max(...vals,1), off=(rjD(dates[0]).getDay()+6)%7;
+  const cells=[...Array(off).fill(null),...dates.map((d,i)=>({d,v:vals[i]}))];
+  return(<div style={{overflowX:'auto'}}><div style={{display:'grid',gridTemplateRows:'repeat(7,13px)',gridAutoFlow:'column',gridAutoColumns:'13px',gap:2}}>
+    {cells.map((c,i)=>c?<div key={i} title={`${c.d}: ${repMt(c.v)} MT`} style={{background:c.v>0?`color-mix(in srgb, ${col||'var(--green)'} ${Math.round(25+c.v/mx*75)}%, var(--surface2))`:'var(--border)',borderRadius:2}}/>:<div key={i}/>)}
+  </div><div className="dim" style={{fontSize:11,marginTop:6}}>Each square is a day (rows Mon→Sun). Darker = higher output. Grey = no production.</div></div>);
+}
+const AN_SEV={1:'var(--blue)',2:'var(--amber)',3:'var(--red)'};
+const AN_TABS=[['exec','🧠 Command center'],['prod','⚙ Production'],['disp','🚛 Dispatch & customers'],['inv','📦 Inventory'],['fin','₹ Cash & finance'],['fc','🔮 Forecast & simulation'],['anom','🕵 Anomalies & forensics'],['risk','🛡 Risk register']];
+
+function Analysis(){
+  const [pr,setPr]=useState('90');
+  const [from,setFrom]=useState(licShift(today,-89));
+  const [to,setTo]=useState(today);
+  const [tab,setTab]=useState('exec');
+  const [D,setD]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [lead,setLead]=useState(3);
+  const [svc,setSvc]=useState('95');
+  const [wp,setWp]=useState(0), [wd,setWd]=useState(0), [wg,setWg]=useState(0);
+
+  useEffect(()=>{
+    if(!from||!to||from>to||to>today){ setErr('Choose a valid range: From must not be after To, and To must not be in the future.'); return; }
+    if(rjDiff(from,to)>400){ setErr('Please choose a range of at most 400 days.'); return; }
+    let c=false; setLoading(true); setErr('');
+    anLoad(from,to).then(d=>{ if(!c){ setD(d); setLoading(false); } }).catch(e=>{ if(!c){ setErr(e.message||String(e)); setLoading(false); } });
+    return ()=>{c=true;};
+  },[from,to]);
+
+  const A=React.useMemo(()=>{ if(!D) return null; try{ return anCompute(D); }catch(e){ console.error(e); return {error:e.message}; } },[D]);
+
+  const setPreset=(k,n)=>{ setPr(k); setFrom(licShift(today,-(n-1))); setTo(today); };
+  const csv=()=>{ if(!A||A.error) return; downloadCSV(`analysis_daily_${from}_to_${to}.csv`,['Date','Production kg','Dispatch kg','Wheat used kg','Cash in','Cash out'],A.daily.map(d=>[d.date,r3(d.prod),r3(d.disp),r3(d.grain),r3(d.cin),r3(d.cout)])); };
+  const tabBtn=(id,l)=><button key={id} className={`btn btn-sm ${tab===id?'btn-amber':'btn-ghost'}`} onClick={()=>setTab(id)}>{l}</button>;
+  const alertIcon={good:'✓',info:'💡',warn:'⚠',low:'✕'};
+  const alertType={good:'green',info:'amber',warn:'amber',low:'red'};
+  const zs=AN_Z[svc]||1.645;
+
+  return(<div className="page" style={{maxWidth:1300}}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Reports</div>
+        <div className="page-title">Executive analysis</div>
+      </div>
+      {ax('analysis','download')&&<button className="btn btn-ghost" onClick={csv} disabled={!A||!!A.error}>⬇ Daily dataset CSV</button>}
+    </div>
+
+    <div className="card" style={{marginBottom:16,display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        {[['30','30 days',30],['90','90 days',90],['180','180 days',180],['365','12 months',365]].map(([k,l,n])=><button key={k} className={`btn btn-sm ${pr===k?'btn-amber':'btn-ghost'}`} onClick={()=>setPreset(k,n)}>{l}</button>)}
+      </div>
+      <Field label="From"><input type="date" className="form-input" style={{width:150}} max={today} value={from} onChange={e=>{setFrom(e.target.value);setPr('custom');}}/></Field>
+      <Field label="To"><input type="date" className="form-input" style={{width:150}} max={today} value={to} onChange={e=>{setTo(e.target.value);setPr('custom');}}/></Field>
+      <div className="dim" style={{fontSize:12,maxWidth:340}}>Every figure is compared with the equal-length period just before this one. Forecasts and simulations also use that earlier period as history.</div>
+    </div>
+
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>{AN_TABS.map(([id,l])=>tabBtn(id,l))}</div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not build the analysis" sub={err}/>}
+    {loading&&<Loading/>}
+    {!loading&&A&&A.error&&<Alert type="red" icon="⚠" title="The analysis hit an unexpected error" sub={A.error}/>}
+
+    {!loading&&A&&!A.error&&!err&&(()=>{
+      const {K,Kp}=A;
+      const mtBar=(v)=>repMt(v)+' MT';
+
+      // ───────── COMMAND CENTER ─────────
+      if(tab==='exec') return(<>
+        <div className="card" style={{marginBottom:16,display:'flex',gap:24,flexWrap:'wrap',alignItems:'center'}}>
+          <AnGauge score={A.score} grade={A.grade}/>
+          <div style={{flex:1,minWidth:280}}>
+            <div className="section-label">Operational health index</div>
+            <div style={{fontSize:13,marginBottom:10}}>Composite of {A.sc.length} equally weighted dimensions, each scored 0–100. Hover or read the detail on each bar.</div>
+            <TrkHBars items={A.sc.map(s=>({label:s.label,value:s.score,col:anScoreCol(s.score),sub:s.detail}))} max={100} fmtV={(v)=>Math.round(v)+'/100'}/>
+          </div>
+          <AnRadar items={A.sc}/>
+        </div>
+
+        <div className="stat-grid">
+          <StatCard label="Output" value={repMt(K.prod)+' MT'} sub={anDl(K.prod,Kp.prod)} col={anDc(K.prod,Kp.prod)}/>
+          <StatCard label="Dispatched" value={repMt(K.disp)+' MT'} sub={anDl(K.disp,Kp.disp)} col={anDc(K.disp,Kp.disp)}/>
+          <StatCard label="Recovery" value={K.rec===null?'—':K.rec.toFixed(2)+'%'} sub={K.rec!==null&&Kp.rec!==null?`${K.rec-Kp.rec>=0?'▲':'▼'} ${Math.abs(K.rec-Kp.rec).toFixed(2)} pts vs prior`:''} col={K.rec!==null&&Kp.rec!==null&&K.rec<Kp.rec?'var(--red)':'var(--green)'}/>
+          <StatCard label="Plant availability" value={K.wd?(K.days/K.wd*100).toFixed(0)+'%':'—'} sub={`${K.days} of ${K.wd} working days`} col="var(--blue)"/>
+          <StatCard label="Capacity utilisation" value={A.util===null?'—':(A.util*100).toFixed(0)+'%'} sub="vs demonstrated P90 day" col="var(--purple)"/>
+          <StatCard label="Net cash flow" value={'₹'+fmt(K.cin-K.cout)} sub={anDl(K.cin,K.cout)||''} col={K.cin>=K.cout?'var(--green)':'var(--red)'}/>
+        </div>
+
+        <div className="section-label">Insights engine</div>
+        {A.ins.map((x,i)=><Alert key={i} type={alertType[x.t]} icon={alertIcon[x.t]} title={x.x}/>)}
+
+        <div className="two-col" style={{marginTop:20,alignItems:'start'}}>
+          <div className="card">
+            <div className="section-label">Variance bridge — why output changed (MT)</div>
+            <TrkHBars fmtV={mtBar} items={[
+              {label:`${A.eDays>=0?'▲':'▼'} Production days (${K.days-Kp.days>=0?'+':''}${K.days-Kp.days})`,value:Math.abs(A.eDays),col:A.eDays>=0?'var(--green)':'var(--red)'},
+              {label:`${A.eRate>=0?'▲':'▼'} Run-rate per day`,value:Math.abs(A.eRate),col:A.eRate>=0?'var(--green)':'var(--red)'}]}/>
+            <div className="dim" style={{fontSize:12,marginTop:8}}>Prior {repMt(Kp.prod)} MT → now {repMt(K.prod)} MT. Days effect = change in running days × old rate. Rate effect = change in daily rate × new days. The two add up exactly.</div>
+          </div>
+          <div className="card">
+            <div className="section-label">Quality, power & compliance snapshot</div>
+            <div style={{fontSize:13,lineHeight:1.9}}>
+              <div>🧪 Tests: <strong>{A.qS.n}</strong> · pass rate <strong>{A.qS.n?(A.qS.pass/A.qS.n*100).toFixed(0)+'%':'—'}</strong>{A.qSp.n>0&&<span className="dim"> (prior {(A.qSp.pass/A.qSp.n*100).toFixed(0)}%)</span>}</div>
+              <div>⚡ Power factor: <strong>{A.pf?pf3(A.pf.a.pf):'no readings'}</strong>{A.pf&&<span className="dim"> (target {A.pf.S.target})</span>}</div>
+              <div>🛡 Open risks: <strong>{A.risks.length}</strong> · high (score ≥15): <strong style={{color:A.risks.filter(r=>r.s>=15).length?'var(--red)':'var(--green)'}}>{A.risks.filter(r=>r.s>=15).length}</strong></div>
+              <div>🕵 Anomaly flags: <strong>{A.an.length}</strong> · high severity: <strong style={{color:A.an.filter(r=>r.sev===3).length?'var(--red)':'var(--green)'}}>{A.an.filter(r=>r.sev===3).length}</strong></div>
+            </div>
+          </div>
+        </div>
+        <div className="dim" style={{fontSize:12,marginTop:16,maxWidth:820}}>Method: availability = running days ÷ working days (Sundays off); stability = 100 − CV of daily output; yield control = 100 − 20 × (σ ÷ mean) of daily recovery; service = work orders not overdue; FG cover full marks at 7–30 days; wheat cover full marks at 14+ days; cash cover = receipts ÷ payments; quality = pass rate; compliance penalises expired and escalated licences. These are management heuristics, not accounting figures.</div>
+      </>);
+
+      // ───────── PRODUCTION ─────────
+      if(tab==='prod'){
+        const labels=A.cur;
+        const ma=anMA(A.sPK.map(x=>x/1000),7);
+        const spc=A.spc, rs=A.recSeries;
+        return(<>
+          <div className="stat-grid">
+            <StatCard label="Output" value={repMt(K.prod)+' MT'} sub={anDl(K.prod,Kp.prod)} col={anDc(K.prod,Kp.prod)}/>
+            <StatCard label="Avg per running day" value={repMt(K.avg)+' MT'} sub={anDl(K.avg,Kp.avg)} col={anDc(K.avg,Kp.avg)}/>
+            <StatCard label="Demonstrated capacity" value={repMt(A.cap90)+' MT'} sub={`P90 day · utilisation ${A.util===null?'—':(A.util*100).toFixed(0)+'%'}`} col="var(--purple)"/>
+            <StatCard label="Best day" value={repMt(K.best)+' MT'} sub={`${K.days} running days`} col="var(--green)"/>
+            <StatCard label="Throughput CV" value={(K.cv*100).toFixed(1)+'%'} sub="lower = steadier" col={K.cv>0.25?'var(--amber)':'var(--green)'}/>
+            <StatCard label="Weekly trend" value={(A.trendP.slope/1000>=0?'+':'')+repMt(A.trendP.slope)+' MT/wk'} sub={`R² ${A.trendP.r2.toFixed(2)} over ${A.wkP.length} weeks`} col={A.trendP.slope>=0?'var(--green)':'var(--red)'}/>
+          </div>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="section-label">Daily output (MT) with 7-day moving average</div>
+            <AnChart vals={A.sPK.map(x=>x/1000)} s2={ma} labels={labels} col="var(--green)" hLines={[{y:A.cap90/1000,label:'P90 capacity',col:'var(--purple)'}]}/>
+          </div>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="section-label">Yield control chart (I-MR) — daily recovery %</div>
+            <AnChart vals={rs.map(x=>x.v)} labels={rs.map(x=>x.date)} flags={spc.flags} col="var(--blue)" h={240}
+              hLines={[{y:spc.mean,label:`mean ${spc.mean.toFixed(2)}`,col:'var(--blue)',dash:false},{y:spc.ucl,label:'UCL',col:'var(--red)'},{y:spc.lcl,label:'LCL',col:'var(--red)'}]}/>
+            <div className="dim" style={{fontSize:12,marginTop:6}}>Limits are mean ± 3σ where σ comes from the average moving range ÷ 1.128. Red dots break a rule: beyond 3σ, 8 in a row on one side, or 2 of 3 beyond 2σ. {spc.flags.length} signal(s) across the loaded history.</div>
+          </div>
+          <div className="card" style={{marginBottom:16}}><div className="section-label">Output heat calendar</div><AnHeatCal dates={A.cur} vals={A.sPK} col="var(--green)"/></div>
+          <div className="two-col" style={{alignItems:'start'}}>
+            <div className="card"><div className="section-label">Average output by weekday (MT)</div><TrkHBars items={A.wdP.map(w=>({label:w.name,value:w.v,sub:`${w.n} days`,col:'var(--green)'}))} fmtV={mtBar}/></div>
+            <div className="card"><div className="section-label">Recovery by scheme</div>
+              <RTable head={['Scheme','Wheat (MT)','Finished (MT)','By-prod (MT)','Recovery']} empty="No recipe data." rows={Object.keys(A.yC.schemes).sort().map(k=>{ const s=A.yC.schemes[k]; return [<strong>{k}</strong>,repMt(s.grain),repMt(s.finished),repMt(s.byp),repPct(s.grain>0?s.finishedCov/s.grain*100:null)]; })}/></div>
+          </div>
+          <div className="section-label" style={{marginTop:20}}>Product mix and Pareto (by weight)</div>
+          <RTable head={['Product','Bags','Share','Prior share','Δ mix (pts)','Cumulative']} empty="No production in this period." rows={A.mix.map(x=>[<strong>{x.name}</strong>,fmt(x.bC),x.share.toFixed(1)+'%',x.pshare.toFixed(1)+'%',<span style={{color:x.share-x.pshare>=0?'var(--green)':'var(--red)'}}>{(x.share-x.pshare>=0?'+':'')+(x.share-x.pshare).toFixed(1)}</span>,x.cum.toFixed(0)+'%'])}/>
+        </>);
+      }
+
+      // ───────── DISPATCH ─────────
+      if(tab==='disp'){
+        const par=(P,title)=>(<div className="card" style={{marginBottom:16}}>
+          <div className="section-label">{title} — concentration HHI {P.hhi.toFixed(2)} · top 3 = {P.top3.toFixed(0)}%</div>
+          <RTable head={['Name','Bags','MT','Share','Cumulative','Class','Δ vs prior']} empty="No dispatch in this period." rows={P.arr.slice(0,15).map(x=>[<strong>{x.k}</strong>,fmt(x.bags),repMt(x.kg),x.share.toFixed(1)+'%',x.cum.toFixed(0)+'%',<span className={`badge ${x.cls==='A'?'badge-green':x.cls==='B'?'badge-blue':'badge-muted'}`}>{x.cls}</span>,x.pk>0?<span style={{color:x.kg>=x.pk?'var(--green)':'var(--red)'}}>{x.kg>=x.pk?'▲':'▼'} {Math.abs((x.kg/x.pk-1)*100).toFixed(0)}%</span>:'new'])}/>
+        </div>);
+        return(<>
+          <div className="stat-grid">
+            <StatCard label="Dispatched" value={repMt(K.disp)+' MT'} sub={anDl(K.disp,Kp.disp)} col={anDc(K.disp,Kp.disp)}/>
+            <StatCard label="Depots served" value={A.depot.arr.length} sub={`top 3 take ${A.depot.top3.toFixed(0)}%`} col="var(--blue)"/>
+            <StatCard label="Depot HHI" value={A.depot.hhi.toFixed(2)} sub={A.depot.hhi<0.15?'diversified':A.depot.hhi<0.25?'moderate':'concentrated'} col={A.depot.hhi>0.25?'var(--amber)':'var(--green)'}/>
+            <StatCard label="Private parties" value={A.partyRows.length} sub={`largest = ${A.pTop.toFixed(0)}% of volume`} col="var(--purple)"/>
+            <StatCard label="Dispatch ↔ production lag" value={A.bestLag?A.bestLag.k+' day'+(A.bestLag.k===1?'':'s'):'—'} sub={A.bestLag?`correlation ${A.bestLag.r.toFixed(2)}`:''} col="var(--muted)"/>
+          </div>
+          {par(A.depot,'Supplyco dispatch by depot (ABC / Pareto)')}
+          <div className="two-col" style={{alignItems:'start'}}>{par(A.district,'By district')}{par(A.scheme,'By scheme')}</div>
+
+          <div className="section-label">Work-order completion forecast (queue ordered by deadline, at the last 28 days' dispatch pace)</div>
+          <RTable head={['Work order','Scheme','Pending pkts','Days left','Pace (bags/day)','ETA (days)','Slack','Verdict']} empty="No open work orders with a deadline." rows={A.woRows.map(w=>[<strong>{w.x.wo.work_order_no}</strong>,w.x.wo.scheme||'—',fmt(w.x.balPkts),w.x.daysLeft,fmt(w.rate,1),isFinite(w.eta)?w.eta.toFixed(1):'∞',isFinite(w.slack)?w.slack.toFixed(1):'—',<span style={{fontWeight:700,color:w.st==='On track'?'var(--green)':w.st==='Tight'?'var(--amber)':'var(--red)'}}>{w.st}</span>])}/>
+
+          <div className="section-label" style={{marginTop:24}}>Private customers — segmentation by their own buying rhythm</div>
+          <RTable head={['Party','This period (MT)','Prior (MT)','Order days','Avg gap (days)','Days since last','Segment']} empty="No private dispatches." rows={A.partyRows.slice(0,25).map(p=>[<strong>{p.k}</strong>,repMt(p.kgC),repMt(p.kgP),p.f,p.gap===null?'—':p.gap.toFixed(0),p.rec,<span className={`badge ${p.seg==='Champion'||p.seg==='Active'?'badge-green':p.seg==='At risk'?'badge-amber':p.seg==='Lapsed'?'badge-red':'badge-muted'}`}>{p.seg}</span>])}/>
+          <div className="dim" style={{fontSize:12,marginTop:6}}>“At risk” = silent for more than twice the party's usual gap; “Lapsed” = more than four times. Private-party concentration HHI {A.pHhi.toFixed(2)}.</div>
+
+          <div className="section-label" style={{marginTop:24}}>Returns quality</div>
+          <RTable head={['Product','Returned bags','Dispatched bags','Return rate']} empty="No returns in this period." rows={A.retRows.map(r=>[<strong>{r.name}</strong>,fmt(r.ret),fmt(r.disp),<span style={{color:r.rate>1?'var(--red)':'var(--muted)'}}>{r.rate===null?'—':r.rate.toFixed(2)+'%'}</span>])}/>
+        </>);
+      }
+
+      // ───────── INVENTORY ─────────
+      if(tab==='inv'){
+        const abcx={}; A.fg.forEach(x=>{ const k=x.abc+x.xyz; abcx[k]=(abcx[k]||0)+1; });
+        return(<>
+          <div className="card" style={{marginBottom:16,display:'flex',gap:16,alignItems:'flex-end',flexWrap:'wrap'}}>
+            <Field label="Replenishment lead time (days)"><input type="number" min="0" className="form-input" style={{width:130}} value={lead} onChange={e=>setLead(Number(e.target.value)||0)}/></Field>
+            <Field label="Target service level"><select className="form-input" style={{width:130}} value={svc} onChange={e=>setSvc(e.target.value)}>{Object.keys(AN_Z).map(k=><option key={k} value={k}>{k}%</option>)}</select></Field>
+            <div className="dim" style={{fontSize:12,maxWidth:520}}>Safety stock = z × σ(daily dispatch) × √lead time. Reorder point = average daily dispatch × lead time + safety stock. Based on the last 28 days.</div>
+          </div>
+          <div className="section-label">Finished goods — cover, ABC-XYZ class and reorder points (bags)</div>
+          <RTable head={['Product','Stock','Dispatch / day','Cover (days)','ABC','XYZ','Safety stock','Reorder point','Position']} empty="No finished-goods data." rows={A.fg.map(x=>{ const ss=zs*x.dSd*Math.sqrt(lead), rop=x.d28*lead+ss; return [<strong>{x.name}</strong>,fmt(x.st),fmt(x.d28,1),x.cover===null?'—':<span style={{color:x.cover<3?'var(--red)':x.cover<7?'var(--amber)':'var(--green)',fontWeight:700}}>{x.cover.toFixed(1)}</span>,<span className={`badge ${x.abc==='A'?'badge-green':x.abc==='B'?'badge-blue':'badge-muted'}`}>{x.abc}</span>,x.xyz,fmt(ss,0),fmt(rop,0),x.d28>0?(x.st<rop?<span style={{color:'var(--red)',fontWeight:700}}>Below reorder point</span>:<span style={{color:'var(--green)'}}>OK</span>):'—']; })}/>
+          <div className="dim" style={{fontSize:12,margin:'6px 0 20px'}}>ABC = share of dispatched weight (A ≈ top 80%). XYZ = demand variability across weeks: X steady (CV &lt; 0.5), Y variable, Z erratic. Mix: {Object.keys(abcx).sort().map(k=>`${k}×${abcx[k]}`).join(' · ')||'—'}.</div>
+
+          <div className="section-label">Wheat — cover, shrinkage and reconciliation (MT)</div>
+          <RTable head={['Scheme','Inwards','Used (recipes)','Sold privately','Count adj.','Stock now','Use / day','Cover (days)','Shrinkage','Still to lift','Annual turns']} empty="No wheat data." rows={A.wheat.map(w=>[<strong>{w.k}</strong>,repMt(w.inw),repMt(w.used),repMt(w.sold),repSMt(w.adj),repMt(w.stock),repMt(w.perDay),w.cover===null?'—':<span style={{fontWeight:700,color:w.cover<7?'var(--red)':w.cover<14?'var(--amber)':'var(--green)'}}>{w.cover.toFixed(1)}</span>,w.shrink===null?'—':<span style={{color:w.shrink>0.5?'var(--red)':'var(--muted)'}}>{w.shrink.toFixed(2)}%</span>,repMt(w.pend),w.turns===null?'—':w.turns.toFixed(1)+'×'])}/>
+          <div className="dim" style={{fontSize:12,marginTop:6}}>Shrinkage = net count shortage ÷ wheat used. Turns = annualised daily use ÷ current stock.</div>
+        </>);
+      }
+
+      // ───────── FINANCE ─────────
+      if(tab==='fin'){
+        const cat=(P,dir)=>(<div className="card"><div className="section-label">{dir==='in'?'Receipts':'Payments'} by type — Pareto</div>
+          <TrkHBars fmtV={(v)=>'₹'+fmt(v)} items={P.arr.slice(0,10).map(x=>({label:x.k,value:x.v,sub:x.share.toFixed(0)+'%'+(x.pv>0?` · ${x.v>=x.pv?'▲':'▼'}${Math.abs((x.v/x.pv-1)*100).toFixed(0)}%`:''),col:dir==='in'?'var(--green)':'var(--red)'}))}/></div>);
+        return(<>
+          <div className="stat-grid">
+            <StatCard label="Receipts" value={'₹'+fmt(K.cin)} sub={anDl(K.cin,Kp.cin)} col={anDc(K.cin,Kp.cin)}/>
+            <StatCard label="Payments" value={'₹'+fmt(K.cout)} sub={anDl(K.cout,Kp.cout)} col={anDc(K.cout,Kp.cout,true)}/>
+            <StatCard label="Closing balance" value={A.closing===null?'—':'₹'+fmt(A.closing)} sub="latest submitted day" col="var(--blue)"/>
+            <StatCard label="Net burn / day" value={(A.burn>0?'₹':'+₹')+fmt(Math.abs(A.burn))} sub={A.burn>0?'cash is falling':'cash is rising'} col={A.burn>0?'var(--red)':'var(--green)'}/>
+            <StatCard label="Runway" value={A.runway===null?(A.burn>0?'—':'∞'):A.runway.toFixed(0)+' days'} sub="closing ÷ daily burn" col={A.runway!==null&&A.runway<30?'var(--red)':'var(--green)'}/>
+            <StatCard label="P(cash < 0 in 30 d)" value={A.cmc?A.cmc.pNeg.toFixed(0)+'%':'—'} sub="Monte-Carlo, 1,000 runs" col={A.cmc&&A.cmc.pNeg>=20?'var(--red)':'var(--green)'}/>
+          </div>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="section-label">Daily receipts vs payments (₹ thousand) — cumulative net</div>
+            <AnChart vals={A.daily.reduce((a,d)=>{ a.push((a.length?a[a.length-1]:0)+(d.cin-d.cout)/1000); return a; },[])} labels={A.cur} col="var(--blue)" fmtY={(q)=>Number(q.toFixed(0))+'k'} hLines={[{y:0,label:'break-even',col:'var(--muted)'}]}/>
+          </div>
+          <div className="two-col" style={{alignItems:'start'}}>{cat(A.catIn,'in')}{cat(A.catOut,'out')}</div>
+          {A.cmc&&<div className="card" style={{marginTop:16}}><div className="section-label">30-day cash balance distribution (bootstrapped from the last 60 days of daily net flow)</div>
+            <RTable head={['Pessimistic (P10)','Median (P50)','Optimistic (P90)','Chance of going negative']} rows={[[ '₹'+fmt(A.cmc.lo),'₹'+fmt(A.cmc.mid),'₹'+fmt(A.cmc.hi),<strong style={{color:A.cmc.pNeg>=20?'var(--red)':'var(--green)'}}>{A.cmc.pNeg.toFixed(1)}%</strong>]]}/></div>}
+          <div className="card" style={{marginTop:16}}><div className="section-label">Average payments by weekday (₹)</div><TrkHBars items={A.wdC.map(w=>({label:w.name,value:w.v,col:'var(--red)'}))} fmtV={(v)=>'₹'+fmt(v)}/></div>
+        </>);
+      }
+
+      // ───────── FORECAST & SIMULATION ─────────
+      if(tab==='fc'){
+        const fcChart=(wk,h,title)=>{
+          if(!h||wk.length<5) return <div className="card" style={{marginBottom:16}}><div className="section-label">{title}</div><div className="dim" style={{fontSize:13}}>Needs at least 5 complete weeks of history. Choose a longer range.</div></div>;
+          const n=wk.length, hist=wk.map(x=>x.v/1000);
+          const pad=(arr)=>[...Array(n).fill(null),...arr];
+          const vals=[...hist,...Array(4).fill(null)];
+          const mean=h.out.map(o=>o.f/1000);
+          const s2=[...Array(n-1).fill(null),hist[n-1],...mean];
+          const lo=[...Array(n-1).fill(null),hist[n-1],...h.out.map(o=>o.lo/1000)], hi=[...Array(n-1).fill(null),hist[n-1],...h.out.map(o=>o.hi/1000)];
+          const labs=[...wk.map(x=>x.w),...[1,2,3,4].map(k=>'+'+k+'w')];
+          return(<div className="card" style={{marginBottom:16}}><div className="section-label">{title}</div>
+            <AnChart vals={vals} s2={s2} lo={lo} hi={hi} labels={labs} col="var(--blue)"/>
+            <div className="dim" style={{fontSize:12,marginTop:6}}>Solid = actual weekly MT. Dashed = Holt smoothing forecast; shaded = 80% band. Trend now {h.trend>=0?'+':''}{repMt(h.trend)} MT per week.</div></div>);
+        };
+        const fgRows=A.fg.filter(x=>x.mc);
+        return(<>
+          {fcChart(A.wkP,A.hP,'Weekly production forecast (MT)')}
+          {fcChart(A.wkD,A.hD,'Weekly dispatch forecast (MT)')}
+
+          <div className="section-label">Finished-goods stock-out probability — Monte-Carlo, 1,000 bootstrapped 30-day futures</div>
+          <RTable head={['Product','Stock now','P(out ≤ 7 d)','P(out ≤ 14 d)','P(out ≤ 30 d)','Day-30 stock P10','P50','P90']} empty="Not enough dispatch history." rows={fgRows.map(x=>{ const c=(p)=><strong style={{color:p>=40?'var(--red)':p>=15?'var(--amber)':'var(--green)'}}>{p.toFixed(0)}%</strong>; return [<strong>{x.name}</strong>,fmt(x.st),c(x.mc.p7),c(x.mc.p14),c(x.mc.pH),fmt(x.mc.lo,0),fmt(x.mc.mid,0),fmt(x.mc.hi,0)]; })}/>
+          <div className="dim" style={{fontSize:12,margin:'6px 0 20px'}}>Each simulated day draws a random dispatch from the last 28 days and, with the observed probability, a random production day. Negative stock at day 30 means the shortfall in bags.</div>
+
+          {A.wmc&&<><div className="section-label">Wheat — days until empty with no new inwards</div>
+            <RTable head={['Pessimistic (P10)','Median','Optimistic (P90)','Runs lasting 120+ days']} rows={[[A.wmc.lo.toFixed(0)+' days',A.wmc.mid.toFixed(0)+' days',A.wmc.hi.toFixed(0)+' days',A.wmc.capHit.toFixed(0)+'%']]}/></>}
+
+          <div className="card" style={{marginTop:24,marginBottom:16}}>
+            <div className="section-label">What-if simulator — change the run-rate and see stock cover</div>
+            <div style={{display:'flex',gap:24,flexWrap:'wrap',marginBottom:12}}>
+              <label style={{fontSize:13}}>Production {wp>=0?'+':''}{wp}%<br/><input type="range" min="-50" max="100" value={wp} onChange={e=>setWp(Number(e.target.value))}/></label>
+              <label style={{fontSize:13}}>Dispatch demand {wd>=0?'+':''}{wd}%<br/><input type="range" min="-50" max="100" value={wd} onChange={e=>setWd(Number(e.target.value))}/></label>
+              <label style={{fontSize:13}}>Wheat use {wg>=0?'+':''}{wg}%<br/><input type="range" min="-50" max="100" value={wg} onChange={e=>setWg(Number(e.target.value))}/></label>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{setWp(0);setWd(0);setWg(0);}}>Reset</button>
+            </div>
+            <RTable head={['Product','Stock','Production / day','Dispatch / day','Net / day','Result']} empty="No data." rows={A.fg.filter(x=>x.d28>0||x.p28>0).map(x=>{ const pr=x.p28*(1+wp/100), dp=x.d28*(1+wd/100), net=pr-dp; return [<strong>{x.name}</strong>,fmt(x.st),fmt(pr,1),fmt(dp,1),<span style={{color:net>=0?'var(--green)':'var(--red)'}}>{(net>=0?'+':'')+fmt(net,1)}</span>,net>=0?<span style={{color:'var(--green)'}}>Stock builds by {fmt(net*30,0)} bags in 30 days</span>:<span style={{color:x.st/(-net)<7?'var(--red)':'var(--amber)',fontWeight:700}}>Runs out in {(x.st/(-net)).toFixed(1)} days</span>]; })}/>
+            {A.grainPerDay>0&&(()=>{ const ws=anSum(A.wheat,w=>w.stock), gd=A.grainPerDay*(1+wg/100); return <div style={{fontSize:13,marginTop:10}}>🌾 Wheat: {repMt(ws)} MT in stock at {repMt(gd)} MT/day (calendar-day average) → <strong>{(ws/gd).toFixed(1)} days</strong> of cover without new inwards.</div>; })()}
+          </div>
+
+          <div className="section-label">Does dispatch follow production? Lag correlation</div>
+          <TrkHBars max={1} fmtV={(v)=>v.toFixed(2)} items={A.lags.filter(l=>l.r!==null).map(l=>({label:`Dispatch ${l.k} day${l.k===1?'':'s'} after production`,value:Math.max(0,l.r),col:A.bestLag&&A.bestLag.k===l.k?'var(--green)':'var(--blue)'}))}/>
+        </>);
+      }
+
+      // ───────── ANOMALIES ─────────
+      if(tab==='anom') return(<>
+        <div className="stat-grid">
+          <StatCard label="Anomaly flags" value={A.an.length} col={A.an.length?'var(--amber)':'var(--green)'}/>
+          <StatCard label="High severity" value={A.an.filter(a=>a.sev===3).length} col={A.an.some(a=>a.sev===3)?'var(--red)':'var(--green)'}/>
+          <StatCard label="Possible duplicates" value={A.dups.length} col={A.dups.length?'var(--amber)':'var(--green)'}/>
+          <StatCard label="Back-dated entries" value={A.backd.length} sub="keyed 3+ days late" col={A.backd.length?'var(--amber)':'var(--green)'}/>
+          <StatCard label="Round-number payments" value={A.roundShare===null?'—':A.roundShare.toFixed(0)+'%'} sub="of payments ≥ ₹5,000" col="var(--muted)"/>
+          <StatCard label="Benford MAD" value={A.bMad===null?'—':A.bMad.toFixed(4)} sub={A.bVerdict} col={A.bMad!==null&&A.bMad>=0.015?'var(--red)':'var(--green)'}/>
+        </div>
+        <div className="section-label">Anomaly feed (newest and most severe first)</div>
+        <RTable head={['Severity','Area','Date','What was found']} empty="Nothing unusual found in this period. 👏" rows={A.an.slice(0,80).map(a=>[<span style={{color:AN_SEV[a.sev],fontWeight:700}}>{a.sev===3?'HIGH':a.sev===2?'MEDIUM':'LOW'}</span>,a.cat,a.date,<span style={{whiteSpace:'normal',textAlign:'left',display:'block'}}>{a.text}</span>])}/>
+        <div className="section-label" style={{marginTop:24}}>Benford's-law first-digit test on every cash-book amount (n = {A.bn})</div>
+        {A.bn<100?<div className="dim" style={{fontSize:13}}>Needs 100+ entries with amounts of ₹10 or more. Choose a longer range.</div>:(<>
+          <TrkHBars max={Math.max(...A.bExp,...A.bc.map(c=>c/A.bn))} fmtV={(v)=>(v*100).toFixed(1)+'%'} items={[1,2,3,4,5,6,7,8,9].flatMap((d,i)=>[{label:`Digit ${d} — actual`,value:A.bc[i]/A.bn,col:Math.abs(A.bc[i]/A.bn-A.bExp[i])>0.03?'var(--red)':'var(--blue)'},{label:`Digit ${d} — expected`,value:A.bExp[i],col:'var(--border2)'}])}/>
+          <div style={{fontSize:13,marginTop:10}}>Mean absolute deviation <strong>{A.bMad.toFixed(4)}</strong> — <strong>{A.bVerdict}</strong> (Nigrini bands: &lt;0.006 close, &lt;0.012 acceptable, &lt;0.015 marginal). χ² = {A.bChi.toFixed(1)} (5% critical value 15.5 with 8 degrees of freedom).</div>
+          <div className="dim" style={{fontSize:12,marginTop:4}}>A non-conforming pattern is a prompt to look, not proof of wrongdoing: fixed-price payments (wages, rent) naturally distort digits.</div></>)}
+        <div className="section-label" style={{marginTop:24}}>Possible duplicate payments or receipts (same direction, amount and party within 3 days)</div>
+        <RTable head={['Date','Earlier entry','Amount','Party','Gap (days)']} empty="None found." rows={A.dups.slice(0,25).map(d=>[d.b.date,d.a.date,'₹'+fmt(d.b.amount),d.b.party_name||'—',d.g])}/>
+      </>);
+
+      // ───────── RISK ─────────
+      if(tab==='risk') return(<>
+        <div className="stat-grid">
+          <StatCard label="Open risks" value={A.risks.length} col="var(--blue)"/>
+          <StatCard label="High (score ≥ 15)" value={A.risks.filter(r=>r.s>=15).length} col={A.risks.some(r=>r.s>=15)?'var(--red)':'var(--green)'}/>
+          <StatCard label="Medium (8–14)" value={A.risks.filter(r=>r.s>=8&&r.s<15).length} col="var(--amber)"/>
+          <StatCard label="Low (< 8)" value={A.risks.filter(r=>r.s<8).length} col="var(--green)"/>
+        </div>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="section-label">Risk matrix — likelihood × impact (hover a cell for the names)</div>
+          <div style={{display:'grid',gridTemplateColumns:'70px repeat(5,1fr)',gap:3,maxWidth:540}}>
+            {[5,4,3,2,1].map(i=>(<React.Fragment key={i}>
+              <div className="mono dim" style={{fontSize:10,alignSelf:'center'}}>Impact {i}</div>
+              {[1,2,3,4,5].map(l=>{ const items=A.risks.filter(r=>r.L===l&&r.I===i), s=l*i, c=s>=15?'var(--red)':s>=8?'var(--amber)':'var(--green)'; return <div key={l} title={items.map(r=>r.name).join('\n')} style={{minHeight:44,borderRadius:4,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:15,background:`color-mix(in srgb, ${c} ${items.length?35:10}%, transparent)`,color:c}}>{items.length||''}</div>; })}
+            </React.Fragment>))}
+            <div/>{[1,2,3,4,5].map(l=><div key={l} className="mono dim" style={{fontSize:10,textAlign:'center'}}>Likelihood {l}</div>)}
+          </div>
+        </div>
+        <div className="section-label">Risk register (auto-built from live data)</div>
+        <RTable head={['Score','Category','Risk','L','I','Evidence']} empty="No risks detected. 🎉" rows={A.risks.map(r=>[<strong style={{color:r.s>=15?'var(--red)':r.s>=8?'var(--amber)':'var(--green)'}}>{r.s}</strong>,r.cat,<span style={{whiteSpace:'normal',textAlign:'left',display:'block'}}><strong>{r.name}</strong></span>,r.L,r.I,<span style={{whiteSpace:'normal',textAlign:'left',display:'block'}}>{r.detail}</span>])}/>
+        {A.cpkRows.length>0&&<><div className="section-label" style={{marginTop:24}}>Quality process capability (Cpk, 5+ results with a limit)</div>
+          <RTable head={['Product','Parameter','Results','Mean','σ','Cpk','Verdict']} rows={A.cpkRows.map(c=>[<strong>{c.prod}</strong>,c.name,c.n,c.m.toFixed(2),c.s.toFixed(3),c.cpk===null?'—':c.cpk.toFixed(2),c.cpk===null?'—':<span style={{fontWeight:700,color:c.cpk>=1.33?'var(--green)':c.cpk>=1?'var(--amber)':'var(--red)'}}>{c.cpk>=1.33?'Capable':c.cpk>=1?'Marginal':'Not capable'}</span>])}/></>}
+        <div className="dim" style={{fontSize:12,marginTop:16,maxWidth:820}}>Likelihood and impact are assigned by fixed rules (for example, a licence expiring within a reminder window = likelihood 3–4, impact 3). Use the register to decide what to discuss first, not as a precise probability.</div>
+      </>);
+      return null;
+    })()}
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -12140,6 +12817,7 @@ function App(){
     'my-tasks':myTasksView,
         'org-chart':<OrgChart role={access.role} employeeId={access.employee_id} visible={orgVisible} onVisible={setOrgVisible}/>,
     'reports':<Reports/>,
+    'analysis':<Analysis/>,
     'shutdowns':<Shutdowns role={access.role} employeeId={access.employee_id} userEmail={user.email} onChanged={()=>setRenewalTick(x=>x+1)}/>,
     'shutdown-settings':<ShutdownSettings/>,
         'access-settings':<AccessSettings/>,
