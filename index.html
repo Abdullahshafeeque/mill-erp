@@ -1381,6 +1381,20 @@ function Production(){
 
   if(loading) return <Loading/>;
 
+  // Products that carry a balance on a logged day but have no row of their own that day (display only)
+  const ghostRows=(date,dayRows)=>{
+    const have=new Set(dayRows.map(r=>String(r.product_id)));
+    const dts=Array.from(new Set(logs.map(l=>l.date))).sort();
+    return finishedProducts.filter(p=>!have.has(String(p.id))).map(p=>{
+      const prior=logs.filter(l=>String(l.product_id)===String(p.id)&&l.date<date).sort((a,b)=>b.date.localeCompare(a.date))[0];
+      if(!prior) return null;
+      let bal=netClosing(prior.opening_bags,prior.production_bags,prior.date,p.id), opening=bal;
+      dts.filter(d=>d>prior.date&&d<=date).forEach(d=>{ opening=bal; bal=bal-salesFor(d,p.id)+returnsFor(d,p.id)+adjFor(d,p.id)-useFor(d,p.id); });
+      const sales=salesFor(date,p.id), ret=returnsFor(date,p.id);
+      if(Math.abs(opening)<0.0005&&Math.abs(bal)<0.0005&&!sales&&!ret) return null;
+      return {p,opening,closing:bal,sales,ret};
+    }).filter(Boolean);
+  };
   const loggedDates=Array.from(new Set(logs.map(l=>l.date))).sort().reverse();
 
   return(<div className="page">
@@ -1481,7 +1495,19 @@ function Production(){
         <TableWrap><table>
           <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Sales</th><th>Returns</th><th>Closing</th></tr></thead>
           <tbody>
-            {dayRows.map(r=>{
+            {[...dayRows.map(r=>({r})),...ghostRows(date,dayRows).map(g=>({g}))].map(it=>{
+              if(it.g){
+                const g=it.g;
+                return(<tr key={'g'+g.p.id} style={{opacity:0.75}}>
+                  <td><strong>{g.p.product_name}</strong> <span className="badge badge-muted">balance only</span></td>
+                  <td className="mono dim">{fmt(g.opening)}</td>
+                  <td className="mono dim">—</td>
+                  <td className="mono" style={{color:g.sales>0?'var(--red)':'var(--dim)'}}>{g.sales>0?'−'+fmt(g.sales):'—'}</td>
+                  <td className="mono" style={{color:g.ret>0?'var(--blue)':'var(--dim)'}}>{g.ret>0?'+'+fmt(g.ret):'—'}</td>
+                  <td className="mono" style={{fontWeight:600}}>{fmt(g.closing)}</td>
+                </tr>);
+              }
+              const r=it.r;
               const sales=salesFor(r.date,r.product_id);
               const ret=returnsFor(r.date,r.product_id);
               const closing=netClosing(r.opening_bags,r.production_bags,r.date,r.product_id);
