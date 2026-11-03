@@ -136,6 +136,383 @@
 </head>
 <body>
 <div id="root"></div>
+<!-- ═══════════ LANGUAGE TRANSLATOR (standalone — delete this whole block to remove) ═══════════ -->
+<script>
+(function(){
+  var LANGS=[['en','English'],['hi','हिन्दी'],['ml','മലയാളം'],['ta','தமிழ்']];
+  var DICT={hi:{},ml:{},ta:{}};
+  var MISSING={};
+  function norm(s){return String(s).replace(/\s+/g,' ').trim().toLowerCase();}
+  function ADD(en,hi,ml,ta){var k=norm(en);DICT.hi[k]=hi;DICT.ml[k]=ml;DICT.ta[k]=ta;}
+
+  /* ───────── WORD LIST: ADD("English","Hindi","Malayalam","Tamil") ───────── */
+  /* menu sections */
+  ADD("Mill Operations","मिल संचालन","മിൽ പ്രവർത്തനങ്ങൾ","மில் செயல்பாடுகள்");
+  ADD("Electrical","विद्युत","ഇലക്ട്രിക്കൽ","மின்சாரம்");
+  ADD("Inventory","इन्वेंटरी","ഇൻവെന്ററി","சரக்கு");
+  ADD("Finance","वित्त","ധനകാര്യം","நிதி");
+  ADD("Reports","रिपोर्ट","റിപ്പോർട്ടുകൾ","அறிக்கைகள்");
+  ADD("Organisation","संगठन","സംഘടന","அமைப்பு");
+  ADD("Settings","सेटिंग्स","ക്രമീകരണങ്ങൾ","அமைப்புகள்");
+  ADD("My Work","मेरा काम","എന്റെ ജോലി","என் வேலை");
+  /* menu items */
+  ADD("My Tasks","मेरे कार्य","എന്റെ ടാസ്കുകൾ","என் பணிகள்");
+  ADD("Dashboard","डैशबोर्ड","ഡാഷ്ബോർഡ്","டாஷ்போர்டு");
+  ADD("Timeline Calendar","टाइमलाइन कैलेंडर","ടൈംലൈൻ കലണ്ടർ","காலவரிசை நாட்காட்டி");
+  ADD("Production","उत्पादन","ഉത്പാദനം","உற்பத்தி");
+  ADD("Supplyco Dispatch","सप्लाईको डिस्पैच","സപ്ലൈകോ ഡിസ്പാച്ച്","சப்ளைகோ அனுப்புதல்");
+  ADD("Work Order Tracker","वर्क ऑर्डर ट्रैकर","വർക്ക് ഓർഡർ ട്രാക്കർ","பணி ஆணை கண்காணிப்பு");
+  ADD("Private Dispatch","निजी डिस्पैच","സ്വകാര്യ ഡിസ്പാച്ച്","தனியார் அனுப்புதல்");
+  ADD("Lifting Orders","लिफ्टिंग ऑर्डर","ലിഫ്റ്റിംഗ് ഓർഡറുകൾ","தூக்கும் ஆணைகள்");
+  ADD("Returns","वापसी","തിരിച്ചുവരവുകൾ","திரும்பப் பெறுதல்");
+  ADD("FCI Inwards","एफसीआई आवक","എഫ്‌സിഐ ഇൻവാർഡ്സ്","எஃப்சிஐ உள்வரவு");
+  ADD("Private Inwards","निजी आवक","സ്വകാര്യ ഇൻവാർഡ്സ്","தனியார் உள்வரவு");
+  ADD("Reconciliation","मिलान","ഒത്തുനോക്കൽ","சரிபார்ப்பு");
+  ADD("Quality Control","गुणवत्ता नियंत्रण","ഗുണനിലവാര നിയന്ത്രണം","தரக் கட்டுப்பாடு");
+  ADD("Job Cards","जॉब कार्ड","ജോബ് കാർഡുകൾ","வேலை அட்டைகள்");
+  ADD("Recurring Jobs","आवर्ती कार्य","ആവർത്തന ജോലികൾ","தொடர் வேலைகள்");
+  ADD("Licenses & Renewals","लाइसेंस और नवीनीकरण","ലൈസൻസുകളും പുതുക്കലും","உரிமங்கள் மற்றும் புதுப்பித்தல்");
+  ADD("Maintenance Shutdown","रखरखाव शटडाउन","അറ്റകുറ്റപ്പണി ഷട്ട്ഡൗൺ","பராமரிப்பு நிறுத்தம்");
+  ADD("Power Factor","पावर फैक्टर","പവർ ഫാക്ടർ","பவர் ஃபேக்டர்");
+  ADD("All Stock","सभी स्टॉक","എല്ലാ സ്റ്റോക്കും","அனைத்து இருப்பு");
+  ADD("Store & Materials","स्टोर और सामग्री","സ്റ്റോറും സാമഗ്രികളും","ஸ்டோர் மற்றும் பொருட்கள்");
+  ADD("Stock Count","स्टॉक गणना","സ്റ്റോക്ക് എണ്ണൽ","இருப்பு எண்ணிக்கை");
+  ADD("Daily Cash Book","दैनिक कैश बुक","ദൈനംദിന ക്യാഷ് ബുക്ക്","தினசரி பணப் புத்தகம்");
+  ADD("Company Truck","कंपनी ट्रक","കമ്പനി ട്രക്ക്","நிறுவன லாரி");
+  ADD("Executive Analysis","कार्यकारी विश्लेषण","എക്സിക്യൂട്ടീവ് വിശകലനം","நிர்வாகப் பகுப்பாய்வு");
+  ADD("Roles & Responsibilities","भूमिकाएँ और जिम्मेदारियाँ","റോളുകളും ഉത്തരവാദിത്തങ്ങളും","பொறுப்புகளும் கடமைகளும்");
+  ADD("Product Master","प्रोडक्ट मास्टर","പ്രൊഡക്റ്റ് മാസ്റ്റർ","தயாரிப்பு முதன்மை");
+  ADD("Production Settings","उत्पादन सेटिंग्स","ഉത്പാദന ക്രമീകരണങ്ങൾ","உற்பத்தி அமைப்புகள்");
+  ADD("Cash Book Settings","कैश बुक सेटिंग्स","ക്യാഷ് ബുക്ക് ക്രമീകരണങ്ങൾ","பணப் புத்தக அமைப்புகள்");
+  ADD("Depots","डिपो","ഡിപ്പോകൾ","கிடங்குகள்");
+  ADD("Shutdown Settings","शटडाउन सेटिंग्स","ഷട്ട്ഡൗൺ ക്രമീകരണങ്ങൾ","நிறுத்த அமைப்புகள்");
+  ADD("Access Settings","पहुँच सेटिंग्स","ആക്സസ് ക്രമീകരണങ്ങൾ","அணுகல் அமைப்புகள்");
+  ADD("Lifting Alerts","लिफ्टिंग अलर्ट","ലിഫ്റ്റിംഗ് അലേർട്ടുകൾ","தூக்கும் எச்சரிக்கைகள்");
+  ADD("Work Order Alerts","वर्क ऑर्डर अलर्ट","വർക്ക് ഓർഡർ അലേർട്ടുകൾ","பணி ஆணை எச்சரிக்கைகள்");
+  ADD("Quality Settings","गुणवत्ता सेटिंग्स","ഗുണനിലവാര ക്രമീകരണങ്ങൾ","தர அமைப்புகள்");
+  ADD("Power Factor Settings","पावर फैक्टर सेटिंग्स","പവർ ഫാക്ടർ ക്രമീകരണങ്ങൾ","பவர் ஃபேக்டர் அமைப்புகள்");
+  ADD("Truck Settings","ट्रक सेटिंग्स","ട്രക്ക് ക്രമീകരണങ്ങൾ","லாரி அமைப்புகள்");
+  ADD("WhatsApp Alerts","व्हाट्सऐप अलर्ट","വാട്സ്ആപ്പ് അലേർട്ടുകൾ","வாட்ஸ்அப் எச்சரிக்கைகள்");
+  ADD("Product Recipes","प्रोडक्ट रेसिपी","പ്രൊഡക്റ്റ് റെസിപ്പികൾ","தயாரிப்பு சூத்திரங்கள்");
+  ADD("Activity Log","गतिविधि लॉग","പ്രവർത്തന ലോഗ്","செயல்பாட்டுப் பதிவு");
+  ADD("HR Portal ↗","एचआर पोर्टल ↗","എച്ച്ആർ പോർട്ടൽ ↗","எச்ஆர் போர்ட்டல் ↗");
+  /* page headings */
+  ADD("Daily production log","दैनिक उत्पादन लॉग","ദൈനംദിന ഉത്പാദന ലോഗ്","தினசரி உற்பத்திப் பதிவு");
+  ADD("Dispatch & work orders","डिस्पैच और वर्क ऑर्डर","ഡിസ്പാച്ചും വർക്ക് ഓർഡറുകളും","அனுப்புதல் மற்றும் பணி ஆணைகள்");
+  ADD("Work order tracker","वर्क ऑर्डर ट्रैकर","വർക്ക് ഓർഡർ ട്രാക്കർ","பணி ஆணை கண்காணிப்பு");
+  ADD("Lifting orders","लिफ्टिंग ऑर्डर","ലിഫ്റ്റിംഗ് ഓർഡറുകൾ","தூக்கும் ஆணைகள்");
+  ADD("Daily cash book","दैनिक कैश बुक","ദൈനംദിന ക്യാഷ് ബുക്ക്","தினசரி பணப் புத்தகம்");
+  ADD("Store & materials","स्टोर और सामग्री","സ്റ്റോറും സാമഗ്രികളും","ஸ்டோர் மற்றும் பொருட்கள்");
+  ADD("All stock — unified view","सभी स्टॉक — एकीकृत दृश्य","എല്ലാ സ്റ്റോക്കും — ഏകീകൃത കാഴ്ച","அனைத்து இருப்பு — ஒருங்கிணைந்த பார்வை");
+  ADD("Stock count","स्टॉक गणना","സ്റ്റോക്ക് എണ്ണൽ","இருப்பு எண்ணிக்கை");
+  ADD("Quality control","गुणवत्ता नियंत्रण","ഗുണനിലവാര നിയന്ത്രണം","தரக் கட்டுப்பாடு");
+  ADD("Job cards","जॉब कार्ड","ജോബ് കാർഡുകൾ","வேலை அட்டைகள்");
+  ADD("Recurring jobs","आवर्ती कार्य","ആവർത്തന ജോലികൾ","தொடர் வேலைகள்");
+  ADD("Licenses & renewals","लाइसेंस और नवीनीकरण","ലൈസൻസുകളും പുതുക്കലും","உரிமங்கள் மற்றும் புதுப்பித்தல்");
+  ADD("My tasks","मेरे कार्य","എന്റെ ടാസ്കുകൾ","என் பணிகள்");
+  ADD("Monthly reconciliation","मासिक मिलान","പ്രതിമാസ ഒത്തുനോക്കൽ","மாதாந்திர சரிபார்ப்பு");
+  ADD("Activity log","गतिविधि लॉग","പ്രവർത്തന ലോഗ്","செயல்பாட்டுப் பதிவு");
+  ADD("Executive analysis","कार्यकारी विश्लेषण","എക്സിക്യൂട്ടീവ് വിശകലനം","நிர்வாகப் பகுப்பாய்வு");
+  ADD("Maintenance shutdown","रखरखाव शटडाउन","അറ്റകുറ്റപ്പണി ഷട്ട്ഡൗൺ","பராமரிப்பு நிறுத்தம்");
+  ADD("Timeline calendar","टाइमलाइन कैलेंडर","ടൈംലൈൻ കലണ്ടർ","காலவரிசை நாட்காட்டி");
+  ADD("Power factor","पावर फैक्टर","പവർ ഫാക്ടർ","பவர் ஃபேக்டர்");
+  ADD("Roles & responsibilities","भूमिकाएँ और जिम्मेदारियाँ","റോളുകളും ഉത്തരവാദിത്തങ്ങളും","பொறுப்புகளும் கடமைகளும்");
+  ADD("Depots","डिपो","ഡിപ്പോകൾ","கிடங்குகள்");
+  ADD("Alerts","अलर्ट","അലേർട്ടുകൾ","எச்சரிக்கைகள்");
+  ADD("Finished stock position","तैयार माल की स्थिति","പൂർത്തിയായ സ്റ്റോക്ക് നില","முடிந்த பொருள் இருப்பு நிலை");
+  ADD("Here's your mill today.","आज आपकी मिल की स्थिति।","ഇന്നത്തെ നിങ്ങളുടെ മിൽ.","இன்றைய உங்கள் மில்.");
+  ADD("No urgent alerts today.","आज कोई जरूरी अलर्ट नहीं।","ഇന്ന് അടിയന്തര അലേർട്ടുകളില്ല.","இன்று அவசர எச்சரிக்கைகள் இல்லை.");
+  /* dashboard cards */
+  ADD("Produced this month","इस माह उत्पादन","ഈ മാസത്തെ ഉത്പാദനം","இந்த மாத உற்பத்தி");
+  ADD("Dispatched this month","इस माह भेजा गया","ഈ മാസം അയച്ചത്","இந்த மாதம் அனுப்பியது");
+  ADD("Cash in (month)","नकद आवक (माह)","പണം വരവ് (മാസം)","பணவரவு (மாதம்)");
+  ADD("Cash out (month)","नकद जावक (माह)","പണം ചെലവ് (മാസം)","பணச்செலவு (மாதம்)");
+  ADD("Open jobs","खुले कार्य","തുറന്ന ജോലികൾ","திறந்த வேலைகள்");
+  ADD("Overdue","अतिदेय","കാലാവധി കഴിഞ്ഞത്","காலம் கடந்தது");
+  ADD("Done this month","इस माह पूर्ण","ഈ മാസം പൂർത്തിയായത്","இந்த மாதம் முடிந்தவை");
+  ADD("Awaiting approval","अनुमोदन की प्रतीक्षा","അംഗീകാരത്തിനായി കാത്തിരിക്കുന്നു","ஒப்புதலுக்காக காத்திருக்கிறது");
+  /* buttons */
+  ADD("Save","सहेजें","സേവ് ചെയ്യുക","சேமி");
+  ADD("Saving…","सहेज रहे हैं…","സേവ് ചെയ്യുന്നു…","சேமிக்கிறது…");
+  ADD("Cancel","रद्द करें","റദ്ദാക്കുക","ரத்து செய்");
+  ADD("Edit","संपादित करें","എഡിറ്റ്","திருத்து");
+  ADD("Delete","हटाएँ","ഡിലീറ്റ്","நீக்கு");
+  ADD("Close","बंद करें","അടയ്ക്കുക","மூடு");
+  ADD("Back","पीछे","പിന്നോട്ട്","பின்");
+  ADD("Go Back","वापस जाएँ","തിരികെ പോകുക","திரும்பிச் செல்");
+  ADD("Search","खोजें","തിരയുക","தேடு");
+  ADD("Clear","साफ़ करें","ക്ലിയർ","அழி");
+  ADD("Submit day","दिन जमा करें","ദിവസം സമർപ്പിക്കുക","நாளைச் சமர்ப்பி");
+  ADD("Approve","स्वीकृत करें","അംഗീകരിക്കുക","ஒப்புதல்");
+  ADD("Reject","अस्वीकार करें","നിരസിക്കുക","நிராகரி");
+  ADD("Start","शुरू करें","ആരംഭിക്കുക","தொடங்கு");
+  ADD("Mark done","पूर्ण चिह्नित करें","പൂർത്തിയായി അടയാളപ്പെടുത്തുക","முடிந்ததாகக் குறி");
+  ADD("Confirm done","पूर्ण की पुष्टि करें","പൂർത്തിയായത് സ്ഥിരീകരിക്കുക","முடிந்ததை உறுதிசெய்");
+  ADD("Reopen","फिर से खोलें","വീണ്ടും തുറക്കുക","மீண்டும் திற");
+  ADD("Renew","नवीनीकरण करें","പുതുക്കുക","புதுப்பி");
+  ADD("Refresh","ताज़ा करें","റിഫ്രഷ്","புதுப்பி");
+  ADD("Today","आज","ഇന്ന്","இன்று");
+  ADD("Previous day","पिछला दिन","മുൻ ദിവസം","முந்தைய நாள்");
+  ADD("Next day","अगला दिन","അടുത്ത ദിവസം","அடுத்த நாள்");
+  ADD("Sign in","साइन इन करें","സൈൻ ഇൻ","உள்நுழை");
+  ADD("Signing in…","साइन इन हो रहा है…","സൈൻ ഇൻ ചെയ്യുന്നു…","உள்நுழைகிறது…");
+  ADD("Sign out","साइन आउट","സൈൻ ഔട്ട്","வெளியேறு");
+  ADD("Sign in to continue","जारी रखने के लिए साइन इन करें","തുടരാൻ സൈൻ ഇൻ ചെയ്യുക","தொடர உள்நுழையவும்");
+  ADD("Email","ईमेल","ഇമെയിൽ","மின்னஞ்சல்");
+  ADD("Password","पासवर्ड","പാസ്‌വേഡ്","கடவுச்சொல்");
+  ADD("Download CSV","CSV डाउनलोड करें","CSV ഡൗൺലോഡ് ചെയ്യുക","CSV பதிவிறக்கு");
+  ADD("Generate","बनाएँ","ജനറേറ്റ് ചെയ്യുക","உருவாக்கு");
+  ADD("Show more","और दिखाएँ","കൂടുതൽ കാണിക്കുക","மேலும் காட்டு");
+  ADD("Hide details","विवरण छुपाएँ","വിവരങ്ങൾ മറയ്ക്കുക","விவரங்களை மறை");
+  ADD("Details","विवरण","വിവരങ്ങൾ","விவரங்கள்");
+  ADD("History","इतिहास","ചരിത്രം","வரலாறு");
+  ADD("Reset to defaults","डिफ़ॉल्ट पर रीसेट करें","ഡിഫോൾട്ടിലേക്ക് റീസെറ്റ് ചെയ്യുക","இயல்புநிலைக்கு மீட்டமை");
+  ADD("Save settings","सेटिंग्स सहेजें","ക്രമീകരണങ്ങൾ സേവ് ചെയ്യുക","அமைப்புகளைச் சேமி");
+  ADD("+ Add Product","+ प्रोडक्ट जोड़ें","+ പ്രൊഡക്റ്റ് ചേർക്കുക","+ தயாரிப்பைச் சேர்");
+  ADD("+ Add item","+ आइटम जोड़ें","+ ഇനം ചേർക്കുക","+ பொருளைச் சேர்");
+  ADD("+ Add depot","+ डिपो जोड़ें","+ ഡിപ്പോ ചേർക്കുക","+ கிடங்கைச் சேர்");
+  ADD("+ Log dispatch","+ डिस्पैच दर्ज करें","+ ഡിസ്പാച്ച് രേഖപ്പെടുത്തുക","+ அனுப்புதலைப் பதிவு செய்");
+  ADD("+ Log receipt","+ प्राप्ति दर्ज करें","+ രസീത് രേഖപ്പെടുത്തുക","+ பெறுதலைப் பதிவு செய்");
+  ADD("+ Log return","+ वापसी दर्ज करें","+ തിരിച്ചുവരവ് രേഖപ്പെടുത്തുക","+ திரும்பப்பெறுதலைப் பதிவு செய்");
+  ADD("+ New job","+ नया कार्य","+ പുതിയ ജോലി","+ புதிய வேலை");
+  ADD("+ New lifting order","+ नया लिफ्टिंग ऑर्डर","+ പുതിയ ലിഫ്റ്റിംഗ് ഓർഡർ","+ புதிய தூக்கும் ஆணை");
+  ADD("+ Work order","+ वर्क ऑर्डर","+ വർക്ക് ഓർഡർ","+ பணி ஆணை");
+  ADD("+ New schedule","+ नया शेड्यूल","+ പുതിയ ഷെഡ്യൂൾ","+ புதிய அட்டவணை");
+  ADD("+ Add receipt","+ प्राप्ति जोड़ें","+ രസീത് ചേർക്കുക","+ ரசீதைச் சேர்");
+  ADD("+ Add payment","+ भुगतान जोड़ें","+ പേയ്‌മെന്റ് ചേർക്കുക","+ பணம் செலுத்துதலைச் சேர்");
+  ADD("+ Add month","+ माह जोड़ें","+ മാസം ചേർക്കുക","+ மாதத்தைச் சேர்");
+  ADD("+ Record reading","+ रीडिंग दर्ज करें","+ റീഡിംഗ് രേഖപ്പെടുത്തുക","+ அளவீட்டைப் பதிவு செய்");
+  ADD("+ Record test","+ जाँच दर्ज करें","+ പരിശോധന രേഖപ്പെടുത്തുക","+ சோதனையைப் பதிவு செய்");
+  /* table headers & common labels */
+  ADD("Date","तारीख","തീയതി","தேதி");
+  ADD("Product","प्रोडक्ट","പ്രൊഡക്റ്റ്","தயாரிப்பு");
+  ADD("Products","प्रोडक्ट्स","പ്രൊഡക്റ്റുകൾ","தயாரிப்புகள்");
+  ADD("Item","आइटम","ഇനം","பொருள்");
+  ADD("Material","सामग्री","സാമഗ്രി","பொருள்");
+  ADD("Category","श्रेणी","വിഭാഗം","வகை");
+  ADD("Quantity","मात्रा","അളവ്","அளவு");
+  ADD("Bags","बोरे","ബാഗുകൾ","மூட்டைகள்");
+  ADD("Opening","प्रारंभिक","ഓപ്പണിംഗ്","தொடக்கம்");
+  ADD("Closing","अंतिम","ക്ലോസിംഗ്","இறுதி");
+  ADD("Sales","बिक्री","വിൽപ്പന","விற்பனை");
+  ADD("Status","स्थिति","നില","நிலை");
+  ADD("Actions","कार्रवाई","പ്രവർത്തനങ്ങൾ","செயல்கள்");
+  ADD("Scheme","योजना","പദ്ധതി","திட்டம்");
+  ADD("Depot","डिपो","ഡിപ്പോ","கிடங்கு");
+  ADD("District","जिला","ജില്ല","மாவட்டம்");
+  ADD("Vehicle","वाहन","വാഹനം","வாகனம்");
+  ADD("Vehicle no.","वाहन नं.","വാഹന നം.","வாகன எண்");
+  ADD("Supplier","आपूर्तिकर्ता","വിതരണക്കാരൻ","விநியோகஸ்தர்");
+  ADD("Party","पार्टी","പാർട്ടി","தரப்பு");
+  ADD("Party name","पार्टी का नाम","പാർട്ടിയുടെ പേര്","தரப்பின் பெயர்");
+  ADD("Received","प्राप्त","ലഭിച്ചത്","பெறப்பட்டது");
+  ADD("Allotted","आवंटित","അനുവദിച്ചത്","ஒதுக்கப்பட்டது");
+  ADD("Lifted","उठाया गया","എടുത്തത്","எடுக்கப்பட்டது");
+  ADD("Dispatched","भेजा गया","അയച്ചത്","அனுப்பப்பட்டது");
+  ADD("Pending","लंबित","ബാക്കി","நிலுவை");
+  ADD("Balance","शेष","ബാലൻസ്","இருப்பு");
+  ADD("Order no.","ऑर्डर नं.","ഓർഡർ നം.","ஆணை எண்");
+  ADD("Invoice","चालान","ഇൻവോയ്സ്","விலைப்பட்டியல்");
+  ADD("Deadline","अंतिम तिथि","അവസാന തീയതി","கடைசி தேதி");
+  ADD("Notes","टिप्पणी","കുറിപ്പുകൾ","குறிப்புகள்");
+  ADD("Reason","कारण","കാരണം","காரணம்");
+  ADD("Amount","राशि","തുക","தொகை");
+  ADD("Total","कुल","ആകെ","மொத்தம்");
+  ADD("TOTAL","कुल","ആകെ","மொத்தம்");
+  ADD("Description","विवरण","വിവരണം","விளக்கம்");
+  ADD("Receipts","प्राप्तियाँ","രസീതുകൾ","ரசீதுகள்");
+  ADD("Payments","भुगतान","പേയ്‌മെന്റുകൾ","பணம் செலுத்துதல்கள்");
+  ADD("Opening balance","प्रारंभिक शेष","ഓപ്പണിംഗ് ബാലൻസ്","தொடக்க இருப்பு");
+  ADD("Closing balance","अंतिम शेष","ക്ലോസിംഗ് ബാലൻസ്","இறுதி இருப்பு");
+  ADD("Particulars","विवरण","വിവരങ്ങൾ","விவரங்கள்");
+  ADD("Transaction type","लेन-देन का प्रकार","ഇടപാട് തരം","பரிவர்த்தனை வகை");
+  ADD("Payment mode","भुगतान का तरीका","പേയ്‌മെന്റ് രീതി","பணம் செலுத்தும் முறை");
+  ADD("Party name","पार्टी का नाम","പാർട്ടിയുടെ പേര്","தரப்பின் பெயர்");
+  ADD("Name","नाम","പേര്","பெயர்");
+  ADD("Priority","प्राथमिकता","മുൻഗണന","முன்னுரிமை");
+  ADD("Location","स्थान","സ്ഥലം","இடம்");
+  ADD("Assigned to","सौंपा गया","ഏൽപ്പിച്ചത്","ஒதுக்கப்பட்டவர்");
+  ADD("Employee","कर्मचारी","ജീവനക്കാരൻ","பணியாளர்");
+  ADD("User","उपयोगकर्ता","ഉപയോക്താവ്","பயனர்");
+  ADD("Time","समय","സമയം","நேரம்");
+  ADD("Section","अनुभाग","വിഭാഗം","பிரிவு");
+  ADD("Action","कार्रवाई","പ്രവർത്തനം","செயல்");
+  ADD("Result","परिणाम","ഫലം","முடிவு");
+  ADD("Batch no.","बैच नं.","ബാച്ച് നം.","தொகுப்பு எண்");
+  ADD("Unit","इकाई","യൂണിറ്റ്","அலகு");
+  ADD("Code","कोड","കോഡ്","குறியீடு");
+  ADD("Packaging","पैकेजिंग","പാക്കേജിംഗ്","பேக்கேஜிங்");
+  ADD("Finished Goods","तैयार माल","പൂർത്തിയായ ഉത്പന്നങ്ങൾ","முடிந்த பொருட்கள்");
+  ADD("By-Products","उप-उत्पाद","ഉപോത്പന്നങ്ങൾ","துணைப் பொருட்கள்");
+  ADD("Raw Material","कच्चा माल","അസംസ്കൃത വസ്തു","மூலப்பொருள்");
+  ADD("Current Stock","वर्तमान स्टॉक","നിലവിലെ സ്റ്റോക്ക്","தற்போதைய இருப்பு");
+  ADD("Packaging","पैकेजिंग","പാക്കേജിംഗ്","பேக்கேஜிங்");
+  ADD("Spare Parts","स्पेयर पार्ट्स","സ്പെയർ പാർട്സ്","உதிரி பாகங்கள்");
+  ADD("Lubricants / Oils","स्नेहक / तेल","ലൂബ്രിക്കന്റുകൾ / എണ്ണകൾ","மசகு எண்ணெய்கள்");
+  ADD("Chemicals","रसायन","രാസവസ്തുക്കൾ","இரசாயனங்கள்");
+  ADD("Hardware","हार्डवेयर","ഹാർഡ്‌വെയർ","வன்பொருள்");
+  ADD("Miscellaneous","विविध","പലവക","இதர");
+  /* statuses & filters */
+  ADD("All","सभी","എല്ലാം","அனைத்தும்");
+  ADD("Open","खुला","തുറന്നത്","திறந்த");
+  ADD("Done","पूर्ण","പൂർത്തിയായി","முடிந்தது");
+  ADD("Pending","लंबित","ബാക്കി","நிலுவை");
+  ADD("In Progress","प्रगति में","പുരോഗമിക്കുന്നു","நடைபெறுகிறது");
+  ADD("Awaiting Approval","अनुमोदन की प्रतीक्षा","അംഗീകാരത്തിനായി കാത്തിരിക്കുന്നു","ஒப்புதலுக்காக காத்திருக்கிறது");
+  ADD("Active","सक्रिय","സജീവം","செயலில்");
+  ADD("Archived","संग्रहीत","ആർക്കൈവ് ചെയ്തത്","காப்பகப்படுத்தியது");
+  ADD("Approved","स्वीकृत","അംഗീകരിച്ചു","ஒப்புதல் அளிக்கப்பட்டது");
+  ADD("Rejected","अस्वीकृत","നിരസിച്ചു","நிராகரிக்கப்பட்டது");
+  ADD("Complete","पूर्ण","പൂർത്തിയായി","நிறைவு");
+  ADD("Pass","उत्तीर्ण","വിജയിച്ചു","தேர்ச்சி");
+  ADD("Fail","अनुत्तीर्ण","പരാജയപ്പെട്ടു","தோல்வி");
+  ADD("Warning","चेतावनी","മുന്നറിയിപ്പ്","எச்சரிக்கை");
+  ADD("Yes","हाँ","അതെ","ஆம்");
+  ADD("No","नहीं","അല്ല","இல்லை");
+  ADD("Low","कम","കുറവ്","குறைவு");
+  ADD("Medium","मध्यम","ഇടത്തരം","நடுத்தரம்");
+  ADD("High","उच्च","ഉയർന്നത്","அதிகம்");
+  ADD("Urgent","अत्यावश्यक","അടിയന്തരം","அவசரம்");
+  ADD("Frozen","फ्रीज़ किया हुआ","ഫ്രീസ് ചെയ്തത്","முடக்கப்பட்டது");
+  ADD("Submitted","जमा किया गया","സമർപ്പിച്ചു","சமர்ப்பிக்கப்பட்டது");
+  ADD("Vacant","रिक्त","ഒഴിവ്","காலி");
+  ADD("Loading…","लोड हो रहा है…","ലോഡ് ചെയ്യുന്നു…","ஏற்றுகிறது…");
+  ADD("checking access…","पहुँच जाँची जा रही है…","ആക്സസ് പരിശോധിക്കുന്നു…","அணுகலைச் சரிபார்க்கிறது…");
+  ADD("No entries yet.","अभी कोई प्रविष्टि नहीं।","ഇതുവരെ എൻട്രികളില്ല.","இன்னும் பதிவுகள் இல்லை.");
+  ADD("Uses the same login as your HR system.","आपके एचआर सिस्टम वाला ही लॉगिन।","നിങ്ങളുടെ എച്ച്ആർ സിസ്റ്റത്തിലെ അതേ ലോഗിൻ.","உங்கள் எச்ஆர் அமைப்பின் அதே உள்நுழைவு.");
+  ADD("Account under review","खाता समीक्षा में है","അക്കൗണ്ട് പരിശോധനയിലാണ്","கணக்கு மதிப்பாய்வில் உள்ளது");
+  /* days of week & months */
+  ADD("Sun","रवि","ഞായർ","ஞா");ADD("Mon","सोम","തിങ്കൾ","தி");ADD("Tue","मंगल","ചൊവ്വ","செ");
+  ADD("Wed","बुध","ബുധൻ","பு");ADD("Thu","गुरु","വ്യാഴം","வி");ADD("Fri","शुक्र","വെള്ളി","வெ");ADD("Sat","शनि","ശനി","ச");
+  ADD("January","जनवरी","ജനുവരി","ஜனவரி");ADD("February","फ़रवरी","ഫെബ്രുവരി","பிப்ரவரி");
+  ADD("March","मार्च","മാർച്ച്","மார்ச்");ADD("April","अप्रैल","ഏപ്രിൽ","ஏப்ரல்");
+  ADD("May","मई","മേയ്","மே");ADD("June","जून","ജൂൺ","ஜூன்");
+  ADD("July","जुलाई","ജൂലൈ","ஜூலை");ADD("August","अगस्त","ഓഗസ്റ്റ്","ஆகஸ்ட்");
+  ADD("September","सितंबर","സെപ്റ്റംബർ","செப்டம்பர்");ADD("October","अक्टूबर","ഒക്ടോബർ","அக்டோபர்");
+  ADD("November","नवंबर","നവംബർ","நவம்பர்");ADD("December","दिसंबर","ഡിസംബർ","டிசம்பர்");
+  /* ───────── end of word list ───────── */
+
+  /* sentences with a changing part: $1 = the part that stays as it is */
+  var PATTERNS=[
+    [/^Good morning(.*) 👋$/,{hi:"सुप्रभात$1 👋",ml:"സുപ്രഭാതം$1 👋",ta:"காலை வணக்கம்$1 👋"}],
+    [/^Good afternoon(.*) 👋$/,{hi:"नमस्कार$1 👋",ml:"ശുഭ മധ്യാഹ്നം$1 👋",ta:"மதிய வணக்கம்$1 👋"}],
+    [/^Good evening(.*) 👋$/,{hi:"शुभ संध्या$1 👋",ml:"ശുഭ സായാഹ്നം$1 👋",ta:"மாலை வணக்கம்$1 👋"}],
+    [/^(\d+) days? left$/,{hi:"$1 दिन शेष",ml:"$1 ദിവസം ബാക്കി",ta:"$1 நாட்கள் மீதம்"}],
+    [/^Overdue by (\d+) days?$/,{hi:"$1 दिन अतिदेय",ml:"$1 ദിവസം വൈകി",ta:"$1 நாட்கள் தாமதம்"}],
+    [/^Due today$/,{hi:"आज देय",ml:"ഇന്ന് അവസാന തീയതി",ta:"இன்று கடைசி நாள்"}],
+    [/^Mill Operations · (.*)$/,{hi:"मिल संचालन · $1",ml:"മിൽ പ്രവർത്തനങ്ങൾ · $1",ta:"மில் செயல்பாடுகள் · $1"}]
+  ];
+
+  function look(c,lang){
+    var d=DICT[lang][norm(c)];
+    if(d!==undefined) return d;
+    for(var i=0;i<PATTERNS.length;i++){ if(PATTERNS[i][0].test(c)) return c.replace(PATTERNS[i][0],PATTERNS[i][1][lang]); }
+    return null;
+  }
+  function tr(text,lang){
+    if(!/[A-Za-z]/.test(text)) return null;
+    var m=text.match(/^(\s*)([\s\S]*?)(\s*)$/), lead=m[1], core=m[2], trail=m[3];
+    if(!core) return null;
+    var r=look(core,lang);
+    if(r!==null) return lead+r+trail;
+    var a=core.match(/^([^A-Za-z0-9]*)([\s\S]*?)([ ★:…\.]*)$/);
+    if(a&&a[2]&&(a[1]||a[3])){ r=look(a[2],lang); if(r!==null) return lead+a[1]+r+a[3]+trail; }
+    if(core.length<120) MISSING[core]=1;
+    return null;
+  }
+
+  var lang='en', applying=false, timer=null;
+  var TORIG=new WeakMap(), AORIG=new WeakMap();
+  var ATTRS=['placeholder','title'];
+
+  function doText(n){
+    var rec=TORIG.get(n), v=n.nodeValue;
+    if(!(rec&&v===rec.s)) rec=null;
+    var orig=rec?rec.o:v;
+    if(lang==='en'){ if(rec){ n.nodeValue=orig; TORIG.delete(n); } return; }
+    var t=tr(orig,lang);
+    if(t===null){ if(rec){ n.nodeValue=orig; TORIG.delete(n); } return; }
+    if(n.nodeValue!==t) n.nodeValue=t;
+    TORIG.set(n,{o:orig,s:t});
+  }
+  function doAttr(el){
+    var st=AORIG.get(el)||{};
+    ATTRS.forEach(function(a){
+      if(!el.hasAttribute(a)) return;
+      var v=el.getAttribute(a), rec=st[a];
+      if(!(rec&&v===rec.s)) rec=null;
+      var orig=rec?rec.o:v;
+      if(lang==='en'){ if(rec){ el.setAttribute(a,orig); delete st[a]; } return; }
+      var t=tr(orig,lang);
+      if(t===null){ if(rec){ el.setAttribute(a,orig); delete st[a]; } return; }
+      if(v!==t) el.setAttribute(a,t);
+      st[a]={o:orig,s:t};
+    });
+    AORIG.set(el,st);
+  }
+  function apply(){
+    applying=true;
+    try{
+      var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,{acceptNode:function(n){
+        var p=n.parentNode; if(!p) return NodeFilter.FILTER_REJECT;
+        var t=p.nodeName;
+        if(t==='SCRIPT'||t==='STYLE'||t==='TEXTAREA'||t==='NOSCRIPT') return NodeFilter.FILTER_REJECT;
+        if(p.closest&&p.closest('#prfm-lang')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }});
+      var nodes=[]; while(w.nextNode()) nodes.push(w.currentNode);
+      nodes.forEach(doText);
+      document.querySelectorAll('[placeholder],[title]').forEach(function(el){ if(!el.closest('#prfm-lang')) doAttr(el); });
+    }catch(e){ console.error('Translator error:',e); }
+    if(obs) obs.takeRecords();
+    applying=false;
+  }
+  function schedule(){ if(timer) return; timer=setTimeout(function(){ timer=null; apply(); },60); }
+
+  var obs=new MutationObserver(function(){ if(applying||lang==='en') return; schedule(); });
+  obs.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:ATTRS});
+
+  /* fonts + styles for the three scripts and the switcher */
+  var link=document.createElement('link'); link.rel='stylesheet';
+  link.href='https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Malayalam:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap';
+  document.head.appendChild(link);
+  var st=document.createElement('style');
+  st.textContent=
+    'html[lang="hi"]{--sans:"Noto Sans Devanagari","IBM Plex Sans",sans-serif}'+
+    'html[lang="ml"]{--sans:"Noto Sans Malayalam","IBM Plex Sans",sans-serif}'+
+    'html[lang="ta"]{--sans:"Noto Sans Tamil","IBM Plex Sans",sans-serif}'+
+    '#prfm-lang{position:fixed;top:4px;right:10px;z-index:1200;display:flex;gap:2px;padding:2px;background:#fff;border:1px solid #D1D5DB;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.12)}'+
+    '#prfm-lang button{border:0;background:transparent;color:#6B7280;font-size:12px;font-weight:600;padding:3px 9px;border-radius:6px;cursor:pointer}'+
+    '#prfm-lang button.on{background:#D97706;color:#fff}';
+  document.head.appendChild(st);
+
+  var bar=document.createElement('div'); bar.id='prfm-lang';
+  LANGS.forEach(function(L){
+    var b=document.createElement('button'); b.type='button'; b.textContent=L[1]; b.setAttribute('data-l',L[0]);
+    b.onclick=function(){ setLang(L[0]); };
+    bar.appendChild(b);
+  });
+  document.body.appendChild(bar);
+
+  function setLang(l){
+    lang=l;
+    try{ localStorage.setItem('prfm_lang',l); }catch(e){}
+    document.documentElement.setAttribute('lang',l);
+    Array.prototype.forEach.call(bar.children,function(b){ b.className=(b.getAttribute('data-l')===l)?'on':''; });
+    apply();
+  }
+  window.PRFM_I18N={
+    set:setLang,
+    missing:function(){
+      var k=Object.keys(MISSING).sort();
+      console.log(k.length+' untranslated texts on screen. Copy everything below and send it for translation:\n\n'+k.map(function(x){return 'ADD('+JSON.stringify(x)+',"","","");';}).join('\n'));
+    }
+  };
+  var saved='en'; try{ saved=localStorage.getItem('prfm_lang')||'en'; }catch(e){}
+  setLang(DICT[saved]||saved==='en'?saved:'en');
+})();
+</script>
+<!-- ═══════════ END LANGUAGE TRANSLATOR ═══════════ -->
 <script type="text/babel">
 const { useState, useEffect, useCallback } = React;
 
