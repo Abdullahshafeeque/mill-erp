@@ -273,7 +273,7 @@ const AX_MILL=[
  {key:'mill:depot-settings',label:'Depots',acts:[['view','Open page','M'],['add','Add depot','M'],['delete','Delete depot','M']]},
  {key:'mill:lifting-settings',label:'Lifting Alerts',acts:[['view','Open page','M'],['edit','Change & save settings','M']]},
  {key:'mill:workorder-settings',label:'Work Order Alerts',acts:[['view','Open page','M'],['edit','Change & save settings','M']]},
- {key:'mill:production-settings',label:'Production Settings',acts:[['view','Open page','' ],['set_first_date','Set first entry date',''],['set_freeze','Set / clear freeze date','']]},
+ {key:'mill:production-settings',label:'Production Settings',acts:[['view','Open page','' ],['set_first_date','Set first entry date',''],['set_freeze','Set / clear freeze date',''],['set_order','Set product order','']]},
  {key:'mill:cashbook-settings',label:'Cash Book Settings',acts:[['view','Open page',''],['set_freeze','Set / clear freeze date',''],['rebuild','Rebuild balances',''],['manage_types','Delete transaction types','']]},
  {key:'mill:shutdown-settings',label:'Shutdown Settings',acts:[['view','Open page',''],['edit','Change & save settings','']]},
  {key:'mill:whatsapp-settings',label:'WhatsApp Alerts',acts:[['view','Open page',''],['edit_settings','Change delivery settings',''],['manage_contacts','Add / edit / remove people',''],['send','Send test / send now','']]},
@@ -894,6 +894,7 @@ function Production(){
   const [linesAll,setLinesAll]=useState([]);
   const [addins,setAddins]=useState({});
   const [returns,setReturns]=useState([]);
+  const [prodOrder,setProdOrder]=useState([]);
 
   const salesFor=(date,productId)=>{
     const s=supplycoDisp.filter(d=>d.date===date&&d.product_id===productId).reduce((s,d)=>s+Number(d.qty_bags),0);
@@ -1063,7 +1064,9 @@ function Production(){
       sb.from('recipe_lines').select('*'),
       fetchAllRows((a,b)=>sb.from('production_addins').select('*').order('id').range(a,b)).catch(()=>[]),
     ]);
-    setFinishedProducts((fp||[]).filter(p=>p.include_in_production_log!==false)); setAllProducts(ap||[]); setLogs(lg||[]);
+    let ord=[]; try{ ord=JSON.parse((await cashSetting('production_product_order'))||'[]'); }catch(e){ ord=[]; }
+    setProdOrder(ord);
+    setFinishedProducts(sortByProdOrder((fp||[]).filter(p=>p.include_in_production_log!==false),ord)); setAllProducts(ap||[]); setLogs(lg||[]);
     setSupplycoDisp(sd||[]); setPrivateDisp(pd||[]); setReturns(rt||[]);
     setAdjustments((adj||[]).filter(a=>a.count).map(a=>({date:a.count.count_date,product_id:a.item_id,qty:Number(a.diff)})));
     setPackRules(prl||[]); setPackItems(psi||[]); setRecipesAll(rcp||[]); setLinesAll(rln||[]); setAddinRows(adn||[]); setPackStart((await cashSetting('packing_start_date'))||'');
@@ -1495,7 +1498,7 @@ function Production(){
         <TableWrap><table>
           <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Sales</th><th>Returns</th><th>Closing</th></tr></thead>
           <tbody>
-            {[...dayRows.map(r=>({r})),...ghostRows(date,dayRows).map(g=>({g}))].map(it=>{
+            {[...dayRows.map(r=>({r,pid:r.product_id})),...ghostRows(date,dayRows).map(g=>({g,pid:g.p.id}))].sort((a,b)=>{ const pos=(id)=>{ const i=prodOrder.indexOf(String(id)); return i<0?1e9:i; }; return pos(a.pid)-pos(b.pid); }).map(it=>{
               if(it.g){
                 const g=it.g;
                 return(<tr key={'g'+g.p.id} style={{opacity:0.75}}>
@@ -4134,6 +4137,11 @@ function Dashboard({name}){
   </div>);
 }
 
+function sortByProdOrder(list,ord){
+  const pos=(id)=>{ const i=(ord||[]).indexOf(String(id)); return i<0?1e9:i; };
+  return [...list].sort((a,b)=>pos(a.id)-pos(b.id)||String(a.product_name).localeCompare(String(b.product_name)));
+}
+
 function ProductionSettings(){
   const [firstDate,setFirstDate]=useState(localStorage.getItem('productionFirstEntryDate')||today);
   const [freezeDate,setFreezeDate]=useState(localStorage.getItem('productionFreezeDate')||'');
@@ -4142,6 +4150,20 @@ function ProductionSettings(){
   const [loading,setLoading]=useState(true);
   const [saved,setSaved]=useState(false);
   const [truncating,setTruncating]=useState(false);
+  const [ordProds,setOrdProds]=useState([]);
+  const [ordSaved,setOrdSaved]=useState(false);
+  useEffect(()=>{(async()=>{
+    const {data}=await sb.from('product_master').select('id,product_name,include_in_production_log').eq('is_raw_material',false).eq('is_active',true).order('product_name');
+    let ord=[]; try{ ord=JSON.parse((await cashSetting('production_product_order'))||'[]'); }catch(e){ ord=[]; }
+    setOrdProds(sortByProdOrder((data||[]).filter(p=>p.include_in_production_log!==false),ord));
+  })();},[]);
+  const moveOrd=(i,d)=>{ const j=i+d; if(j<0||j>=ordProds.length) return; const a=[...ordProds]; [a[i],a[j]]=[a[j],a[i]]; setOrdProds(a); };
+  const saveOrd=async()=>{
+    const {error}=await sb.from('erp_settings').upsert({key:'production_product_order',value:JSON.stringify(ordProds.map(p=>String(p.id)))},{onConflict:'key'});
+    if(error) return alert(error.message);
+    logActivity('Production','update','Product display order changed');
+    setOrdSaved(true); setTimeout(()=>setOrdSaved(false),2000);
+  };
 
   const saveFreeze=()=>{
     localStorage.setItem('productionFreezeDate', freezeDate);
@@ -4217,6 +4239,28 @@ function ProductionSettings(){
       </div>
       {freezeSaved&&<div style={{marginTop:10,fontSize:12,color:'var(--green)'}}>Saved.</div>}
       {freezeDate&&<div style={{marginTop:10,fontSize:12,color:'var(--blue)'}}>Currently frozen: all days on or before {freezeDate}.</div>}
+    </div>
+
+    <div className="card" style={{maxWidth:500,marginTop:20,borderLeft:'3px solid var(--amber)'}}>
+      <div className="section-label" style={{marginBottom:12}}>Product order in production log</div>
+      <div style={{fontSize:13,color:'var(--muted)',marginBottom:12}}>
+        Use the arrows to arrange how products appear in the Production page (entry form and every day's table). Products not listed here go to the end.
+      </div>
+      {ordProds.map((p,i)=>(
+        <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--border)'}}>
+          <span className="mono dim" style={{width:24}}>{i+1}</span>
+          <span style={{flex:1,fontSize:13,fontWeight:500}}>{p.product_name}</span>
+          {ax('production-settings','set_order')&&<>
+            <button className="btn btn-ghost btn-sm" disabled={i===0} onClick={()=>moveOrd(i,-1)}>▲</button>
+            <button className="btn btn-ghost btn-sm" disabled={i===ordProds.length-1} onClick={()=>moveOrd(i,1)}>▼</button>
+          </>}
+        </div>
+      ))}
+      {ordProds.length===0&&<div className="dim" style={{fontSize:13}}>No products found.</div>}
+      {ax('production-settings','set_order')&&<div style={{marginTop:12,display:'flex',gap:10,alignItems:'center'}}>
+        <button className="btn btn-amber" onClick={saveOrd}>Save order</button>
+        {ordSaved&&<span style={{fontSize:12,color:'var(--green)'}}>Saved.</span>}
+      </div>}
     </div>
 
     <div className="card" style={{maxWidth:500,marginTop:20,borderLeft:'3px solid var(--red)'}}>
