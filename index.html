@@ -895,6 +895,8 @@ function Production(){
   const [addins,setAddins]=useState({});
   const [returns,setReturns]=useState([]);
   const [prodOrder,setProdOrder]=useState([]);
+  const bagU=(n)=>Math.abs(Number(n))===1?'bag':'bags';
+  const qb=(n)=>fmt(n)+' '+bagU(n);
 
   const salesFor=(date,productId)=>{
     const s=supplycoDisp.filter(d=>d.date===date&&d.product_id===productId).reduce((s,d)=>s+Number(d.qty_bags),0);
@@ -1451,18 +1453,18 @@ function Production(){
         {renderAddins()}
         {(()=>{const list=finishedProducts.map(p=>({p,a:adjFor(entryDate,p.id)})).filter(x=>x.a!==0); return list.length>0&&<div style={{marginBottom:12,padding:'8px 12px',background:'color-mix(in srgb, var(--purple) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--purple) 25%, transparent)',borderRadius:6,fontSize:12}}>📋 Stock-count adjustments dated {entryDate} are already included in closing: {list.map(x=>`${x.p.product_name} ${x.a>0?'+':''}${fmt(x.a)}`).join(', ')}</div>;})()}
         <TableWrap><table>
-          <thead><tr><th>Product</th><th>Opening (bags)</th><th>Sales (bags)</th><th>Returns (bags)</th><th>Production (bags)</th><th>Closing (bags)</th></tr></thead>
+          <thead><tr><th>Product</th><th>Opening</th><th>Sales</th><th>Returns</th><th>Production</th><th>Closing</th></tr></thead>
           <tbody>
             {finishedProducts.map(p=>{
               const r=rows[p.id]||{opening:0,production:'',closing:''};
               const sales=salesFor(entryDate,p.id), ret=returnsFor(entryDate,p.id);
               return(<tr key={p.id}>
                 <td><strong>{p.product_name}</strong></td>
-                <td className="mono dim">{fmt(r.opening)}</td>
-                <td className="mono dim">{sales>0?'−'+fmt(sales):'—'}</td>
-                <td className="mono dim">{ret>0?'+'+fmt(ret):'—'}</td>
-                <td><input type="number" className="form-input" style={{width:120}} value={r.production} onChange={e=>updateProduction(p.id,e.target.value)}/></td>
-                <td><input type="number" className="form-input" style={{width:120}} value={r.closing} onChange={e=>updateClosing(p.id,e.target.value)}/></td>
+                <td className="mono dim">{qb(r.opening)}</td>
+                <td className="mono dim">{sales>0?'−'+qb(sales):'—'}</td>
+                <td className="mono dim">{ret>0?'+'+qb(ret):'—'}</td>
+                <td><div style={{display:'flex',alignItems:'center',gap:6}}><input type="number" className="form-input" style={{width:110}} value={r.production} onChange={e=>updateProduction(p.id,e.target.value)}/><span className="dim" style={{fontSize:12}}>bags</span></div></td>
+                <td><div style={{display:'flex',alignItems:'center',gap:6}}><input type="number" className="form-input" style={{width:110}} value={r.closing} onChange={e=>updateClosing(p.id,e.target.value)}/><span className="dim" style={{fontSize:12}}>bags</span></div></td>
               </tr>);
             })}
           </tbody>
@@ -1503,11 +1505,11 @@ function Production(){
                 const g=it.g;
                 return(<tr key={'g'+g.p.id} style={{opacity:0.75}}>
                   <td><strong>{g.p.product_name}</strong> <span className="badge badge-muted">balance only</span></td>
-                  <td className="mono dim">{fmt(g.opening)}</td>
+                  <td className="mono dim">{qb(g.opening)}</td>
                   <td className="mono dim">—</td>
-                  <td className="mono" style={{color:g.sales>0?'var(--red)':'var(--dim)'}}>{g.sales>0?'−'+fmt(g.sales):'—'}</td>
-                  <td className="mono" style={{color:g.ret>0?'var(--blue)':'var(--dim)'}}>{g.ret>0?'+'+fmt(g.ret):'—'}</td>
-                  <td className="mono" style={{fontWeight:600}}>{fmt(g.closing)}</td>
+                  <td className="mono" style={{color:g.sales>0?'var(--red)':'var(--dim)'}}>{g.sales>0?'−'+qb(g.sales):'—'}</td>
+                  <td className="mono" style={{color:g.ret>0?'var(--blue)':'var(--dim)'}}>{g.ret>0?'+'+qb(g.ret):'—'}</td>
+                  <td className="mono" style={{fontWeight:600}}>{qb(g.closing)}</td>
                 </tr>);
               }
               const r=it.r;
@@ -1516,11 +1518,11 @@ function Production(){
               const closing=netClosing(r.opening_bags,r.production_bags,r.date,r.product_id);
               return(<tr key={r.id}>
                 <td><strong>{r.product?.product_name||'—'}</strong></td>
-                <td className="mono dim">{fmt(r.opening_bags)}</td>
-                <td className="mono" style={{color:'var(--green)'}}>{fmt(r.production_bags)}{addinRows.filter(a=>a.log_date===r.date&&String(a.product_id)===String(r.product_id)).map(a=><div key={a.id} style={{fontSize:10,color:'var(--blue)',fontWeight:500}}>add-in: {fmt(a.qty_kg,1)} kg {addinName(a.material_id)}</div>)}</td>
-                <td className="mono" style={{color:sales>0?'var(--red)':'var(--dim)'}}>{sales>0?'−'+fmt(sales):'—'}</td>
-                <td className="mono" style={{color:ret>0?'var(--blue)':'var(--dim)'}}>{ret>0?'+'+fmt(ret):'—'}</td>
-                <td className="mono" style={{fontWeight:600}}>{fmt(closing)}{adjFor(r.date,r.product_id)!==0&&<div style={{fontSize:10,color:'var(--purple)',fontWeight:500}} title="Stock count adjustment">adj {adjFor(r.date,r.product_id)>0?'+':''}{fmt(adjFor(r.date,r.product_id))}</div>}{useFor(r.date,r.product_id)>0&&<div style={{fontSize:10,color:'var(--blue)',fontWeight:500}} title="Used up in add-ins">add-in −{fmt(useFor(r.date,r.product_id),1)}</div>}</td>
+                <td className="mono dim">{qb(r.opening_bags)}</td>
+                <td className="mono" style={{color:'var(--green)'}}>{qb(r.production_bags)}{addinRows.filter(a=>a.log_date===r.date&&String(a.product_id)===String(r.product_id)).map(a=><div key={a.id} style={{fontSize:10,color:'var(--blue)',fontWeight:500}}>add-in: {fmt(a.qty_kg,1)} kg {addinName(a.material_id)}</div>)}</td>
+                <td className="mono" style={{color:sales>0?'var(--red)':'var(--dim)'}}>{sales>0?'−'+qb(sales):'—'}</td>
+                <td className="mono" style={{color:ret>0?'var(--blue)':'var(--dim)'}}>{ret>0?'+'+qb(ret):'—'}</td>
+                <td className="mono" style={{fontWeight:600}}>{qb(closing)}{adjFor(r.date,r.product_id)!==0&&<div style={{fontSize:10,color:'var(--purple)',fontWeight:500}} title="Stock count adjustment">adj {adjFor(r.date,r.product_id)>0?'+':''}{fmt(adjFor(r.date,r.product_id))}</div>}{useFor(r.date,r.product_id)>0&&<div style={{fontSize:10,color:'var(--blue)',fontWeight:500}} title="Used up in add-ins">add-in −{fmt(useFor(r.date,r.product_id),1)}</div>}</td>
               </tr>);
             })}
           </tbody>
