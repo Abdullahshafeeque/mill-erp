@@ -2930,8 +2930,10 @@ function AllStock(){
   const [order,setOrder]=useState([]);
   const [editOrd,setEditOrd]=useState(false);
   const [ordSaved,setOrdSaved]=useState(false);
+  const [hidden,setHidden]=useState([]);
   useEffect(()=>{(async()=>{
     try{ setOrder(JSON.parse((await cashSetting('allstock_product_order'))||'[]')); }catch(e){ setOrder([]); }
+    try{ setHidden(JSON.parse((await cashSetting('allstock_hidden'))||'[]').map(String)); }catch(e){ setHidden([]); }
   })();},[]);
 
   useEffect(()=>{
@@ -2973,7 +2975,11 @@ function AllStock(){
   const categories=['All',...Array.from(new Set(products.map(p=>p.category)))];
   const posOf=(id)=>{ const i=order.indexOf(String(id)); return i<0?1e9:i; };
   const ordered=[...rows].sort((a,b)=>posOf(a.product.id)-posOf(b.product.id)||String(a.product.product_name).localeCompare(String(b.product.product_name)));
-  const filtered=filterCat==='All'?ordered:ordered.filter(r=>r.product.category===filterCat);
+  const canOrder=ax('all-stock','reorder');
+  const isHidden=(id)=>hidden.includes(String(id));
+  const toggleHide=(id)=>setHidden(h=>h.includes(String(id))?h.filter(x=>x!==String(id)):[...h,String(id)]);
+  const shownRows=(editOrd||canOrder)?ordered:ordered.filter(r=>!isHidden(r.product.id));
+  const filtered=filterCat==='All'?shownRows:shownRows.filter(r=>r.product.category===filterCat);
 
   const moveRow=(i,d)=>{
     const j=i+d; if(j<0||j>=ordered.length) return;
@@ -2983,9 +2989,12 @@ function AllStock(){
   };
   const saveOrder=async()=>{
     const ids=ordered.map(r=>String(r.product.id));
-    const {error}=await sb.from('erp_settings').upsert({key:'allstock_product_order',value:JSON.stringify(ids)},{onConflict:'key'});
+    const {error}=await sb.from('erp_settings').upsert([
+      {key:'allstock_product_order',value:JSON.stringify(ids)},
+      {key:'allstock_hidden',value:JSON.stringify(hidden)}
+    ],{onConflict:'key'});
     if(error) return alert(error.message);
-    logActivity('All Stock','update','Product display order changed');
+    logActivity('All Stock','update',`Product order changed; ${hidden.length} product${hidden.length===1?'':'s'} hidden from users`);
     setOrdSaved(true); setTimeout(()=>setOrdSaved(false),2000);
     setEditOrd(false);
   };
@@ -3000,22 +3009,24 @@ function AllStock(){
       {categories.map(c=><button key={c} className={`btn btn-sm ${filterCat===c?'btn-amber':'btn-ghost'}`} onClick={()=>setFilterCat(c)}>{c}</button>)}
       {ax('all-stock','reorder')&&!editOrd&&<button className="btn btn-sm btn-blue" style={{marginLeft:'auto'}} onClick={()=>{setFilterCat('All');setEditOrd(true);}}>↕ Reorder</button>}
       {editOrd&&<button className="btn btn-sm btn-green" style={{marginLeft:'auto'}} onClick={saveOrder}>Save order</button>}
-      {editOrd&&<button className="btn btn-sm btn-ghost" onClick={()=>{setEditOrd(false);(async()=>{ try{ setOrder(JSON.parse((await cashSetting('allstock_product_order'))||'[]')); }catch(e){ setOrder([]); } })();}}>Cancel</button>}
+      {editOrd&&<button className="btn btn-sm btn-ghost" onClick={()=>{setEditOrd(false);(async()=>{ try{ setOrder(JSON.parse((await cashSetting('allstock_product_order'))||'[]')); }catch(e){ setOrder([]); } try{ setHidden(JSON.parse((await cashSetting('allstock_hidden'))||'[]').map(String)); }catch(e){ setHidden([]); } })();}}>Cancel</button>}
       {ordSaved&&<span style={{fontSize:12,color:'var(--green)',alignSelf:'center'}}>Saved.</span>}
     </div>
 
     <TableWrap><table>
-      <thead><tr>{editOrd&&<th style={{width:90}}>Order</th>}<th>Product</th><th>Category</th><th>Current Stock</th><th>Details</th></tr></thead>
+      <thead><tr>{editOrd&&<th style={{width:90}}>Order</th>}{editOrd&&<th style={{width:70}}>Hide</th>}<th>Product</th><th>Category</th><th>Current Stock</th><th>Details</th></tr></thead>
       <tbody>
-        {filtered.length===0&&<tr><td colSpan={5}><Empty msg="No products yet."/></td></tr>}
+        {filtered.length===0&&<tr><td colSpan={6}><Empty msg="No products yet."/></td></tr>}
         {filtered.map((r,i)=>{
           const col=r.isLow?'var(--red)':r.statusVal<0?'var(--red)':'var(--green)';
-          return(<tr key={i}>
+          const hid=isHidden(r.product.id);
+          return(<tr key={i} style={hid?{opacity:0.45}:undefined}>
             {editOrd&&<td style={{whiteSpace:'nowrap'}}>
               <button className="btn btn-ghost btn-sm" disabled={i===0} onClick={()=>moveRow(i,-1)}>▲</button>{' '}
               <button className="btn btn-ghost btn-sm" disabled={i===filtered.length-1} onClick={()=>moveRow(i,1)}>▼</button>
             </td>}
-            <td><strong>{r.product.product_name}</strong></td>
+            {editOrd&&<td style={{textAlign:'center'}}><input type="checkbox" style={{transform:'scale(1.2)',cursor:'pointer'}} checked={hid} onChange={()=>toggleHide(r.product.id)} title="Hide from users"/></td>}
+            <td><strong>{r.product.product_name}</strong>{hid&&<span className="badge badge-muted" style={{marginLeft:8}}>hidden</span>}</td>
             <td><span className="badge badge-blue">{r.product.category}</span></td>
             <td><strong style={{color:col,fontFamily:'var(--mono)',fontSize:14}}>{r.qtyLabel}</strong></td>
             <td>
