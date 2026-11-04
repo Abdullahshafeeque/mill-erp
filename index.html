@@ -495,6 +495,18 @@
   ADD("Meter was replaced / reset — start a new series from this reading (no power factor is calculated for it)","मीटर बदला गया / रीसेट हुआ — इस रीडिंग से नई श्रृंखला शुरू करें (इसके लिए पावर फैक्टर नहीं निकाला जाएगा)","മീറ്റർ മാറ്റി / റീസെറ്റ് ചെയ്തു — ഈ റീഡിംഗിൽ നിന്ന് പുതിയ സീരീസ് തുടങ്ങുക (ഇതിന് പവർ ഫാക്ടർ കണക്കാക്കില്ല)","மீட்டர் மாற்றப்பட்டது / மீட்டமைக்கப்பட்டது — இந்த அளவீட்டிலிருந்து புதிய தொடரைத் தொடங்கு (இதற்கு பவர் ஃபேக்டர் கணக்கிடப்படாது)");
   ADD("e.g. capacitor bank tripped, load shedding","जैसे: कैपेसिटर बैंक ट्रिप हुआ, लोड शेडिंग","ഉദാ: കപ്പാസിറ്റർ ബാങ്ക് ട്രിപ്പ് ആയി, ലോഡ് ഷെഡ്ഡിംഗ്","எ.கா: கேபாசிட்டர் பேங்க் ட்ரிப் ஆனது, மின்வெட்டு");
   ADD("e.g. Replace roller mill rolls, re-align sifters, panel servicing","जैसे: रोलर मिल रोल बदलना, सिफ्टर दोबारा सेट करना, पैनल सर्विसिंग","ഉദാ: റോളർ മിൽ റോളുകൾ മാറ്റുക, സിഫ്റ്ററുകൾ ക്രമീകരിക്കുക, പാനൽ സർവീസ്","எ.கா: ரோலர் மில் உருளைகளை மாற்றுதல், சல்லடைகளை சீரமைத்தல், பேனல் சர்வீஸ்");
+    ADD("Private Dispatch Settings","निजी डिस्पैच सेटिंग्स","സ്വകാര്യ ഡിസ്പാച്ച് ക്രമീകരണങ്ങൾ","தனியார் அனுப்புதல் அமைப்புகள்");
+  ADD("Private dispatch settings","निजी डिस्पैच सेटिंग्स","സ്വകാര്യ ഡിസ്പാച്ച് ക്രമീകരണങ്ങൾ","தனியார் அனுப்புதல் அமைப்புகள்");
+  ADD("Salesman","सेल्समैन","സെയിൽസ്മാൻ","விற்பனையாளர்");
+  ADD("Salesmen","सेल्समैन","സെയിൽസ്മാൻമാർ","விற்பனையாளர்கள்");
+  ADD("Salesman performance","सेल्समैन प्रदर्शन","സെയിൽസ്മാൻ പ്രകടനം","விற்பனையாளர் செயல்திறன்");
+  ADD("Salesmen active","सक्रिय सेल्समैन","സജീവ സെയിൽസ്മാൻമാർ","செயலில் உள்ள விற்பனையாளர்கள்");
+  ADD("Top salesman","शीर्ष सेल्समैन","മികച്ച സെയിൽസ്മാൻ","சிறந்த விற்பனையாளர்");
+  ADD("Without a salesman","बिना सेल्समैन","സെയിൽസ്മാൻ ഇല്ലാതെ","விற்பனையாளர் இல்லாமல்");
+  ADD("Salesman (if it was a private sale)","सेल्समैन (यदि निजी बिक्री थी)","സെയിൽസ്മാൻ (സ്വകാര്യ വിൽപ്പനയാണെങ്കിൽ)","விற்பனையாளர் (தனியார் விற்பனை எனில்)");
+  ADD("-- Select salesman --","-- सेल्समैन चुनें --","-- സെയിൽസ്മാനെ തിരഞ്ഞെടുക്കുക --","-- விற்பனையாளரைத் தேர்ந்தெடுக்கவும் --");
+  ADD("Share of private sales volume","निजी बिक्री मात्रा का हिस्सा","സ്വകാര്യ വിൽപ്പന അളവിലെ പങ്ക്","தனியார் விற்பனை அளவின் பங்கு");
+  ADD("Return rate","वापसी दर","തിരിച്ചുവരവ് നിരക്ക്","திரும்பப் பெறும் விகிதம்");
   /* ── end of added lines ── */
   /* ───────── end of word list ───────── */
 
@@ -743,6 +755,7 @@ const NAV = [
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
     { id:'cashbook-settings', label:'Cash Book Settings', icon:'🧾' },
   { id:'depot-settings', label:'Depots', icon:'🏢' },
+  { id:'private-dispatch-settings', label:'Private Dispatch Settings', icon:'🧑‍💼' },
   { id:'shutdown-settings', label:'Shutdown Settings', icon:'🧯' },
     { id:'access-settings', label:'Access Settings', icon:'🛂' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
@@ -775,6 +788,7 @@ const AX_MILL=[
  {key:'mill:dispatch',label:'Supplyco Dispatch',acts:[['view','Open page','MD'],['log','Log dispatch','MD'],['delete','Delete dispatch','M']]},
  {key:'mill:work-order-tracker',label:'Work Order Tracker',acts:[['view','Open page','M'],['add','Register work order','M'],['edit','Edit work order & depot allotments','M'],['set_deadline','Change deadline','M'],['delete','Delete work order','M']]},
  {key:'mill:private-dispatch',label:'Private Dispatch',acts:[['view','Open page','MD'],['log','Log dispatch','MD'],['delete','Delete dispatch','M']]},
+ {key:'mill:private-dispatch-settings',label:'Private Dispatch Settings',acts:[['view','Open page',''],['edit','Change & save settings','']]},
  {key:'mill:lifting-orders',label:'Lifting Orders',acts:[['view','Open page','M'],['add','Register lifting order','M'],['edit','Edit lifting order','M'],['set_deadline','Change deadline','M'],['delete','Delete lifting order','M']]},
  {key:'mill:returns',label:'Returns',acts:[['view','Open page','MSD'],['log','Log return','MSD'],['delete','Delete return','M']]},
  {key:'mill:fci-inwards',label:'FCI Inwards',acts:[['view','Open page','MT'],['log','Log receipt','MT'],['add_supplier','Add new supplier','MT'],['delete','Delete receipt','M']]},
@@ -2721,6 +2735,7 @@ const schemeOptions=selectedMaterial?.scheme_list?selectedMaterial.scheme_list.s
 }
 
 function Returns(){
+  const [pdS,setPdS]=useState(PDS_DEFAULTS);
   const [returns,setReturns]=useState([]);
   const [products,setProducts]=useState([]);
   const [depots,setDepots]=useState([]);
@@ -2728,7 +2743,7 @@ function Returns(){
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
   const REASONS=['Depot Rejection','Damaged/Spoiled','Excess Sent','Quality Issue','Other'];
-  const blank={date:today,product_id:'',qty_bags:'',source_name:'',reason:'Depot Rejection',notes:''};
+  const blank={date:today,product_id:'',qty_bags:'',source_name:'',reason:'Depot Rejection',notes:'',salesman:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -2739,6 +2754,7 @@ function Returns(){
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
       sb.from('depots').select('*').order('name'),
     ]);
+    setPdS(await loadPdSettings());
     setReturns(r||[]); setProducts(p||[]); setDepots(dep||[]); setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -2746,7 +2762,7 @@ function Returns(){
   const save=async()=>{
     if(!form.product_id||!form.qty_bags) return alert('Product and quantity required.');
     setSaving(true);
-    const row={date:form.date,product_id:form.product_id,qty_bags:Number(form.qty_bags),source_name:form.source_name,reason:form.reason,notes:form.notes};
+    const row={date:form.date,product_id:form.product_id,qty_bags:Number(form.qty_bags),source_name:form.source_name,reason:form.reason,notes:form.notes,salesman:form.salesman||null};
     const {data,error}=await sb.from('product_returns').insert(row).select('*, product:product_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',form.product_id).maybeSingle();
@@ -2794,6 +2810,12 @@ function Returns(){
               {depots.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
             </select>
           </Field>
+          <Field label="Salesman (if it was a private sale)">
+            <select className="form-input" value={form.salesman} onChange={e=>f('salesman',e.target.value)}>
+              <option value="">-- None / not applicable --</option>
+              {pdS.salesmen.map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+          </Field>
           <Field label="Reason">
             <select className="form-input" value={form.reason} onChange={e=>f('reason',e.target.value)}>
               {REASONS.map(r=><option key={r}>{r}</option>)}
@@ -2805,14 +2827,15 @@ function Returns(){
     )}
 
     <TableWrap><table>
-      <thead><tr><th>Date</th><th>Product</th><th>Bags</th><th>From</th><th>Reason</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Product</th><th>Bags</th><th>From</th><th>Salesman</th><th>Reason</th><th></th></tr></thead>
       <tbody>
-        {returns.length===0&&<tr><td colSpan={6}><Empty msg="No returns logged this month."/></td></tr>}
+        {returns.length===0&&<tr><td colSpan={7}><Empty msg="No returns logged this month."/></td></tr>}
         {returns.map(r=>(<tr key={r.id}>
           <td className="mono dim">{r.date}</td>
           <td><strong>{r.product?.product_name||'—'}</strong></td>
           <td><strong style={{color:'var(--blue)',fontFamily:'var(--mono)'}}>+{fmt(r.qty_bags)}</strong></td>
           <td className="dim">{r.source_name||'—'}</td>
+          <td>{r.salesman||<span className="dim">—</span>}</td>
           <td><span className="badge badge-amber">{r.reason}</span></td>
           <td>{ax('returns','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}</td>
         </tr>))}
@@ -3318,6 +3341,7 @@ if(!(await sdGuardDispatch(dForm.date,prod,dForm.qty_bags))) return;
 // PRIVATE DISPATCH
 // ══════════════════════════════════════════════════════════
 function PrivateDispatch(){
+  const [pdS,setPdS]=useState(PDS_DEFAULTS);
   const [entries,setEntries]=useState([]);
   const [products,setProducts]=useState([]);
   const [showForm,setShowForm]=useState(false);
@@ -3330,7 +3354,7 @@ function PrivateDispatch(){
   const [year,setYear]=useState(new Date().getFullYear());
   const {start:periodStart,end:periodEnd}=monthRange(month,year);
   const periodLabel=`${MONTH_NAMES[month-1]} ${year}`;
-  const blank={date:today,party_name:'',product_id:'',qty:'',vehicle_no:'',invoice_no:'',notes:''};
+  const blank={date:today,party_name:'',product_id:'',qty:'',vehicle_no:'',invoice_no:'',notes:'',salesman:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -3340,6 +3364,7 @@ function PrivateDispatch(){
       sb.from('private_dispatches').select('*, product:product_id(*)').gte('date',periodStart).lte('date',periodEnd).order('date',{ascending:false}),
       sb.from('product_master').select('*').eq('is_active',true).eq('available_for_private_dispatch',true).order('product_name'),
     ]);
+    setPdS(await loadPdSettings());
     setEntries(e||[]); setProducts(p||[]); setLoading(false);
   },[periodStart,periodEnd]);
   useEffect(()=>{load();},[load]);
@@ -3372,10 +3397,11 @@ function PrivateDispatch(){
 
   const save=async()=>{
     if(!form.party_name||!form.product_id||!form.qty) return alert('Party name, product and quantity required.');
+    if(pdS.require_salesman&&!form.salesman) return alert('Please select the salesman.');
     if(!(await stockGuard(selectedProduct,form.qty))) return;
 if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
     setSaving(true);
-    const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:Number(form.qty),qty_kg:isRaw?Number(form.qty):null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes};
+    const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:Number(form.qty),qty_kg:isRaw?Number(form.qty):null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes,salesman:form.salesman||null};
     const {data,error}=await sb.from('private_dispatches').insert(row).select('*, product:product_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
     await debitStock(selectedProduct, Number(form.qty), -1);
@@ -3420,19 +3446,26 @@ if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
           <Field label={isRaw?'Quantity (kg) ★':'Bags dispatched ★'}><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty} onChange={e=>f('qty',e.target.value)}/></Field>
           <Field label="Vehicle no."><input className="form-input" value={form.vehicle_no} onChange={e=>f('vehicle_no',e.target.value)}/></Field>
           <Field label="Invoice no."><input className="form-input" value={form.invoice_no} onChange={e=>f('invoice_no',e.target.value)}/></Field>
+          <Field label={pdS.require_salesman?'Salesman ★':'Salesman'}>
+            <select className="form-input" value={form.salesman} onChange={e=>f('salesman',e.target.value)}>
+              <option value="">-- Select salesman --</option>
+              {pdS.salesmen.map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+          </Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
       </FormCard>
     )}
 
     <TableWrap><table>
-      <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Qty</th><th>Vehicle</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Party</th><th>Product</th><th>Salesman</th><th>Qty</th><th>Vehicle</th><th></th></tr></thead>
       <tbody>
-        {entries.length===0&&<tr><td colSpan={6}><Empty msg={`No private dispatches in ${periodLabel}.`}/></td></tr>}
+        {entries.length===0&&<tr><td colSpan={7}><Empty msg={`No private dispatches in ${periodLabel}.`}/></td></tr>}
         {entries.map(e=>(<tr key={e.id}>
           <td className="mono dim">{e.date}</td>
           <td><strong>{e.party_name}</strong></td>
           <td>{e.product?.product_name||'—'}</td>
+          <td>{e.salesman||<span className="dim">—</span>}</td>
           <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{e.product?.is_raw_material?fmtMT(e.qty_kg):fmt(e.qty_bags)+' bags'}</strong></td>
           <td className="dim">{e.vehicle_no||'—'}</td>
 <td>{ax('private-dispatch','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button>}</td>        </tr>))}
@@ -12627,7 +12660,7 @@ async function anLoad(from,to){
     q('daily_production_log','*, product:product_id(*)','date'),
     q('supplyco_dispatches','*, product:product_id(*)','date'),
     q('private_dispatches','*, product:product_id(*)','date'),
-    q('product_returns','date,product_id,qty_bags','date'),
+    q('product_returns','date,product_id,qty_bags,salesman','date'),
     q('fci_inwards','id,date,scheme,received_kg','date'),
     q('private_inwards','id,date,qty_kg,material_id','date'),
     q('daily_ledger','id,date,direction,amount,txn_type,party_name,created_at','date'),
@@ -12790,6 +12823,34 @@ function anCompute(D){
   const cp={}; qcC.forEach(t=>(t.results||[]).forEach(r=>{ const k=t.product_name+'|'+r.name; const q=cp[k]=cp[k]||{prod:t.product_name,name:r.name,unit:r.unit,v:[],min:qcNum(r.min),max:qcNum(r.max)}; q.v.push(Number(r.value)); }));
   const cpkRows=Object.values(cp).filter(q=>q.v.length>=5&&(q.min!==null||q.max!==null)).map(q=>{ const m=anMean(q.v), s=anStd(q.v), a=[]; if(q.max!==null&&s>0) a.push((q.max-m)/(3*s)); if(q.min!==null&&s>0) a.push((m-q.min)/(3*s)); return {prod:q.prod,name:q.name,unit:q.unit,n:q.v.length,m,s,cpk:a.length?Math.min(...a):null}; }).sort((a,b)=>(a.cpk===null?99:a.cpk)-(b.cpk===null?99:b.cpk));
 
+  // salesman performance
+  const smNone='(Not recorded)';
+  const smKey=(r)=>(r.salesman&&String(r.salesman).trim())||smNone;
+  const smMap={};
+  const smSlot=(k)=>(smMap[k]=smMap[k]||{k,kgC:0,kgP:0,bagsC:0,n:0,days:new Set(),parties:new Set(),retBags:0,retKg:0,prod:{}});
+  D.pd.forEach(r=>{
+    const p=r.product||pb[String(r.product_id)];
+    const raw=!!(p&&p.is_raw_material);
+    const bags=raw?0:(Number(r.qty_bags)||0);
+    const kg=raw?(Number(r.qty_kg)||0):bags*packSizeOf(p);
+    const q=smSlot(smKey(r));
+    if(inC(r.date)){
+      q.kgC+=kg; q.bagsC+=bags; q.n++; q.days.add(r.date);
+      if(r.party_name) q.parties.add(String(r.party_name).trim().toUpperCase());
+      const pn=p?p.product_name:'(unknown)'; q.prod[pn]=(q.prod[pn]||0)+kg;
+    } else q.kgP+=kg;
+  });
+  D.ret.filter(r=>inC(r.date)&&r.salesman).forEach(r=>{
+    const q=smSlot(smKey(r)); const bags=Number(r.qty_bags)||0;
+    q.retBags+=bags; q.retKg+=bags*packSizeOf(pb[String(r.product_id)]);
+  });
+  const smTot=anSum(Object.values(smMap),x=>x.kgC);
+  const smRows=Object.values(smMap).filter(x=>x.kgC>0||x.kgP>0||x.retBags>0).map(x=>{
+    const top=Object.entries(x.prod).sort((a,b)=>b[1]-a[1])[0];
+    return {...x,share:smTot>0?x.kgC/smTot*100:0,dayN:x.days.size,partyN:x.parties.size,perDay:x.days.size?x.kgC/x.days.size:0,retRate:x.kgC>0?x.retKg/x.kgC*100:null,topProd:top?top[0]:'—'};
+  }).sort((a,b)=>(a.k===smNone)-(b.k===smNone)||b.kgC-a.kgC);
+  const smUnk=smTot>0&&smMap[smNone]?smMap[smNone].kgC/smTot*100:0;
+
   // lag correlation production -> dispatch
   const aP=ser(prodKg,all), aD=ser(dispKg,all);
   const lags=[0,1,2,3,4,5,6,7].map(k=>({k,r:anCorr(aP.slice(0,aP.length-k),aD.slice(k))}));
@@ -12862,7 +12923,7 @@ function anCompute(D){
   if(bestLag&&Math.abs(bestLag.r)>=0.3) I('info',`Dispatch follows production with a lag of ${bestLag.k} day${bestLag.k===1?'':'s'} (correlation ${bestLag.r.toFixed(2)}).`);
   I(an.filter(a=>a.sev===3).length>0?'low':an.length>0?'warn':'good',`${an.length} anomaly flag(s) in this period (${an.filter(a=>a.sev===3).length} high severity). Benford test: ${bVerdict.toLowerCase()}.`);
 
-  return {cur,prv,all,K,Kp,cap90,util,daily,sPK,sDK,wkP,wkD,hP,hD,trendP,wdP,wdD,wdC,recSeries,spc,eDays,eRate,fg:fgS,mix,depot,district,scheme,partyRows,pHhi,pTop,retRows,woRows,wheat,wmc,grainPerDay,catIn,catOut,burn,runway,cmc,closing:D.cashClose,bc,bn,bExp,bMad,bChi,bVerdict,dups,cashOut2,backd,roundShare,qS,qSp,cpkRows,lags,bestLag,an,risks,sc,score,grade,ins,yC,yP,pf:D.pf};
+  return {cur,prv,all,K,Kp,cap90,util,daily,sPK,sDK,wkP,wkD,hP,hD,trendP,wdP,wdD,wdC,recSeries,spc,eDays,eRate,fg:fgS,mix,depot,district,scheme,partyRows,pHhi,pTop,retRows,woRows,wheat,wmc,grainPerDay,catIn,catOut,burn,runway,cmc,closing:D.cashClose,bc,bn,bExp,bMad,bChi,bVerdict,dups,cashOut2,backd,roundShare,qS,qSp,cpkRows,lags,bestLag,an,risks,sc,score,grade,ins,yC,yP,pf:D.pf,smRows,smTot,smUnk};
 }
 
 // ── chart helpers ──
@@ -12924,7 +12985,7 @@ function AnHeatCal({dates,vals,col}){
   </div><div className="dim" style={{fontSize:11,marginTop:6}}>Each square is a day (rows Mon→Sun). Darker = higher output. Grey = no production.</div></div>);
 }
 const AN_SEV={1:'var(--blue)',2:'var(--amber)',3:'var(--red)'};
-const AN_TABS=[['exec','🧠 Command center'],['prod','⚙ Production'],['disp','🚛 Dispatch & customers'],['inv','📦 Inventory'],['fin','₹ Cash & finance'],['fc','🔮 Forecast & simulation'],['anom','🕵 Anomalies & forensics'],['risk','🛡 Risk register']];
+const AN_TABS=[['exec','🧠 Command center'],['prod','⚙ Production'],['disp','🚛 Dispatch & customers'],['sales','🧑‍💼 Salesmen'],['inv','📦 Inventory'],['fin','₹ Cash & finance'],['fc','🔮 Forecast & simulation'],['anom','🕵 Anomalies & forensics'],['risk','🛡 Risk register']];
 
 function Analysis(){
   const [pr,setPr]=useState('90');
@@ -13092,6 +13153,32 @@ function Analysis(){
         </>);
       }
 
+            // ───────── SALESMEN ─────────
+      if(tab==='sales'){
+        const rows=A.smRows, named=rows.filter(r=>r.k!=='(Not recorded)'&&r.kgC>0), best=named[0];
+        return(<>
+          <div className="stat-grid">
+            <StatCard label="Salesmen active" value={named.length} col="var(--blue)"/>
+            <StatCard label="Private sales" value={repMt(A.smTot)+' MT'} sub="in this period" col="var(--green)"/>
+            <StatCard label="Top salesman" value={best?best.k:'—'} sub={best?`${best.share.toFixed(0)}% of volume`:'no salesman recorded yet'} col="var(--purple)"/>
+            <StatCard label="Without a salesman" value={A.smUnk.toFixed(0)+'%'} sub="of private volume" col={A.smUnk>20?'var(--amber)':'var(--green)'}/>
+          </div>
+          {A.smUnk>20&&<Alert type="amber" icon="⚠" title={`${A.smUnk.toFixed(0)}% of private sales have no salesman recorded`} sub="Pick the salesman on every Private Dispatch entry so this analysis is complete."/>}
+          <div className="card" style={{marginBottom:16}}>
+            <div className="section-label">Share of private sales volume</div>
+            <TrkHBars fmtV={mtBar} items={rows.filter(r=>r.kgC>0).map(r=>({label:r.k,value:r.kgC,sub:r.share.toFixed(0)+'%',col:r.k==='(Not recorded)'?'var(--muted)':'var(--green)'}))}/>
+          </div>
+          <div className="section-label">Salesman performance</div>
+          <RTable head={['Salesman','This period (MT)','Bags','Share','vs prior','Active days','Customers','MT / active day','Returned bags','Return rate','Top product']} empty="No private dispatches in this period." rows={rows.map(r=>[
+            <strong>{r.k}</strong>,repMt(r.kgC),fmt(r.bagsC),r.share.toFixed(1)+'%',
+            r.kgP>0?<span style={{color:r.kgC>=r.kgP?'var(--green)':'var(--red)'}}>{r.kgC>=r.kgP?'▲':'▼'} {Math.abs((r.kgC/r.kgP-1)*100).toFixed(0)}%</span>:'new',
+            r.dayN,r.partyN,repMt(r.perDay),fmt(r.retBags),
+            r.retRate===null?'—':<span style={{color:r.retRate>2?'var(--red)':'var(--muted)'}}>{r.retRate.toFixed(2)}%</span>,
+            <span style={{whiteSpace:'normal'}}>{r.topProd}</span>])}/>
+          <div className="dim" style={{fontSize:12,marginTop:8,maxWidth:820}}>Volume is private dispatch weight in the period. Return rate = weight returned with that salesman's name ÷ weight he sold. Customers = different party names. "vs prior" compares with the equal-length period before.</div>
+        </>);
+      }
+
       // ───────── INVENTORY ─────────
       if(tab==='inv'){
         const abcx={}; A.fg.forEach(x=>{ const k=x.abc+x.xyz; abcx[k]=(abcx[k]||0)+1; });
@@ -13226,6 +13313,95 @@ function Analysis(){
       </>);
       return null;
     })()}
+  </div>);
+}
+
+// ══════════════════════════════════════════════════════════
+// PRIVATE DISPATCH SETTINGS — who can be chosen as salesman
+// ══════════════════════════════════════════════════════════
+const PDS_KEY='private_dispatch_settings';
+const PDS_DEFAULTS={salesmen:[],require_salesman:false};
+async function loadPdSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',PDS_KEY).maybeSingle();
+  let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  const S={...PDS_DEFAULTS,...saved};
+  if(!Array.isArray(S.salesmen)) S.salesmen=[];
+  return S;
+}
+
+function PrivateDispatchSettings(){
+  const [S,setS]=useState(PDS_DEFAULTS);
+  const [emps,setEmps]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [pick,setPick]=useState('');
+  const [custom,setCustom]=useState('');
+  useEffect(()=>{(async()=>{
+    const [cfg,{data:e}]=await Promise.all([loadPdSettings(),sb.from(EMP_TABLE).select('*').range(0,4999)]);
+    setS(cfg);
+    setEmps((e||[]).filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b))));
+    setLoading(false);
+  })();},[]);
+
+  const has=(n)=>S.salesmen.some(x=>x.toLowerCase()===String(n).trim().toLowerCase());
+  const add=(name)=>{
+    const n=String(name||'').trim();
+    if(!n) return alert('Choose a person or type a name first.');
+    if(has(n)) return alert(n+' is already in the list.');
+    setS(p=>({...p,salesmen:[...p.salesmen,n]}));
+  };
+  const remove=(n)=>setS(p=>({...p,salesmen:p.salesmen.filter(x=>x!==n)}));
+  const save=async()=>{
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:PDS_KEY,value:JSON.stringify(S)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    logActivity('Settings','update',`Private dispatch salesmen updated (${S.salesmen.length} people)`);
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000);
+  };
+  if(loading) return <Loading/>;
+
+  return(<div className="page">
+    <div className="page-header"><div className="page-label">System Settings</div><div className="page-title">Private dispatch settings</div></div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. Who can be chosen as salesman</div>
+      <div className="dim" style={{fontSize:12,marginBottom:10}}>These names appear in the Salesman dropdown on Private Dispatch and Returns. Removing a name here does not change past entries.</div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end',marginBottom:12}}>
+        <Field label="Add from employees">
+          <select className="form-input" style={{width:260}} value={pick} onChange={e=>setPick(e.target.value)}>
+            <option value="">-- Select employee --</option>
+            {emps.filter(e=>!has(empName(e))).map(e=><option key={e.id} value={empName(e)}>{empLabel(e)}</option>)}
+          </select>
+        </Field>
+        <button className="btn btn-blue" onClick={()=>{ add(pick); setPick(''); }}>+ Add</button>
+        <Field label="Or type a name (not an employee)">
+          <input className="form-input" style={{width:240}} value={custom} onChange={e=>setCustom(e.target.value)}/>
+        </Field>
+        <button className="btn btn-blue" onClick={()=>{ add(custom); setCustom(''); }}>+ Add</button>
+      </div>
+      <TableWrap><table>
+        <thead><tr><th>Salesman</th><th></th></tr></thead>
+        <tbody>
+          {S.salesmen.length===0&&<tr><td colSpan={2}><Empty msg="No salesmen added yet."/></td></tr>}
+          {S.salesmen.map(n=>(<tr key={n}><td><strong>{n}</strong></td><td style={{textAlign:'right'}}><button className="btn btn-red btn-sm" onClick={()=>remove(n)}>✕</button></td></tr>))}
+        </tbody>
+      </table></TableWrap>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. Rules</div>
+      <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13}}>
+        <input type="checkbox" checked={!!S.require_salesman} onChange={e=>setS(p=>({...p,require_salesman:e.target.checked}))}/>
+        Salesman is compulsory when logging a private dispatch
+      </label>
+    </div>
+
+    <div style={{display:'flex',gap:8,alignItems:'center'}}>
+      {ax('private-dispatch-settings','edit')&&<button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':'Save settings'}</button>}
+      {msg&&<span style={{fontSize:12,color:'var(--green)'}}>{msg}</span>}
+    </div>
   </div>);
 }
 
@@ -13464,6 +13640,7 @@ function App(){
     'power-factor-settings':<PowerFactorSettings/>,
     'truck':<Truck userEmail={user.email}/>,
     'truck-settings':<TruckSettings/>,
+    'private-dispatch-settings':<PrivateDispatchSettings/>,
   };
 
   const showOverdue=myOverdue.length>0&&!overdueAcked;
