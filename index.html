@@ -507,6 +507,9 @@
   ADD("-- Select salesman --","-- सेल्समैन चुनें --","-- സെയിൽസ്മാനെ തിരഞ്ഞെടുക്കുക --","-- விற்பனையாளரைத் தேர்ந்தெடுக்கவும் --");
   ADD("Share of private sales volume","निजी बिक्री मात्रा का हिस्सा","സ്വകാര്യ വിൽപ്പന അളവിലെ പങ്ക്","தனியார் விற்பனை அளவின் பங்கு");
   ADD("Return rate","वापसी दर","തിരിച്ചുവരവ് നിരക്ക്","திரும்பப் பெறும் விகிதம்");
+    ADD("Edit private dispatch","निजी डिस्पैच संपादित करें","സ്വകാര്യ ഡിസ്പാച്ച് എഡിറ്റ് ചെയ്യുക","தனியார் அனுப்புதலைத் திருத்து");
+  ADD("Log private dispatch","निजी डिस्पैच दर्ज करें","സ്വകാര്യ ഡിസ്പാച്ച് രേഖപ്പെടുത്തുക","தனியார் அனுப்புதலைப் பதிவு செய்");
+  ADD("Edit time limit","संपादन समय सीमा","എഡിറ്റ് സമയപരിധി","திருத்த நேர வரம்பு");
   /* ── end of added lines ── */
   /* ───────── end of word list ───────── */
 
@@ -787,7 +790,7 @@ const AX_MILL=[
  {key:'mill:production',label:'Production',acts:[['view','Open page','MS'],['enter_day','Enter a day\'s production','MS'],['no_production','Record "No production"','MS'],['edit_day','Edit an earlier day','M'],['delete_day','Delete latest day','M']]},
  {key:'mill:dispatch',label:'Supplyco Dispatch',acts:[['view','Open page','MD'],['log','Log dispatch','MD'],['delete','Delete dispatch','M']]},
  {key:'mill:work-order-tracker',label:'Work Order Tracker',acts:[['view','Open page','M'],['add','Register work order','M'],['edit','Edit work order & depot allotments','M'],['set_deadline','Change deadline','M'],['delete','Delete work order','M']]},
- {key:'mill:private-dispatch',label:'Private Dispatch',acts:[['view','Open page','MD'],['log','Log dispatch','MD'],['delete','Delete dispatch','M']]},
+ {key:'mill:private-dispatch',label:'Private Dispatch',acts:[['view','Open page','MD'],['log','Log dispatch','MD'],['edit','Edit dispatch (within time limit)','MD'],['delete','Delete dispatch','M']]},
  {key:'mill:private-dispatch-settings',label:'Private Dispatch Settings',acts:[['view','Open page',''],['edit','Change & save settings','']]},
  {key:'mill:lifting-orders',label:'Lifting Orders',acts:[['view','Open page','M'],['add','Register lifting order','M'],['edit','Edit lifting order','M'],['set_deadline','Change deadline','M'],['delete','Delete lifting order','M']]},
  {key:'mill:returns',label:'Returns',acts:[['view','Open page','MSD'],['log','Log return','MSD'],['delete','Delete return','M']]},
@@ -3345,11 +3348,10 @@ function PrivateDispatch(){
   const [entries,setEntries]=useState([]);
   const [products,setProducts]=useState([]);
   const [showForm,setShowForm]=useState(false);
+  const [editingId,setEditingId]=useState(null);
   const [saving,setSaving]=useState(false);
-  const [showCreate,setShowCreate]=useState(false);
-  const [depots,setDepots]=useState([]);
-  const [depotAllotments,setDepotAllotments]=useState({});
   const [loading,setLoading]=useState(true);
+  const [nowTick,setNowTick]=useState(Date.now());
   const [month,setMonth]=useState(new Date().getMonth()+1);
   const [year,setYear]=useState(new Date().getFullYear());
   const {start:periodStart,end:periodEnd}=monthRange(month,year);
@@ -3357,6 +3359,8 @@ function PrivateDispatch(){
   const blank={date:today,party_name:'',product_id:'',qty:'',vehicle_no:'',invoice_no:'',notes:'',salesman:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  useEffect(()=>{ const t=setInterval(()=>setNowTick(Date.now()),30000); return ()=>clearInterval(t); },[]);
 
   const load=useCallback(async()=>{
     setLoading(true);
@@ -3369,8 +3373,15 @@ function PrivateDispatch(){
   },[periodStart,periodEnd]);
   useEffect(()=>{load();},[load]);
 
-  const selectedProduct=products.find(p=>p.id===form.product_id);
+  const selectedProduct=products.find(p=>String(p.id)===String(form.product_id));
   const isRaw=selectedProduct?.is_raw_material;
+
+  // ── edit time limit ──
+  const isDir=CUR_ROLE==='director';
+  const winMin=Number(pdS.edit_window_minutes)||0;
+  const ageMin=(e)=>e.created_at?(nowTick-new Date(e.created_at).getTime())/60000:Infinity;
+  const minsLeft=(e)=>Math.max(0,Math.ceil(winMin-ageMin(e)));
+  const canEdit=(e)=>ax('private-dispatch','edit')&&(isDir||ageMin(e)<=winMin);
 
   const debitStock=async(product, qty, sign)=>{
     // sign = -1 to deduct on dispatch, +1 to restore on delete
@@ -3395,16 +3406,55 @@ function PrivateDispatch(){
     }
   };
 
+  const closeForm=()=>{ setForm(blank); setEditingId(null); setShowForm(false); };
+
+  const startEdit=(e)=>{
+    if(!canEdit(e)) return alert('The edit time is over. Only a Director can edit this entry now.');
+    const raw=!!(e.product&&e.product.is_raw_material);
+    setEditingId(e.id);
+    setForm({date:e.date,party_name:e.party_name||'',product_id:String(e.product_id),qty:String(raw?e.qty_kg:e.qty_bags),vehicle_no:e.vehicle_no||'',invoice_no:e.invoice_no||'',notes:e.notes||'',salesman:e.salesman||''});
+    setShowForm(true);
+    if(window.scrollTo) window.scrollTo(0,0);
+  };
+
   const save=async()=>{
     if(!form.party_name||!form.product_id||!form.qty) return alert('Party name, product and quantity required.');
     if(pdS.require_salesman&&!form.salesman) return alert('Please select the salesman.');
+    const qtyNum=Number(form.qty);
+    if(!(qtyNum>0)) return alert('Quantity must be above 0.');
+
+    if(editingId){
+      const orig=entries.find(x=>x.id===editingId);
+      if(!orig) return alert('This entry could not be found. Reload the page and try again.');
+      if(!canEdit(orig)) return alert('The edit time is over. Only a Director can edit this entry now.');
+      const oldProd=orig.product;
+      const oldQty=(oldProd&&oldProd.is_raw_material)?Number(orig.qty_kg):Number(orig.qty_bags);
+      const sameProd=String(orig.product_id)===String(form.product_id);
+      const need=sameProd?qtyNum-oldQty:qtyNum;   // only the extra quantity has to be in stock
+      if(need>0){
+        if(!(await stockGuard(selectedProduct,need))) return;
+        if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,need))) return;
+      }
+      setSaving(true);
+      const {data:{user}}=await sb.auth.getUser();
+      const upd={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:qtyNum,qty_kg:isRaw?qtyNum:null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes,salesman:form.salesman||null,edited_by:user?user.email:null,edited_at:new Date().toISOString()};
+      const {data,error}=await sb.from('private_dispatches').update(upd).eq('id',editingId).select('*, product:product_id(*)');
+      if(error){ alert(error.message+' — have you run the SQL for edit columns?'); setSaving(false); return; }
+      if(!data||data.length===0){ alert('Not saved — you are not permitted to change this entry. Nothing was changed.'); setSaving(false); return; }
+      if(oldProd) await debitStock(oldProd,oldQty,1);
+      await debitStock(selectedProduct,qtyNum,-1);
+      logActivity('Private Dispatch','update',`Edited ${orig.party_name}: ${fmt(oldQty)} ${oldProd?.is_raw_material?'kg':'bags'} ${oldProd?.product_name||''} → ${fmt(qtyNum)} ${isRaw?'kg':'bags'} ${selectedProduct.product_name} (${form.party_name}, ${form.date}${form.salesman?', '+form.salesman:''})`);
+      setSaving(false); closeForm(); load();
+      return;
+    }
+
     if(!(await stockGuard(selectedProduct,form.qty))) return;
-if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
+    if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
     setSaving(true);
-    const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:Number(form.qty),qty_kg:isRaw?Number(form.qty):null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes,salesman:form.salesman||null};
+    const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:qtyNum,qty_kg:isRaw?qtyNum:null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes,salesman:form.salesman||null};
     const {data,error}=await sb.from('private_dispatches').insert(row).select('*, product:product_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
-    await debitStock(selectedProduct, Number(form.qty), -1);
+    await debitStock(selectedProduct, qtyNum, -1);
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Private Dispatch','create',`${form.party_name} — ${form.qty}${isRaw?'kg':' bags'} of ${selectedProduct.product_name}`);
   };
@@ -3429,11 +3479,11 @@ if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
         <div className="page-title">Private dispatch — {periodLabel}: {fmt(totalBags)} bags, {fmtMT(totalKg)}</div>
         <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
-      {ax('private-dispatch','log')&&<button className="btn btn-green" onClick={()=>setShowForm(v=>!v)}>+ Log dispatch</button>}
+      {ax('private-dispatch','log')&&<button className="btn btn-green" onClick={()=>{ if(showForm){ closeForm(); } else { setEditingId(null); setForm(blank); setShowForm(true); } }}>+ Log dispatch</button>}
     </div>
 
     {showForm&&(
-      <FormCard title="Log private dispatch" col="var(--green)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+      <FormCard title={editingId?'Edit private dispatch':'Log private dispatch'} col={editingId?'var(--blue)':'var(--green)'} onSave={save} onCancel={closeForm} saving={saving}>
         <div className="form-grid">
           <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
           <Field label="Party name ★"><input className="form-input" value={form.party_name} onChange={e=>f('party_name',e.target.value)}/></Field>
@@ -3449,11 +3499,13 @@ if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
           <Field label={pdS.require_salesman?'Salesman ★':'Salesman'}>
             <select className="form-input" value={form.salesman} onChange={e=>f('salesman',e.target.value)}>
               <option value="">-- Select salesman --</option>
+              {form.salesman&&!pdS.salesmen.includes(form.salesman)&&<option value={form.salesman}>{form.salesman}</option>}
               {pdS.salesmen.map(n=><option key={n} value={n}>{n}</option>)}
             </select>
           </Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
+        {editingId&&<div className="dim" style={{fontSize:12,marginTop:10}}>Stock is adjusted automatically: the old quantity is put back and the new one is taken out.</div>}
       </FormCard>
     )}
 
@@ -3463,12 +3515,18 @@ if(!isRaw&&!(await sdGuardDispatch(form.date,selectedProduct,form.qty))) return;
         {entries.length===0&&<tr><td colSpan={7}><Empty msg={`No private dispatches in ${periodLabel}.`}/></td></tr>}
         {entries.map(e=>(<tr key={e.id}>
           <td className="mono dim">{e.date}</td>
-          <td><strong>{e.party_name}</strong></td>
+          <td><strong>{e.party_name}</strong>{e.edited_at&&<div className="dim" style={{fontSize:10}}>edited by {(e.edited_by||'—').split('@')[0]}</div>}</td>
           <td>{e.product?.product_name||'—'}</td>
           <td>{e.salesman||<span className="dim">—</span>}</td>
           <td><strong style={{color:'var(--green)',fontFamily:'var(--mono)'}}>{e.product?.is_raw_material?fmtMT(e.qty_kg):fmt(e.qty_bags)+' bags'}</strong></td>
           <td className="dim">{e.vehicle_no||'—'}</td>
-<td>{ax('private-dispatch','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button>}</td>        </tr>))}
+          <td style={{whiteSpace:'nowrap'}}>
+            {ax('private-dispatch','edit')&&(canEdit(e)
+              ?<button className="btn btn-blue btn-sm" onClick={()=>startEdit(e)} title={isDir?'Director: no time limit':`${minsLeft(e)} minute(s) left to edit`}>Edit{!isDir&&winMin>0?` · ${minsLeft(e)}m`:''}</button>
+              :<span title="Edit time is over — only a Director can edit" style={{fontSize:14,marginRight:4}}>🔒</span>)}{' '}
+            {ax('private-dispatch','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(e)}>✕</button>}
+          </td>
+        </tr>))}
       </tbody>
     </table></TableWrap>
   </div>);
@@ -13320,7 +13378,7 @@ function Analysis(){
 // PRIVATE DISPATCH SETTINGS — who can be chosen as salesman
 // ══════════════════════════════════════════════════════════
 const PDS_KEY='private_dispatch_settings';
-const PDS_DEFAULTS={salesmen:[],require_salesman:false};
+const PDS_DEFAULTS={salesmen:[],require_salesman:false,edit_window_minutes:60};
 async function loadPdSettings(){
   const {data}=await sb.from('erp_settings').select('value').eq('key',PDS_KEY).maybeSingle();
   let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
@@ -13354,7 +13412,10 @@ function PrivateDispatchSettings(){
   const remove=(n)=>setS(p=>({...p,salesmen:p.salesmen.filter(x=>x!==n)}));
   const save=async()=>{
     setSaving(true);
-    const {error}=await sb.from('erp_settings').upsert({key:PDS_KEY,value:JSON.stringify(S)},{onConflict:'key'});
+    const mins=Number(S.edit_window_minutes);
+    if(!Number.isInteger(mins)||mins<0||mins>100000){ setSaving(false); return alert('Edit time must be a whole number of minutes, 0 or more.'); }
+    const clean={...S,edit_window_minutes:mins};
+    const {error}=await sb.from('erp_settings').upsert({key:PDS_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
     setSaving(false);
     if(error) return alert(error.message);
     logActivity('Settings','update',`Private dispatch salesmen updated (${S.salesmen.length} people)`);
@@ -13396,6 +13457,16 @@ function PrivateDispatchSettings(){
         <input type="checkbox" checked={!!S.require_salesman} onChange={e=>setS(p=>({...p,require_salesman:e.target.checked}))}/>
         Salesman is compulsory when logging a private dispatch
       </label>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">3. Edit time limit</div>
+      <div className="form-grid">
+        <Field label="Staff can edit a dispatch for (minutes after it is logged)">
+          <input type="number" min="0" className="form-input" value={S.edit_window_minutes} onChange={e=>setS(p=>({...p,edit_window_minutes:e.target.value}))}/>
+        </Field>
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>After this time only a Director can edit the entry. 60 = one hour, 1440 = one day, 0 = staff can never edit (Director only). Directors are never limited.</div>
     </div>
 
     <div style={{display:'flex',gap:8,alignItems:'center'}}>
