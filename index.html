@@ -3470,7 +3470,7 @@ function PrivateDispatch(){
 
   if(loading) return <Loading/>;
   const totalBags=entries.filter(e=>!e.product?.is_raw_material).reduce((s,e)=>s+Number(e.qty_bags||0),0);
-  const totalKg=entries.filter(e=>e.product?.is_raw_material).reduce((s,e)=>s+Number(e.qty_kg||0),0);
+  const totalKg=entries.reduce((s,e)=>s+(e.product?.is_raw_material?Number(e.qty_kg||0):Number(e.qty_bags||0)*packSizeOf(e.product)),0);
 
   return(<div className="page">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
