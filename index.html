@@ -2017,7 +2017,12 @@ function Production(){
 
     {loggedDates.length===0 ? <Empty msg="No production days logged yet."/> : loggedDates.map((date,idx)=>{
       const dayRows=logs.filter(l=>l.date===date);
-      const totalMT=dayRows.reduce((s,r)=>s+Number(r.production_bags)*packSizeOf(r.product),0)/1000;
+      const totalMT=dayRows.reduce((s,r)=>{
+        const sz=packSizeOf(r.product);
+        const bags=Number(r.production_bags)||0;
+        if(sz>0) return s+Math.max(0,bags*sz-storedInWeightKg(r.date,r.product_id));
+        return s+bags;
+      },0)/1000;
       const isLatest=idx===0;
       const frozen=isFrozen(date);
       return(<div key={date} style={{marginBottom:20,opacity:frozen?0.7:1}}>
@@ -2098,13 +2103,14 @@ async function syncPackingUsage(date,product,bags){
       if(delta===0) continue;
       const {data:s}=await sb.from('store_stock').select('*').eq('id',id).maybeSingle();
       if(!s){ errs.push(`store item ${id} not found`); continue; }
+      const writeRec=(q)=>q===0
+        ?sb.from('production_material_usage').delete().eq('log_date',date).eq('product_id',pid).eq('store_item_id',id)
+        :sb.from('production_material_usage').upsert({log_date:date,product_id:pid,store_item_id:id,qty:q},{onConflict:'log_date,product_id,store_item_id'});
+      const {error:re}=await writeRec(w);
+      if(re){ errs.push(`${s.item_name}: usage record could not be saved, so stock was NOT changed (${re.message})`); continue; }
       const {error:ue}=await sb.from('store_stock').update({qty:r3(Number(s.qty)-delta),updated_at:new Date().toISOString()}).eq('id',s.id);
-      if(ue){ errs.push(`${s.item_name}: ${ue.message}`); continue; }
+      if(ue){ await writeRec(h); errs.push(`${s.item_name}: ${ue.message}`); continue; }
       await sb.from('store_transactions').insert({item_id:s.id,date,txn_type:delta>0?'Used / Issued':'Received',qty:Math.abs(delta),notes:`Auto — production ${date}: ${product.product_name}${delta<0?' (reversal)':''}`});
-      const {error:re}=w===0
-        ?await sb.from('production_material_usage').delete().eq('log_date',date).eq('product_id',pid).eq('store_item_id',id)
-        :await sb.from('production_material_usage').upsert({log_date:date,product_id:pid,store_item_id:id,qty:w},{onConflict:'log_date,product_id,store_item_id'});
-      if(re) errs.push(`${s.item_name}: stock changed but the usage record failed (${re.message})`);
     }
     if(errs.length) alert(`Packing materials could not be fully updated for ${product.product_name} (${date}):\n${errs.join('\n')}\n\nPlease check Store & Materials.`);
   }catch(e){
