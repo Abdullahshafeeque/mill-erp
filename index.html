@@ -1433,6 +1433,13 @@ function Production(){
   const [linesAll,setLinesAll]=useState([]);
   const [addins,setAddins]=useState({});
   const [returns,setReturns]=useState([]);
+    const [showPct,setShowPct]=useState(false);
+  const prodKgOf=(r)=>{
+    const sz=packSizeOf(r.product);
+    const bags=Number(r.production_bags)||0;
+    if(sz>0) return Math.max(0,bags*sz-storedInWeightKg(r.date,r.product_id));
+    return bags;
+  };
   const [prodOrder,setProdOrder]=useState([]);
   const unitOf=(p)=>(p&&p.packing_type==='loose'&&!p.has_standard_weight)?(p.unit||'kg'):'bags';
   const qb=(n,p)=>{ const u=unitOf(p); return fmt(n)+' '+(u==='bags'&&Math.abs(Number(n))===1?'bag':u); };
@@ -2015,14 +2022,14 @@ function Production(){
       </div>
     )}
 
+    <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:14,cursor:'pointer'}}>
+      <input type="checkbox" checked={showPct} onChange={e=>setShowPct(e.target.checked)}/> Show % of production and weight (kg)
+    </label>
+
     {loggedDates.length===0 ? <Empty msg="No production days logged yet."/> : loggedDates.map((date,idx)=>{
       const dayRows=logs.filter(l=>l.date===date);
-      const totalMT=dayRows.reduce((s,r)=>{
-        const sz=packSizeOf(r.product);
-        const bags=Number(r.production_bags)||0;
-        if(sz>0) return s+Math.max(0,bags*sz-storedInWeightKg(r.date,r.product_id));
-        return s+bags;
-      },0)/1000;
+      const totalKg=dayRows.reduce((s,r)=>s+prodKgOf(r),0);
+      const totalMT=totalKg/1000;
       const isLatest=idx===0;
       const frozen=isFrozen(date);
       return(<div key={date} style={{marginBottom:20,opacity:frozen?0.7:1}}>
@@ -2042,7 +2049,7 @@ function Production(){
           </div>
         </div>
         <TableWrap><table>
-          <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Sales</th><th>Returns</th><th>Closing</th></tr></thead>
+          <thead><tr><th>Product</th><th>Opening</th><th>Production</th><th>Sales</th><th>Returns</th><th>Closing</th>{showPct&&<th>Weight (kg)</th>}{showPct&&<th>% of total</th>}</tr></thead>
           <tbody>
             {[...dayRows.map(r=>({r,pid:r.product_id})),...ghostRows(date,dayRows).map(g=>({g,pid:g.p.id}))].sort((a,b)=>{ const pos=(id)=>{ const i=prodOrder.indexOf(String(id)); return i<0?1e9:i; }; return pos(a.pid)-pos(b.pid); }).map(it=>{
               if(it.g){
@@ -2054,6 +2061,8 @@ function Production(){
                   <td className="mono" style={{color:g.sales>0?'var(--red)':'var(--dim)'}}>{g.sales>0?'−'+qb(g.sales,g.p):'—'}</td>
                   <td className="mono" style={{color:g.ret>0?'var(--blue)':'var(--dim)'}}>{g.ret>0?'+'+qb(g.ret,g.p):'—'}</td>
                   <td className="mono" style={{fontWeight:600}}>{qb(g.closing,g.p)}</td>
+                  {showPct&&<td className="mono dim">—</td>}
+                  {showPct&&<td className="mono dim">—</td>}
                 </tr>);
               }
               const r=it.r;
@@ -2067,6 +2076,8 @@ function Production(){
                 <td className="mono" style={{color:sales>0?'var(--red)':'var(--dim)'}}>{sales>0?'−'+qb(sales,r.product):'—'}</td>
                 <td className="mono" style={{color:ret>0?'var(--blue)':'var(--dim)'}}>{ret>0?'+'+qb(ret,r.product):'—'}</td>
                 <td className="mono" style={{fontWeight:600}}>{qb(closing,r.product)}{adjFor(r.date,r.product_id)!==0&&<div style={{fontSize:10,color:'var(--purple)',fontWeight:500}} title="Stock count adjustment">adj {adjFor(r.date,r.product_id)>0?'+':''}{fmt(adjFor(r.date,r.product_id))}</div>}{useFor(r.date,r.product_id)>0&&<div style={{fontSize:10,color:'var(--blue)',fontWeight:500}} title="Used up in add-ins">add-in −{fmt(useFor(r.date,r.product_id),1)}</div>}</td>
+              {showPct&&<td className="mono">{fmt(prodKgOf(r),1)} kg</td>}
+              {showPct&&<td className="mono" style={{color:'var(--amber)',fontWeight:600}}>{totalKg>0?(prodKgOf(r)/totalKg*100).toFixed(2):'0.00'}%</td>}
               </tr>);
             })}
           </tbody>
