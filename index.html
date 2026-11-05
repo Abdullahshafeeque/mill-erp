@@ -3876,6 +3876,208 @@ function StoreUsage({items,onBack}){
 }
 
 // ══════════════════════════════════════════════════════════
+// STORE · IN / OUT MOVEMENT LEDGER
+// ══════════════════════════════════════════════════════════
+function StoreMovements({items,onBack}){
+  const now=new Date(); let pm=now.getMonth(), py=now.getFullYear(); if(pm===0){ pm=12; py--; }
+  const lm=monthRange(pm,py); const [ty,tm]=today.split('-').map(Number);
+  const PRESETS=[
+    {k:'7',label:'Last 7 days',from:licShift(today,-6),to:today},
+    {k:'30',label:'Last 30 days',from:licShift(today,-29),to:today},
+    {k:'month',label:'This month',from:monthStart,to:today},
+    {k:'last',label:'Last month',from:lm.start,to:lm.end},
+    {k:'90',label:'Last 90 days',from:licShift(today,-89),to:today},
+    {k:'fy',label:'Financial year to date',from:`${tm>=4?ty:ty-1}-04-01`,to:today},
+    {k:'365',label:'Last 12 months',from:licShift(today,-364),to:today},
+  ];
+  const [preset,setPreset]=useState('30');
+  const [from,setFrom]=useState(PRESETS[1].from);
+  const [to,setTo]=useState(PRESETS[1].to);
+  const [itemId,setItemId]=useState('ALL');
+  const [dirF,setDirF]=useState('All');
+  const [search,setSearch]=useState('');
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [showN,setShowN]=useState(200);
+
+  const pick=(p)=>{ setPreset(p.k); setFrom(p.from); setTo(p.to); };
+
+  useEffect(()=>{
+    if(!from||!to||from>to){ setErr('"From" must not be after "To".'); setLoading(false); return; }
+    if(rjDiff(from,to)>800){ setErr('Please choose a range of at most 800 days.'); setLoading(false); return; }
+    let c=false; setLoading(true); setErr(''); setShowN(200);
+    (async()=>{
+      try{
+        const tx=await fetchAllRows((a,b)=>{
+          let q=sb.from('store_transactions').select('*').gte('date',from);
+          if(itemId!=='ALL') q=q.eq('item_id',itemId);
+          return q.order('date').order('id').range(a,b);
+        });
+        const cl=await fetchAllRows((a,b)=>{
+          let q=sb.from('stock_count_lines').select('id,item_id,diff,reason,count:count_id(count_date)').eq('item_type','store').eq('applied',true).eq('reversed',false);
+          if(itemId!=='ALL') q=q.eq('item_id',itemId);
+          return q.order('id').range(a,b);
+        });
+        const all=[];
+        tx.forEach(t=>{
+          const q=Number(t.qty)||0, n=String(t.notes||'');
+          const auto=n.startsWith('Auto — production'), rev=auto&&n.includes('(reversal)');
+          const delta=t.txn_type==='Received'?q:-q;
+          let label=t.txn_type; if(auto) label=rev?'Production reversal':'Used (production)';
+          all.push({id:'t'+t.id,item:String(t.item_id),date:t.date,ord:String(t.created_at||''),delta,label,notes:n});
+        });
+        cl.forEach(l=>{
+          if(!l.count||!l.count.count_date) return;
+          const d=Number(l.diff)||0; if(d===0) return;
+          all.push({id:'c'+l.id,item:String(l.item_id),date:l.count.count_date,ord:'~',delta:d,label:'Stock count adjustment',notes:l.reason||''});
+        });
+        all.sort((a,b)=>a.date.localeCompare(b.date)||(a.ord<b.ord?-1:a.ord>b.ord?1:0)||a.id.localeCompare(b.id));
+        const cur={}; items.forEach(i=>{ cur[String(i.id)]=Number(i.qty)||0; });
+        const per={};
+        const slot=(k)=>per[k]=per[k]||{after:0,inn:0,out:0,net:0};
+        all.forEach(m=>{ if(m.date>to) slot(m.item).after+=m.delta; });
+        Object.keys(cur).forEach(k=>slot(k));
+        Object.keys(per).forEach(k=>{ per[k].closing=r3((cur[k]||0)-per[k].after); });
+        const mv=all.filter(m=>m.date>=from&&m.date<=to);
+        mv.forEach(m=>{ const o=slot(m.item); if(m.delta>0) o.inn+=m.delta; else o.out-=m.delta; o.net+=m.delta; });
+        Object.keys(per).forEach(k=>{ per[k].opening=r3(per[k].closing-per[k].net); per[k].run=per[k].opening; });
+        mv.forEach(m=>{ const o=per[m.item]; o.run+=m.delta; m.bal=r3(o.run); });
+        if(!c){ setData({mv,per}); setLoading(false); }
+      }catch(e){ if(!c){ setErr(e.message||String(e)); setLoading(false); } }
+    })();
+    return ()=>{c=true;};
+  },[from,to,itemId]);
+
+  const cats=Array.from(new Set(items.map(x=>x.category))).filter(Boolean).sort();
+  const item=itemId==='ALL'?null:items.find(x=>String(x.id)===itemId);
+  const nameOf=(id)=>{ const it=items.find(x=>String(x.id)===String(id)); return it?it.item_name:'(deleted item)'; };
+  const unitOfId=(id)=>{ const it=items.find(x=>String(x.id)===String(id)); return it?it.unit:''; };
+
+  let lines=[], perRows=[], days=[], quiet=0;
+  if(data){
+    const q=search.trim().toLowerCase();
+    lines=data.mv.filter(m=>(dirF==='All'||(dirF==='In'?m.delta>0:m.delta<0))&&(!q||`${nameOf(m.item)} ${m.label} ${m.notes}`.toLowerCase().includes(q))).reverse();
+    if(!item){
+      const all=items.map(it=>({it,...(data.per[String(it.id)]||{opening:0,inn:0,out:0,closing:0})}));
+      perRows=all.filter(r=>r.inn>0||r.out>0).sort((a,b)=>String(a.it.item_name).localeCompare(String(b.it.item_name)));
+      quiet=all.length-perRows.length;
+    } else {
+      const by={};
+      data.mv.forEach(m=>{ const o=by[m.date]=by[m.date]||{date:m.date,inn:0,out:0,bal:0}; if(m.delta>0) o.inn+=m.delta; else o.out-=m.delta; o.bal=m.bal; });
+      days=Object.values(by).sort((a,b)=>b.date.localeCompare(a.date));
+    }
+  }
+  const P=item&&data?(data.per[String(item.id)]||{opening:0,inn:0,out:0,closing:0}):null;
+
+  const csv=()=>{
+    if(!data) return;
+    downloadCSV(`store_movement_${item?item.item_name.replace(/\W+/g,'_'):'all'}_${from}_to_${to}.csv`,
+      ['Date','Item','Unit','Type','In','Out',...(item?['Balance after']:[]),'Details'],
+      [...lines].reverse().map(m=>[m.date,nameOf(m.item),unitOfId(m.item),m.label,m.delta>0?r3(m.delta):'',m.delta<0?r3(-m.delta):'',...(item?[m.bal]:[]),m.notes]));
+  };
+
+  return(<div className="page">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20,flexWrap:'wrap',gap:12}}>
+      <div className="page-header" style={{marginBottom:0}}>
+        <div className="page-label">Inventory</div>
+        <div className="page-title">Store in / out movement</div>
+      </div>
+      <button className="btn btn-ghost" onClick={onBack}>← Back to stock</button>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="form-grid">
+        <Field label="Material">
+          <select className="form-input" value={itemId} onChange={e=>setItemId(e.target.value)}>
+            <option value="ALL">All materials (register)</option>
+            {cats.map(c=><optgroup key={c} label={c}>{items.filter(x=>x.category===c).sort((a,b)=>String(a.item_name).localeCompare(String(b.item_name))).map(x=><option key={x.id} value={String(x.id)}>{x.item_name}</option>)}</optgroup>)}
+          </select>
+        </Field>
+        <Field label="Show"><select className="form-input" value={dirF} onChange={e=>setDirF(e.target.value)}><option value="All">In and out</option><option value="In">Only IN (received / added)</option><option value="Out">Only OUT (used / damaged / returned)</option></select></Field>
+        <Field label="From"><input type="date" className="form-input" max={today} value={from} onChange={e=>{ setFrom(e.target.value); setPreset('custom'); }}/></Field>
+        <Field label="To"><input type="date" className="form-input" max={today} value={to} onChange={e=>{ setTo(e.target.value); setPreset('custom'); }}/></Field>
+        <Field label="Search"><input className="form-input" placeholder="item, type, notes…" value={search} onChange={e=>setSearch(e.target.value)}/></Field>
+      </div>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:12}}>
+        {PRESETS.map(p=><button key={p.k} className={`btn btn-sm ${preset===p.k?'btn-amber':'btn-ghost'}`} onClick={()=>pick(p)}>{p.label}</button>)}
+      </div>
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load movements" sub={err}/>}
+    {loading&&<Loading/>}
+
+    {!loading&&!err&&data&&(<>
+      {P&&<div className="stat-grid">
+        <StatCard label="Opening stock" value={`${qtyFmt(P.opening)} ${item.unit}`} sub={`on ${from}, before entries`} col="var(--blue)"/>
+        <StatCard label="Total IN" value={`+${qtyFmt(P.inn)} ${item.unit}`} sub="received, returned to stock, count gains" col="var(--green)"/>
+        <StatCard label="Total OUT" value={`−${qtyFmt(P.out)} ${item.unit}`} sub="used, damaged, returned, count losses" col="var(--red)"/>
+        <StatCard label="Closing stock" value={`${qtyFmt(P.closing)} ${item.unit}`} sub={`end of ${to}`} col="var(--amber)"/>
+      </div>}
+
+      {!item&&(<>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
+          <div className="section-label" style={{marginBottom:0}}>Stock register — {from} to {to} (click a row for its dates)</div>
+          <button className="btn btn-ghost btn-sm" onClick={csv} disabled={lines.length===0}>⬇ Download CSV</button>
+        </div>
+        <TableWrap><table>
+          <thead><tr><th>Item</th><th>Category</th><th style={{textAlign:'right'}}>Opening</th><th style={{textAlign:'right'}}>In</th><th style={{textAlign:'right'}}>Out</th><th style={{textAlign:'right'}}>Closing</th></tr></thead>
+          <tbody>
+            {perRows.length===0&&<tr><td colSpan={6}><Empty msg="No movement in this period."/></td></tr>}
+            {perRows.map(r=>(<tr key={r.it.id} style={{cursor:'pointer'}} onClick={()=>setItemId(String(r.it.id))}>
+              <td><strong>{r.it.item_name}</strong></td>
+              <td className="dim">{r.it.category}</td>
+              <td className="mono" style={{textAlign:'right'}}>{qtyFmt(r.opening)} {r.it.unit}</td>
+              <td className="mono" style={{textAlign:'right',color:r.inn>0?'var(--green)':'var(--dim)'}}>{r.inn>0?'+'+qtyFmt(r.inn):'—'}</td>
+              <td className="mono" style={{textAlign:'right',color:r.out>0?'var(--red)':'var(--dim)'}}>{r.out>0?'−'+qtyFmt(r.out):'—'}</td>
+              <td className="mono" style={{textAlign:'right',fontWeight:700}}>{qtyFmt(r.closing)} {r.it.unit}</td>
+            </tr>))}
+          </tbody>
+        </table></TableWrap>
+        {quiet>0&&<div className="dim" style={{fontSize:12,marginTop:8}}>{quiet} other item{quiet===1?' has':'s have'} no movement in this period.</div>}
+      </>)}
+
+      {item&&days.length>0&&(<>
+        <div className="section-label" style={{marginTop:8}}>Day by day — {item.item_name}</div>
+        <TableWrap><table>
+          <thead><tr><th>Date</th><th style={{textAlign:'right'}}>In</th><th style={{textAlign:'right'}}>Out</th><th style={{textAlign:'right'}}>Closing balance</th></tr></thead>
+          <tbody>
+            {days.map(d=>(<tr key={d.date}>
+              <td className="mono">{d.date}</td>
+              <td className="mono" style={{textAlign:'right',color:d.inn>0?'var(--green)':'var(--dim)'}}>{d.inn>0?'+'+qtyFmt(d.inn):'—'}</td>
+              <td className="mono" style={{textAlign:'right',color:d.out>0?'var(--red)':'var(--dim)'}}>{d.out>0?'−'+qtyFmt(d.out):'—'}</td>
+              <td className="mono" style={{textAlign:'right',fontWeight:700}}>{qtyFmt(d.bal)} {item.unit}</td>
+            </tr>))}
+          </tbody>
+        </table></TableWrap>
+      </>)}
+
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',margin:'24px 0 10px',flexWrap:'wrap',gap:8}}>
+        <div className="section-label" style={{marginBottom:0}}>Every entry (newest first) — {lines.length}</div>
+        {item&&<button className="btn btn-ghost btn-sm" onClick={csv} disabled={lines.length===0}>⬇ Download CSV</button>}
+      </div>
+      <TableWrap><table>
+        <thead><tr><th>Date</th>{!item&&<th>Item</th>}<th>Type</th><th style={{textAlign:'right'}}>In</th><th style={{textAlign:'right'}}>Out</th>{item&&<th style={{textAlign:'right'}}>Balance after</th>}<th>Details</th></tr></thead>
+        <tbody>
+          {lines.length===0&&<tr><td colSpan={item?6:6}><Empty msg="No entries match this view."/></td></tr>}
+          {lines.slice(0,showN).map(m=>(<tr key={m.id}>
+            <td className="mono dim">{m.date}</td>
+            {!item&&<td><strong>{nameOf(m.item)}</strong></td>}
+            <td><span className={`badge ${m.delta>0?'badge-green':'badge-red'}`}>{m.label}</span></td>
+            <td className="mono" style={{textAlign:'right',color:'var(--green)',fontWeight:m.delta>0?700:400}}>{m.delta>0?'+'+qtyFmt(m.delta):'—'}</td>
+            <td className="mono" style={{textAlign:'right',color:'var(--red)',fontWeight:m.delta<0?700:400}}>{m.delta<0?'−'+qtyFmt(-m.delta):'—'}</td>
+            {item&&<td className="mono" style={{textAlign:'right'}}>{qtyFmt(m.bal)} {item.unit}</td>}
+            <td className="dim" style={{fontSize:12}}>{m.notes||'—'}</td>
+          </tr>))}
+        </tbody>
+      </table></TableWrap>
+      {lines.length>showN&&<div style={{textAlign:'center',marginTop:12}}><button className="btn btn-ghost btn-sm" onClick={()=>setShowN(n=>n+200)}>Show more ({lines.length-showN} left)</button></div>}
+      <div className="dim" style={{fontSize:12,marginTop:10,maxWidth:780}}>Opening and closing figures are worked backwards from today's stock using every entry after the chosen dates, including stock-count adjustments. Entries made by production show as "Used (production)" and a corrected or deleted production day shows as "Production reversal".</div>
+    </>)}
+  </div>);
+}
+
+// ══════════════════════════════════════════════════════════
 // STORE & MATERIALS
 // ══════════════════════════════════════════════════════════
 function Store(){
@@ -4050,6 +4252,7 @@ function Store(){
 
   if(loading) return <Loading/>;
   if(view==='usage') return <StoreUsage items={items} onBack={()=>setView('stock')}/>;
+  if(view==='movement') return <StoreMovements items={items} onBack={()=>setView('stock')}/>;
 
   const cats=['All',...CATS];
   const showCats=filterCat==='All'?CATS.filter(c=>items.some(x=>x.category===c)):[filterCat];
@@ -4096,6 +4299,7 @@ function Store(){
       </div>
       <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
         <button className="btn btn-blue" onClick={()=>setView('usage')}>📊 Usage analysis</button>
+        <button className="btn btn-blue" onClick={()=>setView('movement')}>🔁 In / out movement</button>
         {canOrg&&filterCat!=='All'&&<button className="btn btn-ghost" onClick={()=>addSub(filterCat)}>+ Sub-category</button>}
         {ax('store','add_item')&&<button className="btn btn-amber" onClick={startAdd}>+ Add item</button>}
       </div>
