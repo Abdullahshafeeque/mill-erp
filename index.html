@@ -1411,6 +1411,7 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
 }
 
 const KG_STOCK_FROM='2026-11-06';
+const PROD_DAYS=60; // how many days of production the page shows
 
 // ══════════════════════════════════════════════════════════
 // PRODUCTION
@@ -1438,6 +1439,12 @@ function Production(){
   const [addins,setAddins]=useState({});
   const [returns,setReturns]=useState([]);
     const [showPct,setShowPct]=useState(false);
+  useEffect(()=>{
+    if(!saving) return;
+    const warn=(e)=>{ e.preventDefault(); e.returnValue=''; return ''; };
+    window.addEventListener('beforeunload',warn);
+    return ()=>window.removeEventListener('beforeunload',warn);
+  },[saving]);
   const prodKgOf=(r)=>{
     const sz=packSizeOf(r.product);
     const bags=Number(r.production_bags)||0;
@@ -1602,27 +1609,39 @@ function Production(){
     Number(opening)+Number(production)-salesFor(date,productId)+returnsFor(date,productId)+adjFor(date,productId)-useFor(date,productId);
 
   const load=useCallback(async()=>{
-    setLoading(true);
-    const [{data:fp},{data:ap},{data:lg},{data:sd},{data:pd},{data:rt},{data:adj},{data:prl},{data:psi},{data:rcp},{data:rln},adn]=await Promise.all([
-      sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
-      sb.from('product_master').select('*'),
-      sb.from('daily_production_log').select('*, product:product_id(*)').order('date',{ascending:false}),
-      sb.from('supplyco_dispatches').select('date,product_id,qty_bags'),
-      sb.from('private_dispatches').select('date,product_id,qty_bags'),
-      sb.from('product_returns').select('date,product_id,qty_bags'),
-      sb.from('stock_count_lines').select('item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false),
-      sb.from('product_packing_rules').select('*'),
-      sb.from('store_stock').select('id,item_name,unit,qty'),
-      sb.from('product_recipes').select('*'),
-      sb.from('recipe_lines').select('*'),
-      fetchAllRows((a,b)=>sb.from('production_addins').select('*').order('id').range(a,b)).catch(()=>[]),
-    ]);
-    let ord=[]; try{ ord=JSON.parse((await cashSetting('production_product_order'))||'[]'); }catch(e){ ord=[]; }
-    setProdOrder(ord);
-    setFinishedProducts(sortByProdOrder((fp||[]).filter(p=>p.include_in_production_log!==false),ord)); setAllProducts(ap||[]); setLogs(lg||[]);
-    setSupplycoDisp(sd||[]); setPrivateDisp(pd||[]); setReturns(rt||[]);
-    setAdjustments((adj||[]).filter(a=>a.count&&(a.item_type==='finished'||a.count.count_date>=KG_STOCK_FROM)).map(a=>({date:a.count.count_date,product_id:a.item_id,qty:Number(a.diff)})));
-    setPackRules(prl||[]); setPackItems(psi||[]); setRecipesAll(rcp||[]); setLinesAll(rln||[]); setAddinRows(adn||[]); setPackStart((await cashSetting('packing_start_date'))||'');
+    try{
+      const [{data:fp},{data:ap},{data:prl},{data:psi},{data:rcp},{data:rln},ordRaw,packRaw]=await Promise.all([
+        sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+        sb.from('product_master').select('*'),
+        sb.from('product_packing_rules').select('*'),
+        sb.from('store_stock').select('id,item_name,unit,qty'),
+        sb.from('product_recipes').select('*'),
+        sb.from('recipe_lines').select('*'),
+        cashSetting('production_product_order'),
+        cashSetting('packing_start_date'),
+      ]);
+      let ord=[]; try{ ord=JSON.parse(ordRaw||'[]'); }catch(e){ ord=[]; }
+      const logProds=(fp||[]).filter(p=>p.include_in_production_log!==false);
+      // go back far enough that every product's most recent row is included
+      let from=licShift(today,-(PROD_DAYS+30));
+      const lastRows=await Promise.all(logProds.map(p=>sb.from('daily_production_log').select('date').eq('product_id',p.id).order('date',{ascending:false}).limit(1).maybeSingle()));
+      lastRows.forEach(r=>{ const d=r.data&&r.data.date; if(d&&d<from) from=d; });
+      const [lg,sd,pd,rt,adj,adn]=await Promise.all([
+        fetchAllRows((a,b)=>sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',from).order('date',{ascending:false}).order('id').range(a,b)),
+        fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
+        fetchAllRows((a,b)=>sb.from('private_dispatches').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
+        fetchAllRows((a,b)=>sb.from('product_returns').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
+        fetchAllRows((a,b)=>sb.from('stock_count_lines').select('id,item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false).order('id').range(a,b)),
+        fetchAllRows((a,b)=>sb.from('production_addins').select('*').gte('log_date',from).order('id').range(a,b)).catch(()=>[]),
+      ]);
+      setProdOrder(ord);
+      setFinishedProducts(sortByProdOrder(logProds,ord)); setAllProducts(ap||[]); setLogs(lg||[]);
+      setSupplycoDisp(sd||[]); setPrivateDisp(pd||[]); setReturns(rt||[]);
+      setAdjustments((adj||[]).filter(a=>a.count&&(a.item_type==='finished'||a.count.count_date>=KG_STOCK_FROM)).map(a=>({date:a.count.count_date,product_id:a.item_id,qty:Number(a.diff)})));
+      setPackRules(prl||[]); setPackItems(psi||[]); setRecipesAll(rcp||[]); setLinesAll(rln||[]); setAddinRows(adn||[]); setPackStart(packRaw||'');
+    }catch(e){
+      alert('Could not load the production data: '+(e.message||e)+'\n\nPlease reload the page.');
+    }
     setLoading(false);
   },[]);
   useEffect(()=>{load();},[load]);
@@ -1793,8 +1812,8 @@ function Production(){
     await reverseAddins(date);
     await deleteDayRowsOnly(dayRows);
     logActivity('Production','delete',`Daily log for ${date} deleted`);
+    await load();
     setSaving(false);
-    load();
   };
 
   const loggedDatesSorted=()=>Array.from(new Set(logs.map(l=>l.date))).sort().reverse();
@@ -1831,8 +1850,8 @@ function Production(){
       else await sb.from('current_stock').insert({product_id:p.id,qty_bags:closing});
     }
     logActivity('Production','create',`No production recorded for ${nextEntryDate}`);
+    await load();
     setSaving(false);
-    load();
   };
 
   const cancelEdit=()=>{
@@ -1875,8 +1894,9 @@ function Production(){
       }
       await persistAddins(entryDate);
       logActivity('Production','create',`Daily log submitted for ${entryDate}`);
-      setEntryDate(null); setRows({}); setSaving(false);
-      load();
+      setEntryDate(null); setRows({});
+      await load();
+      setSaving(false);
       return;
     }
 
@@ -1955,8 +1975,9 @@ function Production(){
     }
     await persistAddins(entryDate);
     logActivity('Production','update',`Daily log for ${entryDate} edited; later days recalculated`);
-    setEntryDate(null); setRows({}); setEditingOriginal(null); setSaving(false);
-    load();
+    setEntryDate(null); setRows({}); setEditingOriginal(null);
+    await load();
+    setSaving(false);
   };
 
   if(loading) return <Loading/>;
@@ -1975,9 +1996,19 @@ function Production(){
       return {p,opening,closing:bal,sales,ret};
     }).filter(Boolean);
   };
-  const loggedDates=Array.from(new Set(logs.map(l=>l.date))).sort().reverse();
+  const viewCut=licShift(today,-PROD_DAYS);
+  const viewFrom=(lastLoggedDate&&lastLoggedDate<viewCut)?lastLoggedDate:viewCut;
+  const loggedDates=Array.from(new Set(logs.map(l=>l.date))).filter(d=>d>=viewFrom).sort().reverse();
 
   return(<div className="page">
+    {saving&&(<div className="modal-overlay" style={{zIndex:4000}}>
+      <div className="card" style={{maxWidth:400,width:'100%',textAlign:'center'}}>
+        <div style={{fontSize:34}}>⏳</div>
+        <div style={{fontSize:17,fontWeight:600,marginTop:6}}>Saving, please wait…</div>
+        <div style={{fontSize:13,color:'var(--muted)',marginTop:8}}>This can take up to 30 seconds. Do not press back, refresh or close this page until this box disappears.</div>
+        <div style={{fontSize:12,color:'var(--dim)',marginTop:10}}>If it is still here after 2 minutes, reload the page and check the figures before trying again.</div>
+      </div>
+    </div>)}
     <div className="page-header">
       <div className="page-label">Mill Operations</div>
       <div className="page-title">Daily production log</div>
@@ -2054,6 +2085,7 @@ function Production(){
     <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:14,cursor:'pointer'}}>
       <input type="checkbox" checked={showPct} onChange={e=>setShowPct(e.target.checked)}/> Show % of production and weight (kg)
     </label>
+    <div className="dim" style={{fontSize:12,margin:'-6px 0 14px'}}>Showing the last {PROD_DAYS} days of production.</div>
 
     {loggedDates.length===0 ? <Empty msg="No production days logged yet."/> : loggedDates.map((date,idx)=>{
       const dayRows=logs.filter(l=>l.date===date);
