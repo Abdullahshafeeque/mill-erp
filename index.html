@@ -761,6 +761,7 @@ const NAV = [
   { id:'private-dispatch-settings', label:'Private Dispatch Settings', icon:'🧑‍💼' },
   { id:'shutdown-settings', label:'Shutdown Settings', icon:'🧯' },
     { id:'access-settings', label:'Access Settings', icon:'🛂' },
+  { id:'director-privacy', label:'Director Privacy', icon:'🕶️' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
   { id:'quality-settings', label:'Quality Settings', icon:'🔬' },
@@ -815,6 +816,7 @@ const AX_MILL=[
  {key:'mill:production-settings',label:'Production Settings',acts:[['view','Open page','' ],['set_first_date','Set first entry date',''],['set_freeze','Set / clear freeze date',''],['set_order','Set product order','']]},
  {key:'mill:cashbook-settings',label:'Cash Book Settings',acts:[['view','Open page',''],['set_freeze','Set / clear freeze date',''],['rebuild','Rebuild balances',''],['manage_types','Delete transaction types','']]},
  {key:'mill:shutdown-settings',label:'Shutdown Settings',acts:[['view','Open page',''],['edit','Change & save settings','']]},
+ {key:'mill:director-privacy',label:'Director Privacy',acts:[['view','Open page',''],['edit','Change & save settings','']]},
  {key:'mill:whatsapp-settings',label:'WhatsApp Alerts',acts:[['view','Open page',''],['edit_settings','Change delivery settings',''],['manage_contacts','Add / edit / remove people',''],['send','Send test / send now','']]},
  {key:'mill:org-chart',label:'Roles & Responsibilities',acts:[['view','Open page','MASTDV'],['edit_resp','Edit responsibilities (positions below theirs)','']]},
  {key:'mill:shutdowns',label:'Maintenance Shutdown',acts:[['view','Open page','MASTD']]}, // planning/approving stays per-person in Shutdown Settings
@@ -9300,7 +9302,12 @@ function OrgChart({role,employeeId,visible,onVisible}){
     const bad=p.error||e.error||o.error;
     setErr(bad?bad.message+' — have you run the SQL for this section?':'');
     setPosts(p.data||[]);
-    setEmps((e.data||[]).filter(empIsActive));
+    let hide=new Set();
+    if(role!=='director'){
+      const dp=await loadDirPrivacy();
+      if(dp.enabled&&dp.hide_org_chart){ hide=await dirHiddenIds(); }
+    }
+    setEmps((e.data||[]).filter(empIsActive).filter(x=>!hide.has(String(x.id))));
     setRows(o.data||[]);
     setLoading(false);
   },[]);
@@ -13919,6 +13926,116 @@ function PrivateDispatchSettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// DIRECTOR PRIVACY — hide directors' names from staff
+// ══════════════════════════════════════════════════════════
+const DP_KEY='director_privacy';
+const DP_DEFAULTS={
+  enabled:false,
+  include_director_post:true,
+  hide_attendance:true,
+  hide_overtime:true,
+  hide_staff:true,
+  hide_payroll:true,
+  hide_transactions:true,
+  hide_reports:true,
+  hide_org_chart:true
+};
+async function loadDirPrivacy(){
+  try{
+    const {data}=await sb.from('erp_settings').select('value').eq('key',DP_KEY).maybeSingle();
+    let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+    return {...DP_DEFAULTS,...saved};
+  }catch(e){ return {...DP_DEFAULTS}; }
+}
+const dirIdsFrom=(au,em,S)=>{
+  const ids=new Set((au||[]).filter(u=>u.role==='director'&&u.employee_id!==null&&u.employee_id!==undefined).map(u=>String(u.employee_id)));
+  if(S.include_director_post!==false) (em||[]).forEach(e=>{ if(String(e.post||'').trim().toLowerCase()==='director') ids.add(String(e.id)); });
+  return ids;
+};
+async function dirHiddenIds(){
+  const S=await loadDirPrivacy();
+  const [{data:au},{data:em}]=await Promise.all([sb.from('app_users').select('*'),sb.from(EMP_TABLE).select('*').range(0,4999)]);
+  return dirIdsFrom(au,em,S);
+}
+
+function DirectorPrivacySettings(){
+  const [S,setS]=useState(DP_DEFAULTS);
+  const [au,setAu]=useState([]);
+  const [em,setEm]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+
+  useEffect(()=>{(async()=>{
+    const [cfg,{data:a},{data:e}]=await Promise.all([
+      loadDirPrivacy(),
+      sb.from('app_users').select('*'),
+      sb.from(EMP_TABLE).select('*').range(0,4999),
+    ]);
+    setS(cfg); setAu(a||[]); setEm(e||[]); setLoading(false);
+  })();},[]);
+
+  const chk=(k,label)=>(<label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:8}}><input type="checkbox" checked={!!S[k]} onChange={e=>s(k,e.target.checked)}/>{label}</label>);
+
+  const save=async()=>{
+    setSaving(true);
+    const {error}=await sb.from('erp_settings').upsert({key:DP_KEY,value:JSON.stringify(S)},{onConflict:'key'});
+    setSaving(false);
+    if(error) return alert(error.message);
+    logActivity('Settings','update',`Director privacy ${S.enabled?'ON':'OFF'}`);
+    setMsg('Saved. Staff see the change within about a minute.'); setTimeout(()=>setMsg(''),4000);
+  };
+
+  if(loading) return <Loading/>;
+
+  const ids=dirIdsFrom(au,em,S);
+  const hidden=em.filter(e=>ids.has(String(e.id))).sort((a,b)=>empName(a).localeCompare(empName(b)));
+
+  return(<div className="page">
+    <div className="page-header"><div className="page-label">System Settings</div><div className="page-title">Director privacy</div></div>
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--amber)'}`}}>
+      {chk('enabled','Hide directors from staff (Directors themselves always see everyone)')}
+      <div className="dim" style={{fontSize:12}}>When ON, the screens ticked below no longer list directors for Managers, Accountants, Supervisors and all other non-director logins.</div>
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">1. Who counts as a director</div>
+      <div style={{fontSize:13,marginBottom:8}}>Anyone whose linked login has the <strong>Director</strong> role is always included.</div>
+      {chk('include_director_post','Also include any employee whose Post is "Director"')}
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">2. Where to hide them</div>
+      <div className="dim" style={{fontSize:12,marginBottom:8}}>HR portal</div>
+      {chk('hide_attendance','Attendance — staff list')}
+      {chk('hide_overtime','Overtime — employee picker, report and entries')}
+      {chk('hide_staff','Staff directory — active and inactive lists')}
+      {chk('hide_payroll','Payroll — payroll table, payment picker, settlements')}
+      {chk('hide_transactions','Transactions — employee filter and ledger rows')}
+      {chk('hide_reports','Reports — rosters, watchlists and exports')}
+      <div className="dim" style={{fontSize:12,margin:'10px 0 8px'}}>Mill app</div>
+      {chk('hide_org_chart','Roles & Responsibilities — people lists and search')}
+    </div>
+
+    <div className="card" style={{marginBottom:16}}>
+      <div className="section-label">3. Preview — {hidden.length} {hidden.length===1?'person':'people'} would be hidden</div>
+      {hidden.length===0
+        ?<div className="dim" style={{fontSize:13}}>Nobody matches yet. Link a director's login to their employee profile in the HR portal (Users tab).</div>
+        :<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{hidden.map(e=><span key={e.id} className="badge badge-blue">{empLabel(e)}</span>)}</div>}
+    </div>
+
+    <div className="dim" style={{fontSize:12,marginBottom:12,maxWidth:760}}>This controls what is shown on screen. It does not change payroll, attendance or reports totals for the directors themselves.</div>
+
+    <div style={{display:'flex',gap:8,alignItems:'center'}}>
+      {ax('director-privacy','edit')&&<button className="btn btn-green" onClick={save} disabled={saving}>{saving?'Saving…':'Save settings'}</button>}
+      {msg&&<span style={{fontSize:12,color:'var(--green)'}}>{msg}</span>}
+    </div>
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -14155,6 +14272,7 @@ function App(){
     'truck':<Truck userEmail={user.email}/>,
     'truck-settings':<TruckSettings/>,
     'private-dispatch-settings':<PrivateDispatchSettings/>,
+    'director-privacy':<DirectorPrivacySettings/>,
   };
 
   const showOverdue=myOverdue.length>0&&!overdueAcked;
