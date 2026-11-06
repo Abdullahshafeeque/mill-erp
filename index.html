@@ -1643,10 +1643,16 @@ function Production(){
     return nd<=today?nd:null;
   })();
 
-  const openingFor=(productId)=>{
-    const prior=logs.filter(l=>l.product_id===productId).sort((a,b)=>b.date.localeCompare(a.date))[0];
+  const openingFor=(productId,asOf)=>{
+    const limit=asOf||'9999-12-31';
+    const prior=logs.filter(l=>l.product_id===productId&&l.date<limit).sort((a,b)=>b.date.localeCompare(a.date))[0];
     if(!prior) return 0;
-    return netClosing(prior.opening_bags,prior.production_bags,prior.date,productId);
+    let bal=netClosing(prior.opening_bags,prior.production_bags,prior.date,productId);
+    const dts=Array.from(new Set(logs.map(l=>l.date))).sort();
+    dts.filter(d=>d>prior.date&&d<limit).forEach(d=>{
+      bal=bal-salesFor(d,productId)+returnsFor(d,productId)+adjFor(d,productId)-useFor(d,productId);
+    });
+    return bal;
   };
 
   const startEntry=async()=>{
@@ -1802,7 +1808,7 @@ function Production(){
     const init={};
     finishedProducts.forEach(p=>{
       const existing=dayRows.find(r=>r.product_id===p.id);
-      const opening=existing?Number(existing.opening_bags):openingFor(p.id);
+      const opening=existing?Number(existing.opening_bags):openingFor(p.id,date);
       init[p.id]={opening, production: existing?String(existing.production_bags):'', closing: existing?String(netClosing(opening,existing.production_bags,date,p.id)):''};
     });
     const ai={}; addinRows.filter(a=>a.log_date===date).forEach(a=>{ ai[String(a.product_id)+'|'+String(a.material_id)]=String(a.qty_kg); }); setAddins(ai);
