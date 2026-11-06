@@ -1408,6 +1408,8 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
   </div>);
 }
 
+const KG_STOCK_FROM='2026-11-06';
+
 // ══════════════════════════════════════════════════════════
 // PRODUCTION
 // ══════════════════════════════════════════════════════════
@@ -1458,13 +1460,14 @@ function Production(){
   const addinLinesFor=(pid)=>recipeLinesOf(pid).filter(l=>l.line_type==='addin');
   const addinName=(mid)=>{ const m=allProducts.find(x=>String(x.id)===String(mid)); return m?m.product_name:'(missing item)'; };
   // a "chain" product is one tracked day-by-day in the production log (e.g. wheat refraction)
-  const isChain=(m)=>!!m&&!m.is_raw_material&&m.include_in_production_log!==false&&packSizeOf(m)>0;
+  const isKgUnit=(p)=>!!p&&!p.is_raw_material&&p.packing_type==='loose'&&!p.has_standard_weight;
+  const isChain=(m)=>!!m&&!m.is_raw_material&&m.include_in_production_log!==false&&(packSizeOf(m)>0||isKgUnit(m));
   // what making `kg` of this material uses up, from ITS OWN recipe (never runs the recipe of what it uses)
   const usesOf=(materialId,kg)=>recipeLinesOf(materialId).filter(l=>l.line_type==='consumes').map(l=>{
     const m=allProducts.find(x=>String(x.id)===String(l.material_id));
     const k=Number(kg)*Number(l.qty_per_unit);
     const chain=isChain(m);
-    return {material_id:String(l.material_id),name:m?m.product_name:'(missing item)',kg:k,chain,bags:chain?r3(k/packSizeOf(m)):0};
+    return {material_id:String(l.material_id),name:m?m.product_name:'(missing item)',kg:k,chain,bags:chain?r3(k/(packSizeOf(m)>0?packSizeOf(m):1)):0};
   });
   // bags of a chain product used up by add-ins saved for a date
   const useFor=(date,productId)=>addinRows.filter(a=>a.log_date===date).reduce((s,a)=>s+(a.uses||[]).filter(u=>String(u.material_id)===String(productId)).reduce((x,u)=>x+Number(u.bags||0),0),0);
@@ -1605,7 +1608,7 @@ function Production(){
       sb.from('supplyco_dispatches').select('date,product_id,qty_bags'),
       sb.from('private_dispatches').select('date,product_id,qty_bags'),
       sb.from('product_returns').select('date,product_id,qty_bags'),
-      sb.from('stock_count_lines').select('item_id,diff,count:count_id(count_date)').eq('item_type','finished').eq('applied',true).eq('reversed',false),
+      sb.from('stock_count_lines').select('item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false),
       sb.from('product_packing_rules').select('*'),
       sb.from('store_stock').select('id,item_name,unit,qty'),
       sb.from('product_recipes').select('*'),
@@ -1616,7 +1619,7 @@ function Production(){
     setProdOrder(ord);
     setFinishedProducts(sortByProdOrder((fp||[]).filter(p=>p.include_in_production_log!==false),ord)); setAllProducts(ap||[]); setLogs(lg||[]);
     setSupplycoDisp(sd||[]); setPrivateDisp(pd||[]); setReturns(rt||[]);
-    setAdjustments((adj||[]).filter(a=>a.count).map(a=>({date:a.count.count_date,product_id:a.item_id,qty:Number(a.diff)})));
+    setAdjustments((adj||[]).filter(a=>a.count&&(a.item_type==='finished'||a.count.count_date>=KG_STOCK_FROM)).map(a=>({date:a.count.count_date,product_id:a.item_id,qty:Number(a.diff)})));
     setPackRules(prl||[]); setPackItems(psi||[]); setRecipesAll(rcp||[]); setLinesAll(rln||[]); setAddinRows(adn||[]); setPackStart((await cashSetting('packing_start_date'))||'');
     setLoading(false);
   },[]);
@@ -1687,20 +1690,23 @@ function Production(){
       const material=allProducts.find(p=>String(p.id)===String(line.material_id));
       if(!material) continue;
       if(line.line_type==='addin') continue;
-      if(skipChain&&isChain(material)) continue;
+      if(skipChain&&isChain(material)&&!isKgUnit(material)) continue;
       const delta = line.line_type==='consumes' ? -qtyKg : qtyKg;
       const lineScheme = line.scheme || schemeFromName(product.product_name);
 
       if(line.line_type==='consumes' && line.fallback_material_id){
-        let remainingKg=Math.abs(delta);
+        let remainingKg=delta>0?-delta:Math.abs(delta);
         const {data:fbRow}=await sb.from('raw_material_stock').select('*').eq('product_id',line.fallback_material_id).maybeSingle();
         const available=Number(fbRow?.qty_kg||0);
-        if(available>0){
+        if(delta>0&&available>0){
+          await sb.from('raw_material_stock').update({qty_kg:available+delta,updated_at:new Date().toISOString()}).eq('id',fbRow.id);
+          remainingKg=0;
+        } else if(delta<=0&&available>0){
           const takeFromFallback=Math.min(available,remainingKg);
           await sb.from('raw_material_stock').update({qty_kg:available-takeFromFallback,updated_at:new Date().toISOString()}).eq('id',fbRow.id);
           remainingKg-=takeFromFallback;
         }
-        if(remainingKg>0){
+        if(remainingKg!==0){
           if(material.has_schemes && lineScheme){
             const {data:bucket}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',material.id).eq('scheme',lineScheme).maybeSingle();
             if(bucket) await sb.from('raw_material_scheme_stock').update({qty_kg:Number(bucket.qty_kg)-remainingKg,updated_at:new Date().toISOString()}).eq('id',bucket.id);
@@ -1737,6 +1743,17 @@ function Production(){
     }
   };
 
+  // Loose-by-kg products (Wheat Refraction): production adds to stock and runs the recipe, from KG_STOCK_FROM onwards.
+  const kgStock=async(p,kg,sign,date)=>{
+    if(!isKgUnit(p)||date<KG_STOCK_FROM) return;
+    const q=(Number(kg)||0)*sign;
+    if(!q) return;
+    const {data:b}=await sb.from('raw_material_stock').select('*').eq('product_id',p.id).maybeSingle();
+    if(b) await sb.from('raw_material_stock').update({qty_kg:Number(b.qty_kg)+q,updated_at:new Date().toISOString()}).eq('id',b.id);
+    else await sb.from('raw_material_stock').insert({product_id:p.id,qty_kg:q});
+    await applyRecipe(p,q,1);
+  };
+
   // Delete only this day's rows + undo its own recipe/stock effect. Does NOT touch other days —
   // caller is responsible for cascading subsequent days when editing (not deleting) mid-history.
   const deleteDayRowsOnly=async(dayRows)=>{
@@ -1747,6 +1764,7 @@ function Production(){
         const bagSize=packSizeOf(p);
         if(bagSize>0) await applyRecipe(p, baseKgOf(r.production_bags,p,storedInWeightKg(r.date,p.id)), -1);
       }
+            await kgStock(p,Number(r.production_bags),-1,r.date);
       await syncPackingUsage(r.date,p,0);
       await sb.from('daily_production_log').delete().eq('id',r.id);
     }
@@ -1840,6 +1858,7 @@ function Production(){
           const bagSize=packSizeOf(p);
           if(bagSize>0) await applyRecipe(p, baseKgOf(productionBags,p,inWeightKgOf(p.id)), 1);
         }
+                await kgStock(p,productionBags,1,entryDate);
       }
       for(const p of finishedProducts){
         const r=rows[p.id];
@@ -1870,6 +1889,7 @@ function Production(){
             const bagSize=packSizeOf(p);
             if(bagSize>0) await applyRecipe(p, baseKgOf(oldProduction,p,storedInWeightKg(entryDate,p.id)), -1); // undo old recipe effect
           }
+                    await kgStock(p,oldProduction,-1,entryDate);
           await sb.from('daily_production_log').delete().eq('id',oldRow.id);
         }
         continue;
@@ -1897,6 +1917,7 @@ function Production(){
         const bagSize=packSizeOf(p);
         if(bagSize>0) await applyRecipe(p, baseDelta, 1);
       }
+            await kgStock(p,productionDelta,1,entryDate);
 
       // 2. Cascade: rewrite opening_bags for every later day of this product, in order,
       //    and recompute their closing (closing itself is derived live elsewhere, but we
@@ -8195,7 +8216,7 @@ function StockCount({role,userEmail,onPending}){
 
   const reverse=async(c)=>{
     const ls=(linesByCount[c.id]||[]).filter(l=>l.applied&&!l.reversed&&Number(l.diff)!==0);
-    for(const l of ls.filter(x=>x.item_type==='finished')){
+    for(const l of ls.filter(x=>x.item_type==='finished'||x.item_type==='raw')){
       const {data:later}=await sb.from('daily_production_log').select('date').eq('product_id',l.item_id).gt('date',c.count_date).limit(1);
       if(later&&later.length) return alert(`Cannot reverse: production for "${l.item_name}" has been logged after ${c.count_date}. Submit a new corrective count instead.`);
     }
