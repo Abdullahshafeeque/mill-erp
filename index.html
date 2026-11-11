@@ -1412,6 +1412,67 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
 
 const KG_STOCK_FROM='2026-11-06';
 const PROD_DAYS=60; // how many days of production the page shows
+// Recalculates opening/closing of every logged production day from `fromDate` onward
+// (for one product, or all if none given) and corrects current stock from the fixed chain.
+// Called after any dispatch / return that is dated on or before the last logged production day.
+async function prodResyncFrom(fromDate,onlyProductId){
+  try{
+    if(!fromDate) return false;
+    const {data:lastRow}=await sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle();
+    if(!lastRow||fromDate>lastRow.date) return false;
+    const {data:ancRow}=await sb.from('daily_production_log').select('date').lt('date',fromDate).order('date',{ascending:false}).limit(1).maybeSingle();
+    const start=ancRow?ancRow.date:fromDate;
+    const only=(q)=>onlyProductId?q.eq('product_id',onlyProductId):q;
+    const [logs,sd,pd,rt,adjRaw,adn,{data:prods}]=await Promise.all([
+      fetchAllRows((a,b)=>only(sb.from('daily_production_log').select('*').gte('date',start)).order('date').order('id').range(a,b)),
+      fetchAllRows((a,b)=>only(sb.from('supplyco_dispatches').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
+      fetchAllRows((a,b)=>only(sb.from('private_dispatches').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
+      fetchAllRows((a,b)=>only(sb.from('product_returns').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
+      fetchAllRows((a,b)=>sb.from('stock_count_lines').select('id,item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false).order('id').range(a,b)),
+      fetchAllRows((a,b)=>sb.from('production_addins').select('*').gte('log_date',start).order('id').range(a,b)).catch(()=>[]),
+      sb.from('product_master').select('*'),
+    ]);
+    if(logs.length===0) return false;
+    const sales={},rets={},adjs={},uses={},dset=new Set(logs.map(l=>l.date));
+    const add=(m,d,p,v)=>{ const k=d+'|'+p; m[k]=(m[k]||0)+v; dset.add(d); };
+    [...sd,...pd].forEach(r=>add(sales,r.date,String(r.product_id),Number(r.qty_bags)||0));
+    rt.forEach(r=>add(rets,r.date,String(r.product_id),Number(r.qty_bags)||0));
+    adjRaw.filter(a=>a.count&&a.count.count_date>=start&&(a.item_type==='finished'||a.count.count_date>=KG_STOCK_FROM)).forEach(a=>add(adjs,a.count.count_date,String(a.item_id),Number(a.diff)||0));
+    adn.forEach(a=>(a.uses||[]).forEach(u=>add(uses,a.log_date,String(u.material_id),Number(u.bags)||0)));
+    const dates=[...dset].filter(d=>d>=start).sort();
+    const rowBy={}; logs.forEach(l=>{ rowBy[l.date+'|'+String(l.product_id)]=l; });
+    const prodBy={}; (prods||[]).forEach(p=>{ prodBy[String(p.id)]=p; });
+    const pids=Array.from(new Set(logs.map(l=>String(l.product_id))));
+    const errs=[];
+    for(const pid of pids){
+      let run=null;
+      for(const d of dates){
+        const k=d+'|'+pid;
+        const mv=-(sales[k]||0)+(rets[k]||0)+(adjs[k]||0)-(uses[k]||0);
+        const row=rowBy[k];
+        if(row){
+          const opening=run===null?Number(row.opening_bags):run;
+          const closing=r3(opening+Number(row.production_bags)+mv);
+          if(Math.abs(opening-Number(row.opening_bags))>0.0005||Math.abs(closing-Number(row.closing_bags))>0.0005){
+            const {error}=await sb.from('daily_production_log').update({opening_bags:opening,closing_bags:closing}).eq('id',row.id);
+            if(error){ errs.push(error.message); run=null; break; }
+          }
+          run=closing;
+        } else if(run!==null){ run=r3(run+mv); }
+      }
+      const p=prodBy[pid];
+      if(run!==null&&p&&packSizeOf(p)>0){
+        const {data:s}=await sb.from('current_stock').select('*').eq('product_id',pid).maybeSingle();
+        if(s&&Math.abs(Number(s.qty_bags)-run)>0.0005) await sb.from('current_stock').update({qty_bags:run,updated_at:new Date().toISOString()}).eq('id',s.id);
+      }
+    }
+    if(errs.length) alert('Entry saved, but later production days could not be fully recalculated: '+errs[0]+'\n\nOpen Production, click Edit on the earliest affected day and Save to fix it.');
+    return true;
+  }catch(e){
+    alert('Entry saved, but later production days could not be recalculated: '+(e.message||e)+'\n\nOpen Production, click Edit on the earliest affected day and Save to fix it.');
+    return false;
+  }
+}
 
 // ══════════════════════════════════════════════════════════
 // PRODUCTION
@@ -2849,6 +2910,7 @@ function Returns(){
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',form.product_id).maybeSingle();
     if(s) await sb.from('current_stock').update({qty_bags:Number(s.qty_bags)+Number(form.qty_bags),updated_at:new Date().toISOString()}).eq('id',s.id);
     else await sb.from('current_stock').insert({product_id:form.product_id,qty_bags:Number(form.qty_bags)});
+       await prodResyncFrom(form.date,form.product_id);
     setReturns(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Returns','create',`${form.qty_bags} bags of ${data.product?.product_name} returned from ${form.source_name||'—'}`);
   };
@@ -2858,6 +2920,7 @@ function Returns(){
     await sb.from('product_returns').delete().eq('id',r.id);
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',r.product_id).maybeSingle();
     if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,Number(s.qty_bags)-Number(r.qty_bags)),updated_at:new Date().toISOString()}).eq('id',s.id);
+       await prodResyncFrom(r.date,r.product_id);
     setReturns(p=>p.filter(x=>x.id!==r.id));
     logActivity('Returns','delete',`Return of ${r.qty_bags} bags reversed`);
   };
@@ -3330,6 +3393,7 @@ if(!(await sdGuardDispatch(dForm.date,prod,dForm.qty_bags))) return;
     if(error){alert(error.message);setSaving(false);return;}
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',prod.id).maybeSingle();
     if(s) await sb.from('current_stock').update({qty_bags:Number(s.qty_bags)-Number(dForm.qty_bags),updated_at:new Date().toISOString()}).eq('id',s.id);
+        await prodResyncFrom(dForm.date,prod.id);
     setDispatches(p=>[data,...p]); setDForm(blankD); setShowDF(false); setSaving(false);
     logActivity('Dispatch','create',`Invoice ${dForm.invoice_no} — ${dForm.qty_bags} bags to ${dForm.depot_name}`);
   };
@@ -3339,6 +3403,7 @@ if(!(await sdGuardDispatch(dForm.date,prod,dForm.qty_bags))) return;
     await sb.from('supplyco_dispatches').delete().eq('id',d.id);
     const {data:s}=await sb.from('current_stock').select('*').eq('product_id',d.product_id).maybeSingle();
     if(s) await sb.from('current_stock').update({qty_bags:Number(s.qty_bags)+Number(d.qty_bags),updated_at:new Date().toISOString()}).eq('id',s.id);
+        await prodResyncFrom(d.date,d.product_id);
     setDispatches(p=>p.filter(x=>x.id!==d.id));
     logActivity('Dispatch','delete',`Invoice ${d.invoice_no} deleted`);
   };
@@ -3521,6 +3586,7 @@ function PrivateDispatch(){
       if(!data||data.length===0){ alert('Not saved — you are not permitted to change this entry. Nothing was changed.'); setSaving(false); return; }
       if(oldProd) await debitStock(oldProd,oldQty,1);
       await debitStock(selectedProduct,qtyNum,-1);
+            { const d0=orig.date<form.date?orig.date:form.date; await prodResyncFrom(d0,orig.product_id); if(String(orig.product_id)!==String(form.product_id)) await prodResyncFrom(d0,form.product_id); }
       logActivity('Private Dispatch','update',`Edited ${orig.party_name}: ${fmt(oldQty)} ${oldProd?.is_raw_material?'kg':'bags'} ${oldProd?.product_name||''} → ${fmt(qtyNum)} ${isRaw?'kg':'bags'} ${selectedProduct.product_name} (${form.party_name}, ${form.date}${form.salesman?', '+form.salesman:''})`);
       setSaving(false); closeForm(); load();
       return;
@@ -3532,7 +3598,8 @@ function PrivateDispatch(){
     const row={date:form.date,party_name:form.party_name,product_id:form.product_id,qty_bags:isRaw?null:qtyNum,qty_kg:isRaw?qtyNum:null,vehicle_no:form.vehicle_no,invoice_no:form.invoice_no,notes:form.notes,salesman:form.salesman||null};
     const {data,error}=await sb.from('private_dispatches').insert(row).select('*, product:product_id(*)').single();
     if(error){alert(error.message);setSaving(false);return;}
-    await debitStock(selectedProduct, qtyNum, -1);
+    await debitStock(selectedProduct, qtyNum, -1); 
+        await prodResyncFrom(form.date,form.product_id);
     setEntries(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
     logActivity('Private Dispatch','create',`${form.party_name} — ${form.qty}${isRaw?'kg':' bags'} of ${selectedProduct.product_name}`);
   };
@@ -3542,6 +3609,7 @@ function PrivateDispatch(){
     await sb.from('private_dispatches').delete().eq('id',e.id);
     const qty=e.product?.is_raw_material?Number(e.qty_kg):Number(e.qty_bags);
     if(e.product) await debitStock(e.product, qty, 1);
+        await prodResyncFrom(e.date,e.product_id);
     setEntries(p=>p.filter(x=>x.id!==e.id));
     logActivity('Private Dispatch','delete',`${e.party_name} deleted`);
   };
