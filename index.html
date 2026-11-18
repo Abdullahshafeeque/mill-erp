@@ -753,6 +753,8 @@ const NAV = [
   { id:'analysis', label:'Executive Analysis', icon:'🧠' },
     { section:'Organisation' },
   { id:'org-chart', label:'Roles & Responsibilities', icon:'🧭' },
+    { section:'Director' },
+  { id:'lock-requests', label:'Lock Requests', icon:'🔓' },
   { section:'Settings' },
   { id:'product-master', label:'Product Master', icon:'⚙️' },
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
@@ -858,6 +860,7 @@ const canSeePage=(role,id)=>{
   if(id==='my-tasks') return true;
   if(id==='shutdowns') return !!role&&role!=='pending'&&(role!=='viewer'||SD_ALLOWED)&&ax('shutdowns','view');
   if(id==='access-settings') return role==='director';
+    if(id==='lock-requests') return role==='director';
   if(id==='org-chart') return role==='director'||(ORG_VISIBLE&&ax('org-chart','view'));
   return ax(id,'view');
 };
@@ -14142,6 +14145,257 @@ function DirectorPrivacySettings(){
   </div>);
 }
 
+// ══════════════════════════════════════════════════════════
+// JOB LOCK — block people with badly overdue jobs, 24h access by Director
+// ══════════════════════════════════════════════════════════
+const JL_KEY='job_lock_settings';
+const JL_DEFAULTS={enabled:true,days_overdue:7,grant_hours:24,exempt_ids:[]};
+async function loadJobLockSettings(){
+  const {data}=await sb.from('erp_settings').select('value').eq('key',JL_KEY).maybeSingle();
+  let saved={}; try{ saved=data&&data.value?JSON.parse(data.value):{}; }catch(e){ saved={}; }
+  return {...JL_DEFAULTS,...saved};
+}
+
+function JobLockScreen({lock,user,access,name,onChanged}){
+  const [reason,setReason]=useState('');
+  const [busy,setBusy]=useState(false);
+  const req=lock.req;
+  const pending=!!req&&req.status==='pending';
+  const send=async()=>{
+    if(reason.trim().length<10) return alert('Please explain in a few words why these jobs are late (at least 10 characters).');
+    setBusy(true);
+    const snap=lock.jobs.map(j=>({title:j.title,deadline:j.deadline,days:-daysUntil(j.deadline)}));
+    const {error}=await sb.from('job_lock_requests').insert({employee_id:String(access.employee_id),employee_name:name||null,user_email:user.email,reason:reason.trim(),jobs:snap,status:'pending'});
+    setBusy(false);
+    if(error){ if(error.code==='23505'){ onChanged(); return; } return alert(error.message+' — have you run the SQL for job lock?'); }
+    logActivity('Job Lock','create',`Access requested — ${lock.jobs.length} overdue job(s): ${reason.trim()}`);
+    setReason(''); onChanged();
+  };
+  return(<div className="login-wrap"><div className="login-card" style={{width:'100%',maxWidth:560}}>
+    <div style={{fontSize:40,textAlign:'center'}}>🔒</div>
+    <div style={{fontSize:20,fontWeight:600,textAlign:'center',marginTop:4}}>App locked — overdue jobs</div>
+    <div style={{fontSize:13,color:'var(--muted)',textAlign:'center',marginTop:6,marginBottom:16}}>
+      Hi {name||'there'}, you have {lock.jobs.length} job{lock.jobs.length===1?'':'s'} more than {lock.S.days_overdue} days past the deadline, so the app is locked for you until they are completed.
+    </div>
+    <div style={{maxHeight:220,overflowY:'auto',marginBottom:14}}>
+      {lock.jobs.map(j=>{ const d=-daysUntil(j.deadline); return(
+        <div key={j.id} style={{padding:'8px 12px',marginBottom:6,border:'1px solid var(--border)',borderLeft:'4px solid var(--red)',borderRadius:6}}>
+          <div style={{fontWeight:600,fontSize:13}}>{j.title}</div>
+          <div style={{fontSize:12,color:'var(--red)'}}>Overdue by {d} day{d===1?'':'s'} (deadline {j.deadline})</div>
+        </div>); })}
+    </div>
+
+    {pending?(
+      <div style={{padding:'12px 14px',borderRadius:8,background:'color-mix(in srgb, var(--amber) 12%, transparent)',border:'1px solid color-mix(in srgb, var(--amber) 30%, transparent)',fontSize:13}}>
+        ⏳ Your request was sent on {new Date(req.requested_at).toLocaleString('en-IN')}. Waiting for the Director. This screen opens automatically once access is granted.
+        <div className="dim" style={{marginTop:6,fontSize:12}}>Your reason: {req.reason}</div>
+      </div>
+    ):(<>
+      {req&&req.status==='rejected'&&<div style={{padding:'10px 12px',marginBottom:10,borderRadius:6,fontSize:12,background:'color-mix(in srgb, var(--red) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--red) 25%, transparent)'}}>❌ Your last request was not approved{req.decision_note?`: ${req.decision_note}`:'.'}</div>}
+      {req&&req.status==='revoked'&&<div style={{padding:'10px 12px',marginBottom:10,borderRadius:6,fontSize:12,background:'color-mix(in srgb, var(--red) 10%, transparent)',border:'1px solid color-mix(in srgb, var(--red) 25%, transparent)'}}>Your temporary access was withdrawn by the Director.</div>}
+      {req&&req.status==='approved'&&<div style={{padding:'10px 12px',marginBottom:10,borderRadius:6,fontSize:12,background:'var(--surface2)',border:'1px solid var(--border)'}}>Your previous temporary access has ended and the jobs are still overdue.</div>}
+      <Field label={`Why are these jobs late? (needed to request ${lock.S.grant_hours}-hour access)`}>
+        <textarea className="form-input" rows={3} value={reason} onChange={e=>setReason(e.target.value)} placeholder="Explain the delay and when you will finish…"/>
+      </Field>
+      <button className="btn btn-amber" style={{width:'100%',marginTop:12,padding:'10px'}} onClick={send} disabled={busy}>{busy?'Sending…':`Request ${lock.S.grant_hours}-hour access`}</button>
+    </>)}
+
+    <div style={{display:'flex',gap:8,marginTop:14}}>
+      <button className="btn btn-ghost" style={{flex:1}} onClick={onChanged}>↻ Check again</button>
+      <button className="btn btn-ghost" style={{flex:1}} onClick={()=>sb.auth.signOut()}>Sign out</button>
+    </div>
+  </div></div>);
+}
+
+function LockRequests({userEmail,onChanged}){
+  const [S,setS]=useState(JL_DEFAULTS);
+  const [reqs,setReqs]=useState([]);
+  const [emps,setEmps]=useState([]);
+  const [au,setAu]=useState([]);
+  const [locked,setLocked]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState('');
+  const [msg,setMsg]=useState('');
+  const s=(k,v)=>setS(p=>({...p,[k]:v}));
+
+  const load=useCallback(async()=>{
+    try{
+      const cfg=await loadJobLockSettings();
+      const [{data:r,error},{data:e},{data:a}]=await Promise.all([
+        sb.from('job_lock_requests').select('*').order('requested_at',{ascending:false}).limit(200),
+        sb.from(EMP_TABLE).select('*').range(0,4999),
+        sb.from('app_users').select('*'),
+      ]);
+      if(error) throw new Error(error.message+' — have you run the SQL for job lock?');
+      const {data:jobs}=await sb.from('job_cards').select('id,title,deadline,assigned_to_id').neq('status','Done').neq('status','Awaiting Approval').not('assigned_to_id','is',null).not('deadline','is',null).lte('deadline',licShift(today,-(Number(cfg.days_overdue)||7)));
+      const by={}; (jobs||[]).forEach(j=>{ const k=String(j.assigned_to_id); (by[k]=by[k]||[]).push(j); });
+      const dirIds=new Set((a||[]).filter(u=>u.role==='director'&&u.employee_id!==null&&u.employee_id!==undefined).map(u=>String(u.employee_id)));
+      const now=Date.now();
+      const granted=new Set((r||[]).filter(x=>x.status==='approved'&&x.expires_at&&new Date(x.expires_at).getTime()>now).map(x=>String(x.employee_id)));
+      const ex=(cfg.exempt_ids||[]).map(String);
+      setLocked(Object.keys(by).filter(id=>!dirIds.has(id)&&!granted.has(id)&&!ex.includes(id)).map(id=>({id,jobs:by[id]})));
+      setS(cfg); setReqs(r||[]); setEmps(e||[]); setAu(a||[]); setErr('');
+    }catch(ex){ setErr(ex.message||String(ex)); }
+    setLoading(false);
+  },[]);
+  useEffect(()=>{ load(); const t=setInterval(load,30000); return ()=>clearInterval(t); },[load]);
+
+  const nameOf=(id)=>{ const e=emps.find(x=>String(x.id)===String(id)); return e?empLabel(e):'Unknown'; };
+  const fmtDT=(x)=>x?new Date(x).toLocaleString('en-IN'):'—';
+  const active=(r)=>r.status==='approved'&&r.expires_at&&new Date(r.expires_at).getTime()>Date.now();
+  const pending=reqs.filter(r=>r.status==='pending');
+  const grants=reqs.filter(active);
+  const done=()=>{ load(); if(onChanged) onChanged(); };
+  const askHours=()=>{
+    const v=prompt('Allow access for how many hours?',String(S.grant_hours||24));
+    if(v===null) return null;
+    const h=Number(v);
+    if(!Number.isInteger(h)||h<1||h>720){ alert('Enter a whole number of hours between 1 and 720.'); return null; }
+    return h;
+  };
+
+  const approve=async(r)=>{
+    const h=askHours(); if(!h) return;
+    setBusy(true);
+    const {data,error}=await sb.from('job_lock_requests').update({status:'approved',decided_by:userEmail,decided_at:new Date().toISOString(),expires_at:new Date(Date.now()+h*3600000).toISOString(),decision_note:null}).eq('id',r.id).eq('status','pending').select();
+    setBusy(false);
+    if(error) return alert(error.message);
+    if(!data||!data.length) return alert('This request was already handled.');
+    logActivity('Job Lock','update',`Approved ${h}h access — ${r.employee_name||nameOf(r.employee_id)}`);
+    done();
+  };
+  const reject=async(r)=>{
+    const why=prompt(`Reject the request from ${r.employee_name||nameOf(r.employee_id)} — tell them why (required):`);
+    if(!why||!why.trim()) return;
+    setBusy(true);
+    const {data,error}=await sb.from('job_lock_requests').update({status:'rejected',decided_by:userEmail,decided_at:new Date().toISOString(),decision_note:why.trim()}).eq('id',r.id).eq('status','pending').select();
+    setBusy(false);
+    if(error) return alert(error.message);
+    if(!data||!data.length) return alert('This request was already handled.');
+    logActivity('Job Lock','update',`Rejected — ${r.employee_name||nameOf(r.employee_id)}: ${why.trim()}`);
+    done();
+  };
+  const revoke=async(r)=>{
+    if(!confirm(`Withdraw the temporary access of ${r.employee_name||nameOf(r.employee_id)} now? They will be locked again within about 20 seconds.`)) return;
+    setBusy(true);
+    const {error}=await sb.from('job_lock_requests').update({status:'revoked',revoked_by:userEmail,revoked_at:new Date().toISOString()}).eq('id',r.id).eq('status','approved');
+    setBusy(false);
+    if(error) return alert(error.message);
+    logActivity('Job Lock','update',`Access revoked — ${r.employee_name||nameOf(r.employee_id)}`);
+    done();
+  };
+  const grantNow=async(row)=>{
+    const u=au.find(x=>String(x.employee_id)===String(row.id));
+    if(!u) return alert('This employee has no login linked in the HR portal (Users tab), so they cannot use the app anyway.');
+    const h=askHours(); if(!h) return;
+    setBusy(true);
+    const nowIso=new Date().toISOString();
+    const {error}=await sb.from('job_lock_requests').insert({employee_id:String(row.id),employee_name:nameOf(row.id),user_email:u.email,reason:'Granted directly by the Director',jobs:row.jobs.map(j=>({title:j.title,deadline:j.deadline,days:-daysUntil(j.deadline)})),status:'approved',decided_by:userEmail,decided_at:nowIso,expires_at:new Date(Date.now()+h*3600000).toISOString()});
+    setBusy(false);
+    if(error) return alert(error.message);
+    logActivity('Job Lock','create',`Director granted ${h}h access — ${nameOf(row.id)}`);
+    done();
+  };
+  const saveSettings=async()=>{
+    const d=Number(S.days_overdue), h=Number(S.grant_hours);
+    if(!Number.isInteger(d)||d<1||d>365) return alert('Days overdue must be a whole number from 1 to 365.');
+    if(!Number.isInteger(h)||h<1||h>720) return alert('Grant hours must be a whole number from 1 to 720.');
+    const clean={...S,days_overdue:d,grant_hours:h,exempt_ids:(S.exempt_ids||[]).map(String)};
+    setBusy(true);
+    const {error}=await sb.from('erp_settings').upsert({key:JL_KEY,value:JSON.stringify(clean)},{onConflict:'key'});
+    setBusy(false);
+    if(error) return alert(error.message);
+    setS(clean);
+    logActivity('Settings','update',`Job lock settings: ${clean.enabled?'ON':'OFF'}, lock after ${d} days overdue, ${h}h grants`);
+    setMsg('Saved.'); setTimeout(()=>setMsg(''),3000); done();
+  };
+
+  if(loading) return <Loading/>;
+  const activeEmps=emps.filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b)));
+
+  return(<div className="page">
+    <div className="page-header"><div className="page-label">Director</div><div className="page-title">Lock requests</div></div>
+    {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
+
+    <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--red)'}`}}>
+      <div className="section-label">Settings</div>
+      <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginBottom:10}}>
+        <input type="checkbox" checked={!!S.enabled} onChange={e=>s('enabled',e.target.checked)}/> Lock people whose jobs are badly overdue
+      </label>
+      <div className="form-grid">
+        <Field label="Lock when a job is overdue by (days)"><input type="number" min="1" className="form-input" value={S.days_overdue} onChange={e=>s('days_overdue',e.target.value)}/></Field>
+        <Field label="Default access when approved (hours)"><input type="number" min="1" className="form-input" value={S.grant_hours} onChange={e=>s('grant_hours',e.target.value)}/></Field>
+        <Field label="Never lock these people (Ctrl/Cmd-click to pick several)">
+          <select multiple size={5} className="form-input" value={(S.exempt_ids||[]).map(String)} onChange={e=>s('exempt_ids',Array.from(e.target.selectedOptions).map(o=>o.value))}>
+            {activeEmps.map(e=><option key={e.id} value={String(e.id)}>{empLabel(e)}</option>)}
+          </select>
+        </Field>
+      </div>
+      <div className="dim" style={{fontSize:12,marginTop:8}}>Directors are never locked. Jobs "Awaiting Approval" do not count. A person is unlocked automatically as soon as their badly overdue jobs are cleared. The lock only applies to people whose login is linked to their employee profile.</div>
+      <div className="form-actions"><button className="btn btn-green" onClick={saveSettings} disabled={busy}>Save settings</button>{msg&&<span style={{fontSize:12,color:'var(--green)',alignSelf:'center'}}>{msg}</span>}</div>
+    </div>
+
+    <div className="section-label">Waiting for your decision ({pending.length})</div>
+    {pending.length===0&&<div className="card" style={{marginBottom:16}}><Empty msg="No pending requests."/></div>}
+    {pending.map(r=>(<div key={r.id} className="card" style={{marginBottom:12,borderLeft:'4px solid var(--amber)'}}>
+      <div style={{fontSize:15,fontWeight:600}}>🔓 {r.employee_name||nameOf(r.employee_id)}</div>
+      <div className="dim" style={{fontSize:12,marginTop:2}}>Requested {fmtDT(r.requested_at)} · {r.user_email}</div>
+      <div style={{fontSize:13,marginTop:8,whiteSpace:'pre-wrap'}}><strong>Reason:</strong> {r.reason}</div>
+      <div style={{marginTop:8,fontSize:12}}>
+        {(r.jobs||[]).map((j,i)=><div key={i}>• {j.title} — <span style={{color:'var(--red)'}}>overdue {j.days} day{j.days===1?'':'s'}</span> (deadline {j.deadline})</div>)}
+      </div>
+      <div style={{display:'flex',gap:8,marginTop:10}}>
+        <button className="btn btn-green btn-sm" onClick={()=>approve(r)} disabled={busy}>✓ Approve</button>
+        <button className="btn btn-red btn-sm" onClick={()=>reject(r)} disabled={busy}>Reject</button>
+      </div>
+    </div>))}
+
+    <div className="section-label" style={{marginTop:24}}>Access running now ({grants.length})</div>
+    <TableWrap><table>
+      <thead><tr><th>Employee</th><th>Granted by</th><th>Access until</th><th></th></tr></thead>
+      <tbody>
+        {grants.length===0&&<tr><td colSpan={4}><Empty msg="No temporary access is running."/></td></tr>}
+        {grants.map(r=>(<tr key={r.id}>
+          <td><strong>{r.employee_name||nameOf(r.employee_id)}</strong></td>
+          <td className="dim">{r.decided_by||'—'}</td>
+          <td className="mono">{fmtDT(r.expires_at)}</td>
+          <td><button className="btn btn-red btn-sm" onClick={()=>revoke(r)} disabled={busy}>Revoke</button></td>
+        </tr>))}
+      </tbody>
+    </table></TableWrap>
+
+    <div className="section-label" style={{marginTop:24}}>Locked right now ({locked.length})</div>
+    <TableWrap><table>
+      <thead><tr><th>Employee</th><th>Overdue jobs</th><th></th></tr></thead>
+      <tbody>
+        {locked.length===0&&<tr><td colSpan={3}><Empty msg="Nobody is locked. 🎉"/></td></tr>}
+        {locked.map(row=>(<tr key={row.id}>
+          <td><strong>{nameOf(row.id)}</strong></td>
+          <td style={{fontSize:12}}>{row.jobs.map(j=><div key={j.id}>• {j.title} <span style={{color:'var(--red)'}}>({-daysUntil(j.deadline)} days late)</span></div>)}</td>
+          <td><button className="btn btn-amber btn-sm" onClick={()=>grantNow(row)} disabled={busy}>Unlock</button></td>
+        </tr>))}
+      </tbody>
+    </table></TableWrap>
+
+    <div className="section-label" style={{marginTop:24}}>History</div>
+    <TableWrap><table>
+      <thead><tr><th>Requested</th><th>Employee</th><th>Reason</th><th>Status</th><th>Decided by</th><th>Access until</th></tr></thead>
+      <tbody>
+        {reqs.length===0&&<tr><td colSpan={6}><Empty msg="No requests yet."/></td></tr>}
+        {reqs.map(r=>{ const st=r.status==='approved'&&!active(r)?'expired':r.status; return(<tr key={r.id}>
+          <td className="mono dim">{fmtDT(r.requested_at)}</td>
+          <td><strong>{r.employee_name||nameOf(r.employee_id)}</strong></td>
+          <td className="dim" style={{fontSize:12,whiteSpace:'normal',maxWidth:280}}>{r.reason||'—'}{r.decision_note?<div style={{color:'var(--red)'}}>Director: {r.decision_note}</div>:null}</td>
+          <td><span className={`badge ${st==='approved'?'badge-green':st==='pending'?'badge-amber':st==='rejected'||st==='revoked'?'badge-red':'badge-muted'}`}>{st}</span></td>
+          <td className="dim" style={{fontSize:12}}>{r.decided_by||'—'}</td>
+          <td className="mono dim">{r.expires_at?fmtDT(r.expires_at):'—'}</td>
+        </tr>); })}
+      </tbody>
+    </table></TableWrap>
+  </div>);
+}
+
 function App(){
   const [user,setUser]=useState(null);
   const [tab,setTab]=useState('dashboard');
@@ -14265,6 +14519,49 @@ function App(){
     return ()=>{cancelled=true;clearInterval(t);};
   },[access?.employee_id,access?.role,renewalTick]);
 
+  const [jobLock,setJobLock]=useState(null);
+  const [lockGrant,setLockGrant]=useState(null);
+  const [lockChecked,setLockChecked]=useState(false);
+  const [lockTick,setLockTick]=useState(0);
+  const [lockPending,setLockPending]=useState(0);
+  useEffect(()=>{
+    if(!access||!access.role) return;
+    if(access.role==='pending'||access.role==='director'||!access.employee_id){ setJobLock(null); setLockGrant(null); setLockChecked(true); return; }
+    let cancelled=false;
+    const f=async()=>{
+      try{
+        const S=await loadJobLockSettings();
+        if(!S.enabled||(S.exempt_ids||[]).map(String).includes(String(access.employee_id))){ if(!cancelled){ setJobLock(null); setLockGrant(null); } return; }
+        const limit=licShift(today,-(Number(S.days_overdue)||7));
+        const {data:jobs,error}=await sb.from('job_cards').select('id,title,deadline,priority,location').eq('assigned_to_id',String(access.employee_id)).neq('status','Done').neq('status','Awaiting Approval').not('deadline','is',null).lte('deadline',limit).order('deadline');
+        if(error) throw new Error(error.message);
+        if(!jobs||jobs.length===0){ if(!cancelled){ setJobLock(null); setLockGrant(null); } return; }
+        const {data:reqs}=await sb.from('job_lock_requests').select('*').eq('employee_id',String(access.employee_id)).order('requested_at',{ascending:false}).limit(5);
+        const grant=(reqs||[]).find(r=>r.status==='approved'&&r.expires_at&&new Date(r.expires_at).getTime()>Date.now());
+        if(cancelled) return;
+        if(grant){ setJobLock(null); setLockGrant(grant); }
+        else{ setLockGrant(null); setJobLock({jobs,req:(reqs&&reqs[0])||null,S}); }
+      }catch(e){
+        console.error('Job lock check failed:',e.message);
+        if(!cancelled){ setJobLock(null); setLockGrant(null); }
+      }finally{ if(!cancelled) setLockChecked(true); }
+    };
+    f();
+    const t=setInterval(f,20000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role,access?.employee_id,lockTick]);
+  useEffect(()=>{
+    if(!access||access.role!=='director'){ setLockPending(0); return; }
+    let cancelled=false;
+    const f=async()=>{
+      const {count,error}=await sb.from('job_lock_requests').select('id',{count:'exact',head:true}).eq('status','pending');
+      if(!cancelled&&!error) setLockPending(count||0);
+    };
+    f();
+    const t=setInterval(f,30000);
+    return ()=>{cancelled=true;clearInterval(t);};
+  },[access?.role,lockTick]);
+
   const [orgVisible,setOrgVisible]=useState(false);
   const [sdAllowed,setSdAllowed]=useState(false);
   const [accData,setAccData]=useState(null);
@@ -14330,6 +14627,8 @@ function App(){
   ACC_ON=accData.on; ACC_RULES=accData.rules; ACC_ME=String(access.employee_id??'');
     ORG_VISIBLE=orgVisible;
     SD_ALLOWED=sdAllowed;
+      if(!lockChecked) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'var(--muted)'}}>checking access…</div>;
+  if(jobLock) return <JobLockScreen lock={jobLock} user={user} access={access} name={myName} onChanged={()=>setLockTick(x=>x+1)}/>;
   const displayName=titleCase(myName||(user.email||'').split('@')[0].replace(/[._-]+/g,' '));
   const firstName=displayName.split(' ')[0];
   const activeTab=canSeePage(access.role,tab)?tab:'my-tasks';
@@ -14377,6 +14676,7 @@ function App(){
     'power-factor-settings':<PowerFactorSettings/>,
     'truck':<Truck userEmail={user.email}/>,
     'truck-settings':<TruckSettings/>,
+        'lock-requests':<LockRequests userEmail={user.email} onChanged={()=>setLockTick(x=>x+1)}/>,
     'private-dispatch-settings':<PrivateDispatchSettings/>,
     'director-privacy':<DirectorPrivacySettings/>,
   };
@@ -14425,7 +14725,7 @@ function App(){
       {navItems.map((item,i)=>{
         if(item.section) return <div key={i} className="sidebar-section">{item.section}</div>;
         return(<button key={item.id} className={`nav-btn${activeTab===item.id?' active':''}`} onClick={()=>{setTab(item.id);setMenuOpen(false);}}>
-          <span className="icon">{item.icon}</span>{item.label}{item.id==='job-cards'&&overdueJobs>0&&<span className="task-badge" style={{background:'#DC2626'}} title={`${overdueJobs} overdue job${overdueJobs===1?'':'s'}`}>{overdueJobs}</span>}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&<TaskBadge n={(myOpenCount||0)+renewalCount} alert={myOverdueN>0}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}
+          <span className="icon">{item.icon}</span>{item.label}{item.id==='job-cards'&&overdueJobs>0&&<span className="task-badge" style={{background:'#DC2626'}} title={`${overdueJobs} overdue job${overdueJobs===1?'':'s'}`}>{overdueJobs}</span>}{item.id==='my-tasks'&&(myOpenCount!==null||renewalCount>0)&&<TaskBadge n={(myOpenCount||0)+renewalCount} alert={myOverdueN>0}/>}{item.id==='stock-count'&&access.role==='director'&&pendingCounts>0&&<span className="task-badge tb-few" title="Counts waiting for your approval">{pendingCounts}</span>}{item.id==='lock-requests'&&access.role==='director'&&lockPending>0&&<span className="task-badge tb-crit" title="Access requests waiting for you">{lockPending}</span>}
         </button>);
       })}
       <div className="sidebar-footer">
@@ -14433,7 +14733,7 @@ function App(){
         <button className="btn btn-ghost btn-sm" style={{width:'100%'}} onClick={()=>sb.auth.signOut()}>Sign out</button>
       </div>
     </div>
-    <div className="main"><ShutdownBanner area={activeTab}/>{VIEWS[activeTab]||<Dashboard/>}</div>
+    <div className="main">{lockGrant&&<div className="sd-banner"><Alert type="amber" icon="🔓" title={`Temporary access granted until ${new Date(lockGrant.expires_at).toLocaleString('en-IN')}`} sub="You still have badly overdue jobs. Complete them before this ends, or the app will lock again."/></div>}<ShutdownBanner area={activeTab}/>{VIEWS[activeTab]||<Dashboard/>}</div>
   </div>);
 }
 
