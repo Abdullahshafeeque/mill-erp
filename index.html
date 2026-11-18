@@ -753,10 +753,9 @@ const NAV = [
   { id:'analysis', label:'Executive Analysis', icon:'🧠' },
     { section:'Organisation' },
   { id:'org-chart', label:'Roles & Responsibilities', icon:'🧭' },
-    { section:'Director' },
-  { id:'lock-requests', label:'Lock Requests', icon:'🔓' },
   { section:'Settings' },
   { id:'product-master', label:'Product Master', icon:'⚙️' },
+  { id:'lock-requests', label:'Job Lock Settings', icon:'🔓' },
   { id:'production-settings', label:'Production Settings', icon:'🗓️' },
     { id:'cashbook-settings', label:'Cash Book Settings', icon:'🧾' },
   { id:'depot-settings', label:'Depots', icon:'🏢' },
@@ -14315,7 +14314,7 @@ function LockRequests({userEmail,onChanged}){
   const activeEmps=emps.filter(empIsActive).sort((a,b)=>empName(a).localeCompare(empName(b)));
 
   return(<div className="page">
-    <div className="page-header"><div className="page-label">Director</div><div className="page-title">Lock requests</div></div>
+    <div className="page-header"><div className="page-label">System Settings</div><div className="page-title">Job lock settings</div></div>
     {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
 
     <div className="card" style={{marginBottom:16,borderLeft:`3px solid ${S.enabled?'var(--green)':'var(--red)'}`}}>
