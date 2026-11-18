@@ -761,7 +761,6 @@ const NAV = [
   { id:'private-dispatch-settings', label:'Private Dispatch Settings', icon:'🧑‍💼' },
   { id:'shutdown-settings', label:'Shutdown Settings', icon:'🧯' },
     { id:'access-settings', label:'Access Settings', icon:'🛂' },
-  { id:'director-privacy', label:'Director Privacy', icon:'🕶️' },
   { id:'lifting-settings', label:'Lifting Alerts', icon:'🔔' },
   { id:'workorder-settings', label:'Work Order Alerts', icon:'🔔' },
   { id:'quality-settings', label:'Quality Settings', icon:'🔬' },
@@ -10756,8 +10755,9 @@ function AccessSettings(){
     <div style={{display:'flex',gap:8,margin:'16px 0'}}>
       <button className={`btn ${mode==='page'?'btn-amber':'btn-ghost'}`} onClick={()=>setMode('page')}>📄 By page</button>
       <button className={`btn ${mode==='person'?'btn-amber':'btn-ghost'}`} onClick={()=>setMode('person')}>👤 By person</button>
+            <button className={`btn ${mode==='director'?'btn-amber':'btn-ghost'}`} onClick={()=>setMode('director')}>🕶 Hide directors from…</button>
     </div>
-    {mode==='page'?pageView:personView}
+    {mode==='page'?pageView:mode==='person'?personView:<DirectorPrivacySettings/>}
   </div>);
 }
 
