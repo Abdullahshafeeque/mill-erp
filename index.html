@@ -3245,7 +3245,8 @@ function ReturnRoutes(){
   useEffect(()=>{load();},[load]);
 
   const finished=products.filter(p=>!p.is_raw_material);
-  const destOptions=(prod)=>products.filter(m=>String(m.id)!==String(prod.id)&&(m.is_raw_material||m.include_in_production_log===false));
+  const destOptions=(prod)=>products.filter(m=>String(m.id)!==String(prod.id));
+  const destBlocked=(m)=>!m.is_raw_material&&m.include_in_production_log!==false;
   const routeOf=(pid,k)=>routes.find(x=>String(x.product_id)===String(pid)&&x.disposition===k);
   const nameOf=(id)=>{ const m=products.find(x=>String(x.id)===String(id)); return m?m.product_name:'(removed item)'; };
   const describe=(pid,k)=>{ const r=routeOf(pid,k); return r?`${nameOf(r.dest_product_id)}${r.dest_scheme?' ('+r.dest_scheme+')':''} · ${Number(r.kg_per_kg)} kg per 1 kg`:null; };
@@ -3264,6 +3265,7 @@ function ReturnRoutes(){
       if(!d.dest){ del.push(k); continue; }
       const m=products.find(x=>String(x.id)===d.dest);
       if(!m) return alert('The chosen destination no longer exists.');
+      if(destBlocked(m)) return alert(`${m.product_name} is tracked in the production log, so quantity cannot be sent into it. Choose another destination.`);
       if(m.has_schemes&&!d.scheme) return alert(`Choose the scheme for ${m.product_name}.`);
       const ratio=Number(d.ratio);
       if(!(ratio>0)||ratio>10) return alert('The quantity ratio must be above 0 (1 = same weight, 0.9 = only 90% is usable).');
@@ -3289,7 +3291,11 @@ function ReturnRoutes(){
       <span style={{width:120,fontSize:12,fontWeight:600}}>{title}</span>
       <select className="form-input" style={{width:220}} value={d.dest} onChange={e=>setDraft(p=>({...p,[k]:{dest:e.target.value,scheme:'',ratio:p[k].ratio}}))}>
         <option value="">{emptyLabel}</option>
-        {destOptions(prod).map(x=><option key={x.id} value={String(x.id)}>{x.product_name}{x.is_raw_material?' (raw material)':''}</option>)}
+        {destOptions(prod).map(x=>(
+          <option key={x.id} value={String(x.id)} disabled={destBlocked(x)}>
+            {x.product_name}{x.is_raw_material?' (raw material)':destBlocked(x)?' — production-log item, not allowed':' (by-product)'}
+          </option>
+        ))}
       </select>
       {schemes.length>0&&<select className="form-input" style={{width:110}} value={d.scheme} onChange={e=>setD(k,'scheme',e.target.value)}>
         <option value="">-- Scheme --</option>{schemes.map(s=><option key={s} value={s}>{s}</option>)}
@@ -3305,7 +3311,7 @@ function ReturnRoutes(){
       <div className="page-title">Returns &amp; damage destinations</div>
     </div>
     <div style={{marginBottom:16,padding:'10px 16px',background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
-      When a return or damage is logged, you choose: add back to stock, send to damage, or refeed. <strong>Add back to stock</strong> always goes to the product's own stock. Here you decide where <strong>damage</strong> and <strong>refeed</strong> quantities go for each product. Leave damage empty to simply write it off. Refeed needs a destination. A destination can be a raw material (for example wheat) or a by-product, but not a product that is entered in the production log. The "kg per 1 kg" figure is how much usable quantity comes out of each 1 kg returned (1 = all of it).
+      When a return or damage is logged, you choose: add back to stock, send to damage, or refeed. <strong>Add back to stock</strong> always goes to the product's own stock. Here you decide where <strong>damage</strong> and <strong>refeed</strong> quantities go for each product. Leave damage empty to simply write it off. Refeed needs a destination. Every product is listed. Products that are entered in the production log are shown greyed out, because their stock is rebuilt daily from production and cannot receive a destination quantity. The "kg per 1 kg" figure is how much usable quantity comes out of each 1 kg returned (1 = all of it).
     </div>
     {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
     <TableWrap><table>
@@ -9610,7 +9616,7 @@ function DispatchReport({data,from,to}){
     sBags+=bags; sKg+=kg; if(r.invoice_no) inv.add(r.invoice_no);
     [[bySch,r.scheme||'—'],[byDist,r.district||'—'],[byDep,r.depot_name||'—']].forEach(([m,k])=>{ const o=slot(m,k); o.bags+=bags; o.kg+=kg; o.n++; });
   });
-  
+
   data.ret.filter(r=>r.origin==='depot').forEach(r=>{
     const bags=Number(r.qty_bags)||0;
     const kg=bags*packSizeOf(r.product);
