@@ -1388,6 +1388,8 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
 
     <PackingRules/>
 
+    <ReturnRoutes/>
+
     {confirmProd&&(
       <div className="modal-overlay">
         <div className="card" style={{maxWidth:480,width:'100%'}}>
@@ -1411,6 +1413,49 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
   </div>);
 }
 
+// ══ RETURNS & DAMAGE helpers ══
+const retDelta=(r)=>(r.stock_delta===null||r.stock_delta===undefined)?(Number(r.qty_bags)||0):(Number(r.stock_delta)||0);
+const retNative=(m,kg)=>(!m.is_raw_material&&packSizeOf(m)>0)?kg/packSizeOf(m):kg;
+const retOk=(res)=>res.error?res.error.message:((!res.data||res.data.length===0)?'not permitted (no row was changed)':null);
+async function retHave(m,scheme){
+  if(m.is_raw_material&&m.has_schemes){
+    const {data}=await sb.from('raw_material_scheme_stock').select('qty_kg').eq('product_id',m.id).eq('scheme',scheme||'').maybeSingle();
+    return Number(data?.qty_kg||0);
+  }
+  if(!m.is_raw_material&&packSizeOf(m)>0){
+    const {data}=await sb.from('current_stock').select('qty_bags').eq('product_id',m.id).maybeSingle();
+    return Number(data?.qty_bags||0);
+  }
+  const {data}=await sb.from('raw_material_stock').select('qty_kg').eq('product_id',m.id).maybeSingle();
+  return Number(data?.qty_kg||0);
+}
+// Adds (+) or removes (−) stock. amt is in the item's own unit: bags for packed finished goods, kg for everything else. Returns an error text or null.
+async function retStockMove(m,amt,scheme){
+  const q=r3(amt);
+  if(!q) return null;
+  const now=new Date().toISOString();
+  if(m.is_raw_material&&m.has_schemes){
+    if(!scheme) return 'no scheme chosen for '+m.product_name;
+    const {data:b,error:e}=await sb.from('raw_material_scheme_stock').select('*').eq('product_id',m.id).eq('scheme',scheme).maybeSingle();
+    if(e) return e.message;
+    return retOk(b
+      ?await sb.from('raw_material_scheme_stock').update({qty_kg:r3(Number(b.qty_kg)+q),updated_at:now}).eq('id',b.id).select()
+      :await sb.from('raw_material_scheme_stock').insert({product_id:m.id,scheme,qty_kg:q}).select());
+  }
+  if(!m.is_raw_material&&packSizeOf(m)>0){
+    const {data:s,error:e}=await sb.from('current_stock').select('*').eq('product_id',m.id).maybeSingle();
+    if(e) return e.message;
+    return retOk(s
+      ?await sb.from('current_stock').update({qty_bags:r3(Number(s.qty_bags)+q),updated_at:now}).eq('id',s.id).select()
+      :await sb.from('current_stock').insert({product_id:m.id,qty_bags:q}).select());
+  }
+  const {data:k,error:e2}=await sb.from('raw_material_stock').select('*').eq('product_id',m.id).maybeSingle();
+  if(e2) return e2.message;
+  return retOk(k
+    ?await sb.from('raw_material_stock').update({qty_kg:r3(Number(k.qty_kg)+q),updated_at:now}).eq('id',k.id).select()
+    :await sb.from('raw_material_stock').insert({product_id:m.id,qty_kg:q}).select());
+}
+
 const KG_STOCK_FROM='2026-11-06';
 const PROD_DAYS=60; // how many days of production the page shows
 // Recalculates opening/closing of every logged production day from `fromDate` onward
@@ -1428,7 +1473,7 @@ async function prodResyncFrom(fromDate,onlyProductId){
       fetchAllRows((a,b)=>only(sb.from('daily_production_log').select('*').gte('date',start)).order('date').order('id').range(a,b)),
       fetchAllRows((a,b)=>only(sb.from('supplyco_dispatches').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
       fetchAllRows((a,b)=>only(sb.from('private_dispatches').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
-      fetchAllRows((a,b)=>only(sb.from('product_returns').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
+      fetchAllRows((a,b)=>only(sb.from('product_returns').select('id,date,product_id,qty_bags,stock_delta').gte('date',start)).order('id').range(a,b)),
       fetchAllRows((a,b)=>sb.from('stock_count_lines').select('id,item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false).order('id').range(a,b)),
       fetchAllRows((a,b)=>sb.from('production_addins').select('*').gte('log_date',start).order('id').range(a,b)).catch(()=>[]),
       sb.from('product_master').select('*'),
@@ -1437,7 +1482,7 @@ async function prodResyncFrom(fromDate,onlyProductId){
     const sales={},rets={},adjs={},uses={},dset=new Set(logs.map(l=>l.date));
     const add=(m,d,p,v)=>{ const k=d+'|'+p; m[k]=(m[k]||0)+v; dset.add(d); };
     [...sd,...pd].forEach(r=>add(sales,r.date,String(r.product_id),Number(r.qty_bags)||0));
-    rt.forEach(r=>add(rets,r.date,String(r.product_id),Number(r.qty_bags)||0));
+    rt.forEach(r=>add(rets,r.date,String(r.product_id),retDelta(r)));
     adjRaw.filter(a=>a.count&&a.count.count_date>=start&&(a.item_type==='finished'||a.count.count_date>=KG_STOCK_FROM)).forEach(a=>add(adjs,a.count.count_date,String(a.item_id),Number(a.diff)||0));
     adn.forEach(a=>(a.uses||[]).forEach(u=>add(uses,a.log_date,String(u.material_id),Number(u.bags)||0)));
     const dates=[...dset].filter(d=>d>=start).sort();
@@ -1524,7 +1569,7 @@ function Production(){
   };
   const adjFor=(date,productId)=>adjustments.filter(a=>a.date===date&&String(a.product_id)===String(productId)).reduce((s,a)=>s+a.qty,0);
   const returnsFor=(date,productId)=>
-    returns.filter(r=>r.date===date&&r.product_id===productId).reduce((s,r)=>s+Number(r.qty_bags),0);
+    returns.filter(r=>r.date===date&&r.product_id===productId).reduce((s,r)=>s+retDelta(r),0);
 
   // ══ ADD-INS (e.g. dust added to bran) ══
   const recipeLinesOf=(pid)=>{ const rc=recipesAll.find(x=>String(x.product_id)===String(pid)); return rc?linesAll.filter(l=>l.recipe_id===rc.id):[]; };
@@ -1692,7 +1737,7 @@ function Production(){
         fetchAllRows((a,b)=>sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',from).order('date',{ascending:false}).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('private_dispatches').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
-        fetchAllRows((a,b)=>sb.from('product_returns').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
+        fetchAllRows((a,b)=>sb.from('product_returns').select('id,date,product_id,qty_bags,stock_delta').gte('date',from).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('stock_count_lines').select('id,item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('production_addins').select('*').gte('log_date',from).order('id').range(a,b)).catch(()=>[]),
       ]);
@@ -2130,7 +2175,7 @@ function Production(){
                 <td><strong>{p.product_name}</strong></td>
                 <td className="mono dim">{qb(r.opening,p)}</td>
                 <td className="mono dim">{sales>0?'−'+qb(sales,p):'—'}</td>
-                <td className="mono dim">{ret>0?'+'+qb(ret,p):'—'}</td>
+                <td className="mono dim">{ret!==0?(ret>0?'+':'−')+qb(Math.abs(ret),p):'—'}</td>
                 <td><div style={{display:'flex',alignItems:'center',gap:6}}><input type="number" className="form-input" style={{width:110}} value={r.production} onChange={e=>updateProduction(p.id,e.target.value)}/><span className="dim" style={{fontSize:12}}>{unitOf(p)}</span></div></td>
                 <td><div style={{display:'flex',alignItems:'center',gap:6}}><input type="number" className="form-input" style={{width:110}} value={r.closing} onChange={e=>updateClosing(p.id,e.target.value)}/><span className="dim" style={{fontSize:12}}>{unitOf(p)}</span></div></td>
               </tr>);
@@ -2182,7 +2227,7 @@ function Production(){
                   <td className="mono dim">{qb(g.opening,g.p)}</td>
                   <td className="mono dim">—</td>
                   <td className="mono" style={{color:g.sales>0?'var(--red)':'var(--dim)'}}>{g.sales>0?'−'+qb(g.sales,g.p):'—'}</td>
-                  <td className="mono" style={{color:g.ret>0?'var(--blue)':'var(--dim)'}}>{g.ret>0?'+'+qb(g.ret,g.p):'—'}</td>
+                  <td className="mono" style={{color:g.ret>0?'var(--blue)':g.ret<0?'var(--red)':'var(--dim)'}}>{g.ret!==0?(g.ret>0?'+':'−')+qb(Math.abs(g.ret),g.p):'—'}</td>
                   <td className="mono" style={{fontWeight:600}}>{qb(g.closing,g.p)}</td>
                   {showPct&&<td className="mono dim">—</td>}
                   {showPct&&<td className="mono dim">—</td>}
@@ -2197,7 +2242,7 @@ function Production(){
                 <td className="mono dim">{qb(r.opening_bags,r.product)}</td>
                 <td className="mono" style={{color:'var(--green)'}}>{qb(r.production_bags,r.product)}{addinRows.filter(a=>a.log_date===r.date&&String(a.product_id)===String(r.product_id)).map(a=><div key={a.id} style={{fontSize:10,color:'var(--blue)',fontWeight:500}}>add-in: {fmt(a.qty_kg,1)} kg {addinName(a.material_id)}</div>)}</td>
                 <td className="mono" style={{color:sales>0?'var(--red)':'var(--dim)'}}>{sales>0?'−'+qb(sales,r.product):'—'}</td>
-                <td className="mono" style={{color:ret>0?'var(--blue)':'var(--dim)'}}>{ret>0?'+'+qb(ret,r.product):'—'}</td>
+                <td className="mono" style={{color:ret>0?'var(--blue)':ret<0?'var(--red)':'var(--dim)'}}>{ret!==0?(ret>0?'+':'−')+qb(Math.abs(ret),r.product):'—'}</td>
                 <td className="mono" style={{fontWeight:600}}>{qb(closing,r.product)}{adjFor(r.date,r.product_id)!==0&&<div style={{fontSize:10,color:'var(--purple)',fontWeight:500}} title="Stock count adjustment">adj {adjFor(r.date,r.product_id)>0?'+':''}{fmt(adjFor(r.date,r.product_id))}</div>}{useFor(r.date,r.product_id)>0&&<div style={{fontSize:10,color:'var(--blue)',fontWeight:500}} title="Used up in add-ins">add-in −{fmt(useFor(r.date,r.product_id),1)}</div>}</td>
               {showPct&&<td className="mono">{fmt(prodKgOf(r),1)} kg</td>}
               {showPct&&<td className="mono" style={{color:'var(--amber)',fontWeight:600}}>{totalKg>0?(prodKgOf(r)/totalKg*100).toFixed(2):'0.00'}%</td>}
@@ -2881,86 +2926,244 @@ function Returns(){
   const [pdS,setPdS]=useState(PDS_DEFAULTS);
   const [returns,setReturns]=useState([]);
   const [products,setProducts]=useState([]);
+  const [allProducts,setAllProducts]=useState([]);
+  const [routes,setRoutes]=useState([]);
   const [depots,setDepots]=useState([]);
   const [showForm,setShowForm]=useState(false);
   const [saving,setSaving]=useState(false);
   const [loading,setLoading]=useState(true);
-  const REASONS=['Depot Rejection','Damaged/Spoiled','Excess Sent','Quality Issue','Other'];
-  const blank={date:today,product_id:'',qty_bags:'',source_name:'',reason:'Depot Rejection',notes:'',salesman:''};
+  const [err,setErr]=useState('');
+  const [month,setMonth]=useState(new Date().getMonth()+1);
+  const [year,setYear]=useState(new Date().getFullYear());
+  const [fKind,setFKind]=useState('All');
+  const [dep,setDep]=useState({ready:false,list:[],left:null});
+  const {start:periodStart,end:periodEnd}=monthRange(month,year);
+  const periodLabel=`${MONTH_NAMES[month-1]} ${year}`;
+  const REASONS=['Depot Rejection','Damaged/Spoiled','Transit damage','Packing / bag damage','Rodent / moisture damage','Handling damage (our godown)','Excess Sent','Quality Issue','Other'];
+  const blank={date:today,kind:'Return',origin:'depot',product_id:'',qty:'',depot:'',party:'',work_order_id:'',salesman:'',reason:'Depot Rejection',disposition:'stock',notes:''};
   const [form,setForm]=useState(blank);
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  const setKind=(v)=>setForm(p=>({...p,kind:v,origin:(v==='Return'&&p.origin==='mill')?'depot':p.origin,reason:v==='Damage'?'Damaged/Spoiled':'Depot Rejection',disposition:v==='Damage'?'damage':'stock'}));
+  const setOrigin=(v)=>setForm(p=>({...p,origin:v,depot:'',party:'',salesman:'',work_order_id:'',disposition:(v==='mill'&&p.disposition==='stock')?'damage':p.disposition}));
+  const closeForm=()=>{ setForm(blank); setShowForm(false); };
+  const isKgP=(p)=>!!p&&p.packing_type==='loose'&&!p.has_standard_weight;
+  const unitOfP=(p)=>isKgP(p)?(p.unit||'kg'):'bags';
 
   const load=useCallback(async()=>{
     setLoading(true);
-    const [{data:r},{data:p},{data:dep}]=await Promise.all([
-      sb.from('product_returns').select('*, product:product_id(*)').gte('date',monthStart).order('date',{ascending:false}),
+    const [r,p,ap,rt,dp]=await Promise.all([
+      sb.from('product_returns').select('*, product:product_id(*)').gte('date',periodStart).lte('date',periodEnd).order('date',{ascending:false}).order('id',{ascending:false}),
       sb.from('product_master').select('*').eq('is_raw_material',false).eq('is_active',true).order('product_name'),
+      sb.from('product_master').select('*'),
+      sb.from('return_routes').select('*'),
       sb.from('depots').select('*').order('name'),
     ]);
+    setErr(r.error?r.error.message+' — have you run the SQL for returns and damage?':'');
     setPdS(await loadPdSettings());
-    setReturns(r||[]); setProducts(p||[]); setDepots(dep||[]); setLoading(false);
-  },[]);
+    setReturns(r.data||[]); setProducts(p.data||[]); setAllProducts(ap.data||[]); setRoutes(rt.data||[]); setDepots(dp.data||[]); setLoading(false);
+  },[periodStart,periodEnd]);
   useEffect(()=>{load();},[load]);
 
+  // what was sent to the chosen depot (and not yet returned), per work order
+  useEffect(()=>{
+    if(form.origin!=='depot'||!form.depot||!form.product_id){ setDep({ready:false,list:[],left:null}); return; }
+    let c=false; setDep({ready:false,list:[],left:null});
+    (async()=>{
+      try{
+        const [sd,rt]=await Promise.all([
+          fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('id,work_order_id,qty_bags').eq('product_id',form.product_id).eq('depot_name',form.depot).order('id').range(a,b)),
+          fetchAllRows((a,b)=>sb.from('product_returns').select('id,work_order_id,qty_bags').eq('product_id',form.product_id).eq('source_name',form.depot).eq('origin','depot').order('id').range(a,b)),
+        ]);
+        const by={}; let tot=0;
+        sd.forEach(x=>{ const q=Number(x.qty_bags)||0; tot+=q; if(x.work_order_id){ const k=String(x.work_order_id); by[k]=(by[k]||0)+q; } });
+        rt.forEach(x=>{ const q=Number(x.qty_bags)||0; tot-=q; if(x.work_order_id){ const k=String(x.work_order_id); by[k]=(by[k]||0)-q; } });
+        const ids=Object.keys(by).filter(k=>by[k]>0.0005);
+        let wos=[];
+        if(ids.length){ const {data}=await sb.from('work_orders').select('id,work_order_no').in('id',ids); wos=data||[]; }
+        const list=ids.map(k=>{ const w=wos.find(x=>String(x.id)===k); return {id:k,no:w?w.work_order_no:'(removed work order)',left:r3(by[k])}; });
+        if(!c) setDep({ready:true,list,left:r3(tot)});
+      }catch(e){ if(!c) setDep({ready:true,list:[],left:null,err:e.message}); }
+    })();
+    return ()=>{c=true;};
+  },[form.origin,form.depot,form.product_id]);
+
+  const prod=products.find(p=>String(p.id)===String(form.product_id));
+  const qty=Number(form.qty)>0?Number(form.qty):0;
+  const unit=prod?unitOfP(prod):'bags';
+  const kgOfQty=(q)=>(prod&&packSizeOf(prod)>0)?q*packSizeOf(prod):q;
+  const routeOf=(d)=>prod?routes.find(x=>String(x.product_id)===String(prod.id)&&x.disposition===d):null;
+  const rt=(form.disposition==='damage'||form.disposition==='refeed')?routeOf(form.disposition):null;
+  const destProd=rt?allProducts.find(x=>String(x.id)===String(rt.dest_product_id)):null;
+  const destKg=(rt&&destProd&&qty>0)?r3(kgOfQty(qty)*(Number(rt.kg_per_kg)||1)):0;
+  const stockDelta=r3((form.origin==='mill'?-qty:0)+(form.disposition==='stock'?qty:0));
+  const canStock=form.origin!=='mill';
+  const selWo=dep.list.find(x=>x.id===String(form.work_order_id));
+
   const save=async()=>{
-    if(!form.product_id||!form.qty_bags) return alert('Product and quantity required.');
+    if(!prod) return alert('Select a product.');
+    if(!(qty>0)) return alert('Quantity must be above 0.');
+    if(form.date>today) return alert('The date cannot be in the future.');
+    const fz=localStorage.getItem('productionFreezeDate')||'';
+    if(fz&&form.date<=fz) return alert(`${form.date} is on or before the production freeze date (${fz}) and cannot be changed.`);
+    if(form.kind==='Return'&&form.origin==='mill') return alert('A return must come back from a depot, a party or someone else. Use "Damage" for damage inside our own mill.');
+    if(form.origin==='depot'){
+      if(!form.depot) return alert('Select the depot.');
+      if(!dep.ready) return alert('Still checking what was dispatched to this depot — wait a moment and press Save again.');
+      if(dep.left===null) return alert('Could not check what was dispatched to this depot'+(dep.err?': '+dep.err:'')+'. Please try again.');
+      if(qty>dep.left+0.0005) return alert(`Only ${fmt(dep.left,2)} ${unit} of ${prod.product_name} is recorded as sent to ${form.depot} (after earlier returns). You cannot return more than that.`);
+      if(dep.list.length>0){
+        if(!form.work_order_id) return alert('Choose the work order this quantity was sent under, so its balance is corrected.');
+        if(!selWo) return alert('The chosen work order is not valid for this depot. Choose again.');
+        if(qty>selWo.left+0.0005) return alert(`Only ${fmt(selWo.left,2)} ${unit} is recorded as sent to ${form.depot} under work order ${selWo.no}.`);
+      }
+    }
+    if((form.origin==='private'||form.origin==='other')&&!form.party.trim()) return alert('Enter the party / customer name.');
+    if(form.origin==='private'&&pdS.require_salesman&&!form.salesman) return alert('Please select the salesman.');
+    if(form.disposition==='stock'&&form.origin==='mill') return alert('Damage in our own mill cannot be added back to stock. Choose "Send to damage" or "Refeed".');
+    if(form.disposition!=='stock'){
+      if(form.disposition==='refeed'&&!rt) return alert('No refeed destination is set for '+prod.product_name+'.\n\nSet it in Product Recipes → "Returns & damage destinations".');
+      if(rt&&!destProd) return alert('The destination item set for this product no longer exists. Fix it in Product Recipes → "Returns & damage destinations".');
+      if(destProd&&!destProd.is_raw_material&&destProd.include_in_production_log!==false) return alert(destProd.product_name+' is tracked in the production log, so quantity cannot be sent into it. Choose another destination in Product Recipes.');
+      if(destProd&&destProd.has_schemes&&!rt.dest_scheme) return alert('The destination '+destProd.product_name+' needs a scheme. Fix it in Product Recipes.');
+    }
+    if(stockDelta<0){
+      const have=await retHave(prod);
+      if(-stockDelta>have+0.0005) return alert(`Only ${fmt(have,2)} ${unit} of ${prod.product_name} is in stock, so ${fmt(-stockDelta,2)} cannot be taken out as damage.`);
+    }
     setSaving(true);
-    const row={date:form.date,product_id:form.product_id,qty_bags:Number(form.qty_bags),source_name:form.source_name,reason:form.reason,notes:form.notes,salesman:form.salesman||null};
+    const row={date:form.date,product_id:form.product_id,qty_bags:qty,kind:form.kind,origin:form.origin,disposition:form.disposition,stock_delta:stockDelta,
+      source_name:form.origin==='depot'?form.depot:form.origin==='mill'?'Our mill':form.party.trim(),
+      salesman:form.origin==='private'?(form.salesman||null):null,
+      work_order_id:(form.origin==='depot'&&form.work_order_id)?String(form.work_order_id):null,
+      reason:form.reason,notes:form.notes,
+      dest_product_id:destProd?String(destProd.id):null,dest_scheme:(destProd&&destProd.has_schemes)?rt.dest_scheme:null,dest_kg:destProd?destKg:null};
     const {data,error}=await sb.from('product_returns').insert(row).select('*, product:product_id(*)').single();
-    if(error){alert(error.message);setSaving(false);return;}
-    const {data:s}=await sb.from('current_stock').select('*').eq('product_id',form.product_id).maybeSingle();
-    if(s) await sb.from('current_stock').update({qty_bags:Number(s.qty_bags)+Number(form.qty_bags),updated_at:new Date().toISOString()}).eq('id',s.id);
-    else await sb.from('current_stock').insert({product_id:form.product_id,qty_bags:Number(form.qty_bags)});
-       await prodResyncFrom(form.date,form.product_id);
-    setReturns(p=>[data,...p]); setForm(blank); setShowForm(false); setSaving(false);
-    logActivity('Returns','create',`${form.qty_bags} bags of ${data.product?.product_name} returned from ${form.source_name||'—'}`);
+    if(error){ alert(error.message+' — have you run the SQL for returns and damage?'); setSaving(false); return; }
+    const undo=async(msg)=>{ await sb.from('product_returns').delete().eq('id',data.id); alert(msg+'\n\nThe entry was NOT saved. Please check the stock figures before trying again.'); setSaving(false); load(); };
+    const e1=await retStockMove(prod,stockDelta,null);
+    if(e1) return undo('Stock of '+prod.product_name+' could not be updated: '+e1);
+    if(destProd&&destKg>0){
+      const e2=await retStockMove(destProd,retNative(destProd,destKg),rt.dest_scheme||null);
+      if(e2){ await retStockMove(prod,-stockDelta,null); return undo('The destination stock ('+destProd.product_name+') could not be updated: '+e2); }
+    }
+    await prodResyncFrom(form.date,form.product_id);
+    logActivity('Returns','create',`${form.kind} — ${fmt(qty,2)} ${unit} of ${prod.product_name} from ${row.source_name||'—'}${row.salesman?' (salesman '+row.salesman+')':''} → ${form.disposition==='stock'?'back to stock':form.disposition==='damage'?'damage':'refeed'}${destProd?' → '+destProd.product_name+' '+fmt(destKg,3)+' kg':''}`);
+    setForm(blank); setShowForm(false); setSaving(false); load();
   };
 
   const del=async(r)=>{
-    if(!confirm('Delete this return entry? Stock will be reversed (deducted back).')) return;
-    await sb.from('product_returns').delete().eq('id',r.id);
-    const {data:s}=await sb.from('current_stock').select('*').eq('product_id',r.product_id).maybeSingle();
-    if(s) await sb.from('current_stock').update({qty_bags:Math.max(0,Number(s.qty_bags)-Number(r.qty_bags)),updated_at:new Date().toISOString()}).eq('id',s.id);
-       await prodResyncFrom(r.date,r.product_id);
-    setReturns(p=>p.filter(x=>x.id!==r.id));
-    logActivity('Returns','delete',`Return of ${r.qty_bags} bags reversed`);
+    const fz=localStorage.getItem('productionFreezeDate')||'';
+    if(fz&&r.date<=fz) return alert(`${r.date} is on or before the production freeze date (${fz}) and cannot be changed.`);
+    const p=r.product||allProducts.find(x=>String(x.id)===String(r.product_id));
+    if(!p) return alert('The product of this entry no longer exists.');
+    const delta=retDelta(r);
+    const dp=r.dest_product_id?allProducts.find(x=>String(x.id)===String(r.dest_product_id)):null;
+    const dkg=Number(r.dest_kg)||0;
+    if(r.dest_product_id&&!dp) return alert('The destination item of this entry no longer exists, so its stock cannot be reversed. Correct it with a Stock Count first.');
+    if(delta>0){
+      const have=await retHave(p);
+      if(delta>have+0.0005) return alert(`Cannot delete: this entry added ${fmt(delta,2)} to the stock of ${p.product_name}, but only ${fmt(have,2)} is in stock now (the rest was already dispatched or used).`);
+    }
+    if(dp&&dkg>0){
+      const have=await retHave(dp,r.dest_scheme);
+      if(retNative(dp,dkg)>have+0.0005) return alert(`Cannot delete: ${fmt(dkg,3)} kg was sent to ${dp.product_name}, but only part of it is left in stock now.`);
+    }
+    if(!confirm('Delete this entry? The stock it changed will be reversed.')) return;
+    const {data:gone,error}=await sb.from('product_returns').delete().eq('id',r.id).select();
+    if(error) return alert(error.message);
+    if(!gone||gone.length===0) return alert('Not deleted — you are not permitted to delete this entry. Nothing was changed.');
+    const errs=[];
+    const e1=await retStockMove(p,-delta,null); if(e1) errs.push(p.product_name+': '+e1);
+    if(dp&&dkg>0){ const e2=await retStockMove(dp,-retNative(dp,dkg),r.dest_scheme||null); if(e2) errs.push(dp.product_name+': '+e2); }
+    if(errs.length) alert('Entry deleted, but stock could not be fully reversed:\n'+errs.join('\n')+'\n\nPlease correct it with a Stock Count.');
+    await prodResyncFrom(r.date,r.product_id);
+    logActivity('Returns','delete',`${r.kind||'Return'} of ${fmt(r.qty_bags,2)} ${p.product_name} (${r.source_name||'—'}) deleted and reversed`);
+    load();
   };
 
   if(loading) return <Loading/>;
-  const totalBags=returns.reduce((s,r)=>s+Number(r.qty_bags),0);
+
+  const shown=returns.filter(r=>fKind==='All'||(r.kind||'Return')===fKind);
+  const bagRows=returns.filter(r=>!isKgP(r.product));
+  const sumB=(fn)=>bagRows.filter(fn).reduce((s,r)=>s+Number(r.qty_bags),0);
+  const DISP_LABEL={stock:'Back to stock',damage:'Sent to damage',refeed:'Refeed'};
+  const DISP_BADGE={stock:'badge-green',damage:'badge-red',refeed:'badge-amber'};
+
+  const lines=[];
+  if(prod&&qty>0){
+    if(stockDelta>0) lines.push(`${prod.product_name} stock: +${fmt(stockDelta,2)} ${unit}`);
+    if(stockDelta<0) lines.push(`${prod.product_name} stock: −${fmt(-stockDelta,2)} ${unit} (leaves our stock)`);
+    if(stockDelta===0) lines.push(`${prod.product_name} stock does not change`);
+    if(form.disposition==='damage') lines.push(destProd?`Damage register — also ${fmt(destKg,3)} kg goes to ${destProd.product_name}${rt.dest_scheme?' ('+rt.dest_scheme+')':''}`:'Damage register — written off, no stock is added anywhere');
+    if(form.disposition==='refeed') lines.push(destProd?`Refeed — ${fmt(destKg,3)} kg is added to ${destProd.product_name}${rt.dest_scheme?' ('+rt.dest_scheme+')':''}`:'⚠ No refeed destination is set for this product (Product Recipes → Returns & damage destinations)');
+    if(form.origin==='depot'&&form.depot) lines.push(`${form.depot}'s dispatched quantity${selWo?` on work order ${selWo.no}`:''} goes down by ${fmt(qty,2)} ${unit}, so that balance becomes pending again`);
+    if(form.origin==='private'&&form.salesman) lines.push(`${form.salesman}'s sales are reduced by ${fmt(qty,2)} ${unit}`);
+  }
 
   return(<div className="page">
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:24,flexWrap:'wrap',gap:12}}>
       <div className="page-header" style={{marginBottom:0}}>
         <div className="page-label">Mill Operations</div>
-        <div className="page-title">Returns — this month: {fmt(totalBags)} bags</div>
+        <div className="page-title">Returns &amp; damage — {periodLabel}</div>
+        <MonthYearPicker month={month} year={year} setMonth={setMonth} setYear={setYear}/>
       </div>
-      {ax('returns','log')&&<button className="btn btn-blue" onClick={()=>setShowForm(v=>!v)}>+ Log return</button>}
+      {ax('returns','log')&&<button className="btn btn-blue" onClick={()=>setShowForm(v=>!v)}>+ Log return / damage</button>}
+    </div>
+
+    {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
+
+    <div className="stat-grid">
+      <StatCard label="Entries" value={returns.length} col="var(--blue)"/>
+      <StatCard label="Added back to stock" value={fmt(sumB(r=>r.disposition==='stock'))+' bags'} col="var(--green)"/>
+      <StatCard label="Sent to damage" value={fmt(sumB(r=>r.disposition==='damage'))+' bags'} col="var(--red)"/>
+      <StatCard label="Refeed" value={fmt(sumB(r=>r.disposition==='refeed'))+' bags'} col="var(--amber)"/>
     </div>
 
     {showForm&&(
-      <FormCard title="Log product return" col="var(--blue)" onSave={save} onCancel={()=>setShowForm(false)} saving={saving}>
+      <FormCard title="Log return / damage" col={form.kind==='Damage'?'var(--red)':'var(--blue)'} onSave={save} onCancel={closeForm} saving={saving}>
         <div className="form-grid">
           <Field label="Date"><input type="date" className="form-input" value={form.date} max={today} onChange={e=>f('date',e.target.value)}/></Field>
+          <Field label="Type">
+            <select className="form-input" value={form.kind} onChange={e=>setKind(e.target.value)}>
+              <option value="Return">Return (came back from a party)</option>
+              <option value="Damage">Damage</option>
+            </select>
+          </Field>
+          <Field label={form.kind==='Damage'?'Where did the damage happen?':'Who sent it back?'}>
+            <select className="form-input" value={form.origin} onChange={e=>setOrigin(e.target.value)}>
+              <option value="depot">Depot (Supplyco)</option>
+              <option value="private">Private party / customer</option>
+              <option value="other">Other</option>
+              {form.kind==='Damage'&&<option value="mill">Our own mill / godown (from our stock)</option>}
+            </select>
+          </Field>
           <Field label="Product">
-            <select className="form-input" value={form.product_id} onChange={e=>f('product_id',e.target.value)}>
+            <select className="form-input" value={form.product_id} onChange={e=>setForm(p=>({...p,product_id:e.target.value,work_order_id:''}))}>
               <option value="">-- Select product --</option>
               {products.map(p=><option key={p.id} value={p.id}>{p.product_name}</option>)}
             </select>
           </Field>
-          <Field label="Bags returned ★"><input type="number" className="form-input" style={{fontWeight:600}} value={form.qty_bags} onChange={e=>f('qty_bags',e.target.value)}/></Field>
-          <Field label="Returned from (depot)">
-            <select className="form-input" value={form.source_name} onChange={e=>f('source_name',e.target.value)}>
+          <Field label={`Quantity (${unit}) ★`}><input type="number" step="any" className="form-input" style={{fontWeight:600}} value={form.qty} onChange={e=>f('qty',e.target.value)}/></Field>
+          {form.origin==='depot'&&<Field label="Depot ★">
+            <select className="form-input" value={form.depot} onChange={e=>setForm(p=>({...p,depot:e.target.value,work_order_id:''}))}>
               <option value="">-- Select depot --</option>
               {depots.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
             </select>
-          </Field>
-          <Field label="Salesman (if it was a private sale)">
+          </Field>}
+          {form.origin==='depot'&&form.depot&&form.product_id&&dep.ready&&dep.list.length>0&&<Field label="Work order ★">
+            <select className="form-input" value={form.work_order_id} onChange={e=>f('work_order_id',e.target.value)}>
+              <option value="">-- Select work order --</option>
+              {dep.list.map(w=><option key={w.id} value={w.id}>{w.no} · {fmt(w.left,2)} {unit} sent</option>)}
+            </select>
+          </Field>}
+          {form.origin==='private'&&<Field label="Party name ★"><input className="form-input" value={form.party} onChange={e=>f('party',e.target.value)}/></Field>}
+          {form.origin==='private'&&<Field label={pdS.require_salesman?'Salesman ★':'Salesman'}>
             <select className="form-input" value={form.salesman} onChange={e=>f('salesman',e.target.value)}>
               <option value="">-- None / not applicable --</option>
               {pdS.salesmen.map(n=><option key={n} value={n}>{n}</option>)}
             </select>
-          </Field>
+          </Field>}
+          {form.origin==='other'&&<Field label="Name ★"><input className="form-input" value={form.party} onChange={e=>f('party',e.target.value)}/></Field>}
           <Field label="Reason">
             <select className="form-input" value={form.reason} onChange={e=>f('reason',e.target.value)}>
               {REASONS.map(r=><option key={r}>{r}</option>)}
@@ -2968,22 +3171,169 @@ function Returns(){
           </Field>
           <Field label="Notes"><input className="form-input" value={form.notes} onChange={e=>f('notes',e.target.value)}/></Field>
         </div>
+
+        {form.origin==='depot'&&form.depot&&form.product_id&&(<div className="dim" style={{fontSize:12,marginTop:8}}>
+          {!dep.ready?'Checking what was dispatched to this depot…':dep.left===null?'Could not check dispatches.':`Recorded as sent to ${form.depot} and not yet returned: ${fmt(dep.left,2)} ${unit}.${dep.list.length===0?' No work-order-linked dispatch found, so this is recorded against the depot only.':''}`}
+        </div>)}
+
+        <div style={{marginTop:14}}>
+          <div className="form-label" style={{marginBottom:6}}>Where should this quantity go? ★</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {[['stock','↩ Add back to stock'],['damage','🗑 Send to damage'],['refeed','♻ Refeed into the system']].filter(([k])=>k!=='stock'||canStock).map(([k,l])=>(
+              <button key={k} type="button" className={`btn ${form.disposition===k?(k==='damage'?'btn-red':k==='refeed'?'btn-amber':'btn-green'):'btn-ghost'}`} onClick={()=>f('disposition',k)}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        {lines.length>0&&(<div style={{marginTop:12,padding:'10px 12px',background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:6,fontSize:12}}>
+          <strong>What will happen when you save:</strong>
+          {lines.map((x,i)=><div key={i} style={{marginTop:3}}>• {x}</div>)}
+        </div>)}
       </FormCard>
     )}
 
+    <div style={{display:'flex',gap:6,marginBottom:12}}>
+      {['All','Return','Damage'].map(k=><button key={k} className={`btn btn-sm ${fKind===k?'btn-amber':'btn-ghost'}`} onClick={()=>setFKind(k)}>{k}</button>)}
+    </div>
+
     <TableWrap><table>
-      <thead><tr><th>Date</th><th>Product</th><th>Bags</th><th>From</th><th>Salesman</th><th>Reason</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Type</th><th>Product</th><th>Qty</th><th>From</th><th>Reason</th><th>Where it went</th><th>Stock effect</th><th></th></tr></thead>
       <tbody>
-        {returns.length===0&&<tr><td colSpan={7}><Empty msg="No returns logged this month."/></td></tr>}
-        {returns.map(r=>(<tr key={r.id}>
-          <td className="mono dim">{r.date}</td>
-          <td><strong>{r.product?.product_name||'—'}</strong></td>
-          <td><strong style={{color:'var(--blue)',fontFamily:'var(--mono)'}}>+{fmt(r.qty_bags)}</strong></td>
-          <td className="dim">{r.source_name||'—'}</td>
-          <td>{r.salesman||<span className="dim">—</span>}</td>
-          <td><span className="badge badge-amber">{r.reason}</span></td>
-          <td>{ax('returns','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}</td>
-        </tr>))}
+        {shown.length===0&&<tr><td colSpan={9}><Empty msg={`No returns or damage in ${periodLabel}.`}/></td></tr>}
+        {shown.map(r=>{
+          const d=retDelta(r), u=unitOfP(r.product);
+          const dpn=r.dest_product_id?((allProducts.find(x=>String(x.id)===String(r.dest_product_id))||{}).product_name||'(removed item)'):null;
+          const disp=r.disposition||'stock';
+          return(<tr key={r.id}>
+            <td className="mono dim">{r.date}</td>
+            <td><span className={`badge ${(r.kind||'Return')==='Damage'?'badge-red':'badge-blue'}`}>{r.kind||'Return'}</span></td>
+            <td><strong>{r.product?.product_name||'—'}</strong></td>
+            <td className="mono"><strong>{fmt(r.qty_bags,2)} {u}</strong></td>
+            <td>{r.source_name||'—'}{r.salesman&&<div className="dim" style={{fontSize:11}}>Salesman: {r.salesman}</div>}</td>
+            <td><span className="badge badge-amber">{r.reason}</span></td>
+            <td><span className={`badge ${DISP_BADGE[disp]}`}>{DISP_LABEL[disp]}</span>{dpn&&<div className="dim" style={{fontSize:11}}>→ {dpn} {fmt(r.dest_kg,3)} kg</div>}</td>
+            <td className="mono" style={{fontWeight:600,color:d>0?'var(--green)':d<0?'var(--red)':'var(--dim)'}}>{d>0?'+':d<0?'−':''}{d!==0?fmt(Math.abs(d),2):'—'}</td>
+            <td>{ax('returns','delete')&&<button className="btn btn-red btn-sm" onClick={()=>del(r)}>✕</button>}</td>
+          </tr>);
+        })}
+      </tbody>
+    </table></TableWrap>
+  </div>);
+}
+
+// ══════════════════════════════════════════════════════════
+// RETURNS & DAMAGE DESTINATIONS (shown inside Product Recipes)
+// ══════════════════════════════════════════════════════════
+function ReturnRoutes(){
+  const [products,setProducts]=useState([]);
+  const [routes,setRoutes]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [err,setErr]=useState('');
+  const [editingId,setEditingId]=useState(null);
+  const [draft,setDraft]=useState({});
+  const [saving,setSaving]=useState(false);
+
+  const load=useCallback(async()=>{
+    const [p,r]=await Promise.all([
+      sb.from('product_master').select('*').eq('is_active',true).order('product_name'),
+      sb.from('return_routes').select('*'),
+    ]);
+    setProducts(p.data||[]); setRoutes(r.data||[]);
+    setErr(r.error?r.error.message+' — have you run the SQL for returns and damage?':'');
+    setLoading(false);
+  },[]);
+  useEffect(()=>{load();},[load]);
+
+  const finished=products.filter(p=>!p.is_raw_material);
+  const destOptions=(prod)=>products.filter(m=>String(m.id)!==String(prod.id)&&(m.is_raw_material||m.include_in_production_log===false));
+  const routeOf=(pid,k)=>routes.find(x=>String(x.product_id)===String(pid)&&x.disposition===k);
+  const nameOf=(id)=>{ const m=products.find(x=>String(x.id)===String(id)); return m?m.product_name:'(removed item)'; };
+  const describe=(pid,k)=>{ const r=routeOf(pid,k); return r?`${nameOf(r.dest_product_id)}${r.dest_scheme?' ('+r.dest_scheme+')':''} · ${Number(r.kg_per_kg)} kg per 1 kg`:null; };
+
+  const startEdit=(prod)=>{
+    const d={};
+    ['damage','refeed'].forEach(k=>{ const r=routeOf(prod.id,k); d[k]=r?{dest:String(r.dest_product_id),scheme:r.dest_scheme||'',ratio:String(r.kg_per_kg)}:{dest:'',scheme:'',ratio:'1'}; });
+    setDraft(d); setEditingId(prod.id);
+  };
+  const setD=(k,fld,v)=>setDraft(p=>({...p,[k]:{...p[k],[fld]:v}}));
+
+  const save=async(prod)=>{
+    const pid=String(prod.id); const rows=[]; const del=[];
+    for(const k of ['damage','refeed']){
+      const d=draft[k];
+      if(!d.dest){ del.push(k); continue; }
+      const m=products.find(x=>String(x.id)===d.dest);
+      if(!m) return alert('The chosen destination no longer exists.');
+      if(m.has_schemes&&!d.scheme) return alert(`Choose the scheme for ${m.product_name}.`);
+      const ratio=Number(d.ratio);
+      if(!(ratio>0)||ratio>10) return alert('The quantity ratio must be above 0 (1 = same weight, 0.9 = only 90% is usable).');
+      rows.push({product_id:pid,disposition:k,dest_product_id:String(m.id),dest_scheme:m.has_schemes?d.scheme:null,kg_per_kg:ratio,updated_at:new Date().toISOString()});
+    }
+    setSaving(true);
+    let error=null;
+    if(rows.length){ ({error}=await sb.from('return_routes').upsert(rows,{onConflict:'product_id,disposition'})); }
+    if(!error&&del.length){ ({error}=await sb.from('return_routes').delete().eq('product_id',pid).in('disposition',del)); }
+    setSaving(false);
+    if(error) return alert(error.message);
+    logActivity('Product Recipes','update',`${prod.product_name} — return/damage destinations updated`);
+    setEditingId(null); load();
+  };
+
+  if(loading) return <Loading/>;
+
+  const picker=(prod,k,title,emptyLabel)=>{
+    const d=draft[k]||{dest:'',scheme:'',ratio:'1'};
+    const m=products.find(x=>String(x.id)===d.dest);
+    const schemes=m&&m.has_schemes?(m.scheme_list||'').split(',').map(s=>s.trim()).filter(Boolean):[];
+    return(<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+      <span style={{width:120,fontSize:12,fontWeight:600}}>{title}</span>
+      <select className="form-input" style={{width:220}} value={d.dest} onChange={e=>setDraft(p=>({...p,[k]:{dest:e.target.value,scheme:'',ratio:p[k].ratio}}))}>
+        <option value="">{emptyLabel}</option>
+        {destOptions(prod).map(x=><option key={x.id} value={String(x.id)}>{x.product_name}{x.is_raw_material?' (raw material)':''}</option>)}
+      </select>
+      {schemes.length>0&&<select className="form-input" style={{width:110}} value={d.scheme} onChange={e=>setD(k,'scheme',e.target.value)}>
+        <option value="">-- Scheme --</option>{schemes.map(s=><option key={s} value={s}>{s}</option>)}
+      </select>}
+      {d.dest&&<input type="number" step="0.01" min="0" className="form-input" style={{width:90}} value={d.ratio} onChange={e=>setD(k,'ratio',e.target.value)} title="kg created per 1 kg returned"/>}
+      {d.dest&&<span className="dim" style={{fontSize:11}}>kg per 1 kg</span>}
+    </div>);
+  };
+
+  return(<div style={{marginTop:36}}>
+    <div className="page-header" style={{marginBottom:12}}>
+      <div className="page-label">System Settings</div>
+      <div className="page-title">Returns &amp; damage destinations</div>
+    </div>
+    <div style={{marginBottom:16,padding:'10px 16px',background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
+      When a return or damage is logged, you choose: add back to stock, send to damage, or refeed. <strong>Add back to stock</strong> always goes to the product's own stock. Here you decide where <strong>damage</strong> and <strong>refeed</strong> quantities go for each product. Leave damage empty to simply write it off. Refeed needs a destination. A destination can be a raw material (for example wheat) or a by-product, but not a product that is entered in the production log. The "kg per 1 kg" figure is how much usable quantity comes out of each 1 kg returned (1 = all of it).
+    </div>
+    {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
+    <TableWrap><table>
+      <thead><tr><th>Product</th><th>Add back to stock</th><th>Send to damage</th><th>Refeed</th><th>Edit</th></tr></thead>
+      <tbody>
+        {finished.length===0&&<tr><td colSpan={5}><Empty msg="No finished products yet."/></td></tr>}
+        {finished.map(prod=>{
+          const isE=editingId===prod.id;
+          return(<tr key={prod.id}>
+            <td><strong>{prod.product_name}</strong></td>
+            {isE?(<td colSpan={3}>
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <div className="dim" style={{fontSize:12}}>Add back to stock → this product's own stock (fixed)</div>
+                {picker(prod,'damage','Send to damage','-- Write off (no stock added) --')}
+                {picker(prod,'refeed','Refeed','-- Not set (refeed blocked) --')}
+                <div style={{display:'flex',gap:8}}>
+                  <button className="btn btn-green btn-sm" onClick={()=>save(prod)} disabled={saving}>{saving?'Saving…':'Save'}</button>
+                  <button className="btn btn-ghost btn-sm" onClick={()=>setEditingId(null)}>Cancel</button>
+                </div>
+              </div>
+            </td>):(<>
+              <td className="dim">Own stock</td>
+              <td>{describe(prod.id,'damage')||<span className="dim">Write off</span>}</td>
+              <td>{describe(prod.id,'refeed')||<span className="dim">Not set — refeed blocked</span>}</td>
+            </>)}
+            <td>{!isE&&ax('product-recipes','edit_recipe')&&<button className="btn btn-ghost btn-sm" onClick={()=>startEdit(prod)}>Edit</button>}</td>
+          </tr>);
+        })}
       </tbody>
     </table></TableWrap>
   </div>);
@@ -5590,6 +5940,8 @@ async function loadWoaBase(){
   ]);
   const sent={};
   disp.forEach(d=>{ if(d.work_order_id) sent[d.work_order_id]=(sent[d.work_order_id]||0)+Number(d.qty_bags); });
+  let woRets=[]; try{ woRets=await fetchAllRows((a,b)=>sb.from('product_returns').select('id,work_order_id,qty_bags').not('work_order_id','is',null).order('id').range(a,b)); }catch(e){ woRets=[]; }
+  woRets.forEach(r=>{ sent[r.work_order_id]=(sent[r.work_order_id]||0)-Number(r.qty_bags); });
   return wos.map(wo=>{
     const sch=String(wo.scheme||'').toUpperCase();
     const prod=sch?(fp||[]).find(p=>p.product_name.toUpperCase().includes(sch)):null;
@@ -6337,6 +6689,7 @@ function WorkOrderTracker(){
   const [editingId,setEditingId]=useState(null);
   const [saving,setSaving]=useState(false);
   const [showCreate,setShowCreate]=useState(false);
+  const [wRets,setWRets]=useState([]);
   const [depotAllotments,setDepotAllotments]=useState({});
   const now=new Date();
   const [filterMonth,setFilterMonth]=useState(now.getMonth()+1);
@@ -6361,6 +6714,7 @@ function WorkOrderTracker(){
       sb.from('product_master').select('*').eq('is_raw_material',true).eq('has_schemes',true).limit(1),
     ]);
     setWorkOrders(w||[]); setDispatches(d||[]); setFinishedProducts(fp||[]); setDepots(dep||[]);
+    try{ setWRets(await fetchAllRows((a,b)=>sb.from('product_returns').select('id,work_order_id,source_name,qty_bags').not('work_order_id','is',null).order('id').range(a,b))); }catch(e){ console.error('Work order returns failed:',e.message); setWRets([]); }
     const WS=await loadWoaSettings(); setS(WS);
     try{ const base=await loadWoaBase(); const b=woaBoard(base,WS); setBoard(Object.fromEntries(b.map(x=>[x.wo.id,x]))); }catch(e){ console.error('Work order deadline data failed:',e.message); }
     setWheatMaterial((wm&&wm[0])||null); setLoading(false);
@@ -6441,6 +6795,7 @@ function WorkOrderTracker(){
     const ppb=productForScheme(eForm.scheme)?.packets_per_bag||1;
     const sentBy={};
     dispatches.filter(d=>d.work_order_id===editingId).forEach(d=>{ sentBy[d.depot_name]=(sentBy[d.depot_name]||0)+Number(d.qty_bags)*ppb; });
+wRets.filter(x=>String(x.work_order_id)===String(editingId)).forEach(x=>{ sentBy[x.source_name]=(sentBy[x.source_name]||0)-Number(x.qty_bags)*ppb; });
     const below=[];
     depots.forEach(d=>{
       const sent=sentBy[d.name]||0, w=want[String(d.id)]||0;
@@ -6493,7 +6848,8 @@ function WorkOrderTracker(){
     const prod=productForScheme(wo.scheme);
     const pktsPerBag=prod?.packets_per_bag||1;
     const sentBags=dispatches.filter(d=>d.work_order_id===wo.id).reduce((s,d)=>s+Number(d.qty_bags),0);
-    const sentPkts=sentBags*pktsPerBag;
+    const retBags=wRets.filter(x=>String(x.work_order_id)===String(wo.id)).reduce((s,x)=>s+Number(x.qty_bags),0);
+    const sentPkts=(sentBags-retBags)*pktsPerBag;
     return{...wo, sentPkts, balance:(wo.total_pkts||0)-sentPkts, allots:wo.allotments||[], pktsPerBag};
   });
 
@@ -6648,7 +7004,7 @@ function WorkOrderTracker(){
             <tbody>
               {wo.allots.map((a,i)=>{
                 const depotName=a.depot?.name||'—';
-                const dispatched=dispatches.filter(d=>d.work_order_id===wo.id && d.depot_name===depotName).reduce((s,d)=>s+Number(d.qty_bags),0)*wo.pktsPerBag;
+                const dispatched=(dispatches.filter(d=>d.work_order_id===wo.id && d.depot_name===depotName).reduce((s,d)=>s+Number(d.qty_bags),0)-wRets.filter(x=>String(x.work_order_id)===String(wo.id)&&x.source_name===depotName).reduce((s,x)=>s+Number(x.qty_bags),0))*wo.pktsPerBag;
                 const pending=Number(a.allotted_pkts)-dispatched;
                 return(<tr key={a.id}>
                   <td className="dim">{i+1}</td>
@@ -9254,6 +9610,16 @@ function DispatchReport({data,from,to}){
     sBags+=bags; sKg+=kg; if(r.invoice_no) inv.add(r.invoice_no);
     [[bySch,r.scheme||'—'],[byDist,r.district||'—'],[byDep,r.depot_name||'—']].forEach(([m,k])=>{ const o=slot(m,k); o.bags+=bags; o.kg+=kg; o.n++; });
   });
+  
+  data.ret.filter(r=>r.origin==='depot').forEach(r=>{
+    const bags=Number(r.qty_bags)||0;
+    const kg=bags*packSizeOf(r.product);
+    const dist=((data.dps||[]).find(d=>d.name===r.source_name)||{}).district||'—';
+    const sch=schemeFromName(r.product?r.product.product_name:'')||'—';
+    sBags-=bags; sKg-=kg;
+    [[bySch,sch],[byDist,dist],[byDep,r.source_name||'—']].forEach(([m,k])=>{ const o=slot(m,k); o.bags-=bags; o.kg-=kg; });
+  });
+
   data.pd.forEach(r=>{
     const p=r.product; const raw=!!(p&&p.is_raw_material);
     const bags=raw?0:(Number(r.qty_bags)||0);
@@ -9311,11 +9677,13 @@ function Reports(){
       try{
         const out={tab};
         if(tab==='dispatch'){
-          const [sd,pd]=await Promise.all([
+          const [sd,pd,ret,dps]=await Promise.all([
             fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
             fetchAllRows((a,b)=>sb.from('private_dispatches').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+            fetchAllRows((a,b)=>sb.from('product_returns').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
+            sb.from('depots').select('name,district').then(repMust),
           ]);
-          out.sd=sd; out.pd=pd;
+          out.sd=sd; out.pd=pd; out.ret=ret; out.dps=dps;
         } else {
           const [logs,products,recipes,lines,adj,addins]=await Promise.all([
             fetchAllRows((a,b)=>sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',from).lte('date',to).order('date').order('id').range(a,b)),
@@ -13276,7 +13644,7 @@ async function anLoad(from,to){
     q('daily_production_log','*, product:product_id(*)','date'),
     q('supplyco_dispatches','*, product:product_id(*)','date'),
     q('private_dispatches','*, product:product_id(*)','date'),
-    q('product_returns','date,product_id,qty_bags,salesman','date'),
+    q('product_returns','date,product_id,qty_bags,salesman,origin','date'),
     q('fci_inwards','id,date,scheme,received_kg','date'),
     q('private_inwards','id,date,qty_kg,material_id','date'),
     q('daily_ledger','id,date,direction,amount,txn_type,party_name,created_at','date'),
@@ -13382,7 +13750,7 @@ function anCompute(D){
   const pHhi=anSum(partyRows,x=>Math.pow(x.kgC/pTot,2));
 
   // returns
-  const retBy={}; D.ret.filter(r=>inC(r.date)).forEach(r=>anAdd(retBy,String(r.product_id),Number(r.qty_bags)||0));
+  const retBy={}; D.ret.filter(r=>inC(r.date)&&r.origin!=='mill').forEach(r=>anAdd(retBy,String(r.product_id),Number(r.qty_bags)||0));
   const retRows=fg.map(x=>({name:x.name,ret:retBy[x.k]||0,disp:x.dC,rate:x.dC>0?(retBy[x.k]||0)/x.dC*100:null})).filter(x=>x.ret>0).sort((a,b)=>b.ret-a.ret);
 
   // work-order completion forecast
@@ -13443,7 +13811,7 @@ function anCompute(D){
   const smNone='(Not recorded)';
   const smKey=(r)=>(r.salesman&&String(r.salesman).trim())||smNone;
   const smMap={};
-  const smSlot=(k)=>(smMap[k]=smMap[k]||{k,kgC:0,kgP:0,bagsC:0,n:0,days:new Set(),parties:new Set(),retBags:0,retKg:0,prod:{}});
+  const smSlot=(k)=>(smMap[k]=smMap[k]||{k,kgC:0,kgP:0,grossKg:0,bagsC:0,n:0,days:new Set(),parties:new Set(),retBags:0,retKg:0,prod:{}});
   D.pd.forEach(r=>{
     const p=r.product||pb[String(r.product_id)];
     const raw=!!(p&&p.is_raw_material);
@@ -13451,19 +13819,20 @@ function anCompute(D){
     const kg=raw?(Number(r.qty_kg)||0):bags*packSizeOf(p);
     const q=smSlot(smKey(r));
     if(inC(r.date)){
-      q.kgC+=kg; q.bagsC+=bags; q.n++; q.days.add(r.date);
+      q.kgC+=kg; q.grossKg+=kg; q.bagsC+=bags; q.n++; q.days.add(r.date);
       if(r.party_name) q.parties.add(String(r.party_name).trim().toUpperCase());
       const pn=p?p.product_name:'(unknown)'; q.prod[pn]=(q.prod[pn]||0)+kg;
     } else q.kgP+=kg;
   });
-  D.ret.filter(r=>inC(r.date)&&r.salesman).forEach(r=>{
-    const q=smSlot(smKey(r)); const bags=Number(r.qty_bags)||0;
-    q.retBags+=bags; q.retKg+=bags*packSizeOf(pb[String(r.product_id)]);
+  D.ret.filter(r=>r.salesman).forEach(r=>{
+    const q=smSlot(smKey(r)); const bags=Number(r.qty_bags)||0; const kg=bags*packSizeOf(pb[String(r.product_id)]);
+    if(inC(r.date)){ q.retBags+=bags; q.retKg+=kg; q.kgC-=kg; q.bagsC-=bags; }
+    else if(inP(r.date)){ q.kgP-=kg; }
   });
   const smTot=anSum(Object.values(smMap),x=>x.kgC);
   const smRows=Object.values(smMap).filter(x=>x.kgC>0||x.kgP>0||x.retBags>0).map(x=>{
     const top=Object.entries(x.prod).sort((a,b)=>b[1]-a[1])[0];
-    return {...x,share:smTot>0?x.kgC/smTot*100:0,dayN:x.days.size,partyN:x.parties.size,perDay:x.days.size?x.kgC/x.days.size:0,retRate:x.kgC>0?x.retKg/x.kgC*100:null,topProd:top?top[0]:'—'};
+    return {...x,share:smTot>0?x.kgC/smTot*100:0,dayN:x.days.size,partyN:x.parties.size,perDay:x.days.size?x.kgC/x.days.size:0,retRate:x.grossKg>0?x.retKg/x.grossKg*100:null,topProd:top?top[0]:'—'};
   }).sort((a,b)=>(a.k===smNone)-(b.k===smNone)||b.kgC-a.kgC);
   const smUnk=smTot>0&&smMap[smNone]?smMap[smNone].kgC/smTot*100:0;
 
