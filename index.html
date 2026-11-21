@@ -1416,6 +1416,14 @@ if(editLines.some(l=>{const m=products.find(p=>p.id===l.material_id);return m?.h
 // ══ RETURNS & DAMAGE helpers ══
 const retDelta=(r)=>(r.stock_delta===null||r.stock_delta===undefined)?(Number(r.qty_bags)||0):(Number(r.stock_delta)||0);
 const retNative=(m,kg)=>(!m.is_raw_material&&packSizeOf(m)>0)?kg/packSizeOf(m):kg;
+// A "production-log product" = a finished product whose stock is rebuilt day by day in the Production page
+const isChainProd=(m)=>!!m&&!m.is_raw_material&&m.include_in_production_log!==false&&(packSizeOf(m)>0||(m.packing_type==='loose'&&!m.has_standard_weight));
+// How much (in the product's own unit) a return/damage/refeed row adds INTO a production-log product
+const retDestIn=(r,m)=>{
+  if(!r||!r.dest_product_id||!isChainProd(m)) return 0;
+  const kg=Number(r.dest_kg)||0;
+  return r3(packSizeOf(m)>0?kg/packSizeOf(m):kg);
+};
 const retOk=(res)=>res.error?res.error.message:((!res.data||res.data.length===0)?'not permitted (no row was changed)':null);
 async function retHave(m,scheme){
   if(m.is_raw_material&&m.has_schemes){
@@ -1473,7 +1481,7 @@ async function prodResyncFrom(fromDate,onlyProductId){
       fetchAllRows((a,b)=>only(sb.from('daily_production_log').select('*').gte('date',start)).order('date').order('id').range(a,b)),
       fetchAllRows((a,b)=>only(sb.from('supplyco_dispatches').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
       fetchAllRows((a,b)=>only(sb.from('private_dispatches').select('id,date,product_id,qty_bags').gte('date',start)).order('id').range(a,b)),
-      fetchAllRows((a,b)=>only(sb.from('product_returns').select('id,date,product_id,qty_bags,stock_delta').gte('date',start)).order('id').range(a,b)),
+      fetchAllRows((a,b)=>{ let q=sb.from('product_returns').select('id,date,product_id,qty_bags,stock_delta,dest_product_id,dest_kg').gte('date',start); if(onlyProductId) q=q.or(`product_id.eq.${onlyProductId},dest_product_id.eq.${onlyProductId}`); return q.order('id').range(a,b); }),
       fetchAllRows((a,b)=>sb.from('stock_count_lines').select('id,item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false).order('id').range(a,b)),
       fetchAllRows((a,b)=>sb.from('production_addins').select('*').gte('log_date',start).order('id').range(a,b)).catch(()=>[]),
       sb.from('product_master').select('*'),
@@ -1482,7 +1490,14 @@ async function prodResyncFrom(fromDate,onlyProductId){
     const sales={},rets={},adjs={},uses={},dset=new Set(logs.map(l=>l.date));
     const add=(m,d,p,v)=>{ const k=d+'|'+p; m[k]=(m[k]||0)+v; dset.add(d); };
     [...sd,...pd].forEach(r=>add(sales,r.date,String(r.product_id),Number(r.qty_bags)||0));
-    rt.forEach(r=>add(rets,r.date,String(r.product_id),retDelta(r)));
+    rt.forEach(r=>{
+      add(rets,r.date,String(r.product_id),retDelta(r));
+      if(r.dest_product_id){
+        const dm=(prods||[]).find(x=>String(x.id)===String(r.dest_product_id));
+        const q=retDestIn(r,dm);
+        if(q) add(rets,r.date,String(r.dest_product_id),q);
+      }
+    });
     adjRaw.filter(a=>a.count&&a.count.count_date>=start&&(a.item_type==='finished'||a.count.count_date>=KG_STOCK_FROM)).forEach(a=>add(adjs,a.count.count_date,String(a.item_id),Number(a.diff)||0));
     adn.forEach(a=>(a.uses||[]).forEach(u=>add(uses,a.log_date,String(u.material_id),Number(u.bags)||0)));
     const dates=[...dset].filter(d=>d>=start).sort();
@@ -1568,8 +1583,12 @@ function Production(){
     return s+p;
   };
   const adjFor=(date,productId)=>adjustments.filter(a=>a.date===date&&String(a.product_id)===String(productId)).reduce((s,a)=>s+a.qty,0);
+  const destInFor=(date,productId)=>{
+    const m=allProducts.find(x=>String(x.id)===String(productId));
+    return returns.filter(r=>r.date===date&&String(r.dest_product_id||'')===String(productId)).reduce((s,r)=>s+retDestIn(r,m),0);
+  };
   const returnsFor=(date,productId)=>
-    returns.filter(r=>r.date===date&&r.product_id===productId).reduce((s,r)=>s+retDelta(r),0);
+    returns.filter(r=>r.date===date&&r.product_id===productId).reduce((s,r)=>s+retDelta(r),0)+destInFor(date,productId);
 
   // ══ ADD-INS (e.g. dust added to bran) ══
   const recipeLinesOf=(pid)=>{ const rc=recipesAll.find(x=>String(x.product_id)===String(pid)); return rc?linesAll.filter(l=>l.recipe_id===rc.id):[]; };
@@ -1737,7 +1756,7 @@ function Production(){
         fetchAllRows((a,b)=>sb.from('daily_production_log').select('*, product:product_id(*)').gte('date',from).order('date',{ascending:false}).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('supplyco_dispatches').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('private_dispatches').select('id,date,product_id,qty_bags').gte('date',from).order('id').range(a,b)),
-        fetchAllRows((a,b)=>sb.from('product_returns').select('id,date,product_id,qty_bags,stock_delta').gte('date',from).order('id').range(a,b)),
+        fetchAllRows((a,b)=>sb.from('product_returns').select('id,date,product_id,qty_bags,stock_delta,dest_product_id,dest_kg').gte('date',from).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('stock_count_lines').select('id,item_id,item_type,diff,count:count_id(count_date)').in('item_type',['finished','raw']).eq('applied',true).eq('reversed',false).order('id').range(a,b)),
         fetchAllRows((a,b)=>sb.from('production_addins').select('*').gte('log_date',from).order('id').range(a,b)).catch(()=>[]),
       ]);
@@ -3023,7 +3042,10 @@ function Returns(){
     if(form.disposition!=='stock'){
       if(form.disposition==='refeed'&&!rt) return alert('No refeed destination is set for '+prod.product_name+'.\n\nSet it in Product Recipes → "Returns & damage destinations".');
       if(rt&&!destProd) return alert('The destination item set for this product no longer exists. Fix it in Product Recipes → "Returns & damage destinations".');
-      if(destProd&&!destProd.is_raw_material&&destProd.include_in_production_log!==false) return alert(destProd.product_name+' is tracked in the production log, so quantity cannot be sent into it. Choose another destination in Product Recipes.');
+      if(destProd&&isChainProd(destProd)){
+        const {data:lp}=await sb.from('daily_production_log').select('date').order('date',{ascending:false}).limit(1).maybeSingle();
+        if(lp&&form.date>cashAddDays(lp.date,1)) return alert(`${destProd.product_name} is a production-log product, and production is logged only up to ${lp.date}. Enter production (or "No production") up to the day before ${form.date} first, then log this entry.`);
+      }
       if(destProd&&destProd.has_schemes&&!rt.dest_scheme) return alert('The destination '+destProd.product_name+' needs a scheme. Fix it in Product Recipes.');
     }
     if(stockDelta<0){
@@ -3047,6 +3069,7 @@ function Returns(){
       if(e2){ await retStockMove(prod,-stockDelta,null); return undo('The destination stock ('+destProd.product_name+') could not be updated: '+e2); }
     }
     await prodResyncFrom(form.date,form.product_id);
+    if(destProd&&isChainProd(destProd)) await prodResyncFrom(form.date,destProd.id);
     logActivity('Returns','create',`${form.kind} — ${fmt(qty,2)} ${unit} of ${prod.product_name} from ${row.source_name||'—'}${row.salesman?' (salesman '+row.salesman+')':''} → ${form.disposition==='stock'?'back to stock':form.disposition==='damage'?'damage':'refeed'}${destProd?' → '+destProd.product_name+' '+fmt(destKg,3)+' kg':''}`);
     setForm(blank); setShowForm(false); setSaving(false); load();
   };
@@ -3077,6 +3100,7 @@ function Returns(){
     if(dp&&dkg>0){ const e2=await retStockMove(dp,-retNative(dp,dkg),r.dest_scheme||null); if(e2) errs.push(dp.product_name+': '+e2); }
     if(errs.length) alert('Entry deleted, but stock could not be fully reversed:\n'+errs.join('\n')+'\n\nPlease correct it with a Stock Count.');
     await prodResyncFrom(r.date,r.product_id);
+    if(r.dest_product_id&&dp&&isChainProd(dp)) await prodResyncFrom(r.date,r.dest_product_id);
     logActivity('Returns','delete',`${r.kind||'Return'} of ${fmt(r.qty_bags,2)} ${p.product_name} (${r.source_name||'—'}) deleted and reversed`);
     load();
   };
@@ -3096,6 +3120,7 @@ function Returns(){
     if(stockDelta===0) lines.push(`${prod.product_name} stock does not change`);
     if(form.disposition==='damage') lines.push(destProd?`Damage register — also ${fmt(destKg,3)} kg goes to ${destProd.product_name}${rt.dest_scheme?' ('+rt.dest_scheme+')':''}`:'Damage register — written off, no stock is added anywhere');
     if(form.disposition==='refeed') lines.push(destProd?`Refeed — ${fmt(destKg,3)} kg is added to ${destProd.product_name}${rt.dest_scheme?' ('+rt.dest_scheme+')':''}`:'⚠ No refeed destination is set for this product (Product Recipes → Returns & damage destinations)');
+       if(destProd&&isChainProd(destProd)&&qty>0) lines.push(`Production log — ${destProd.product_name} gets +${fmt(retNative(destProd,destKg),2)} ${unitOfP(destProd)} in its Returns column on ${form.date}; its closing stock and the opening stock of later days rise by the same amount`);
     if(form.origin==='depot'&&form.depot) lines.push(`${form.depot}'s dispatched quantity${selWo?` on work order ${selWo.no}`:''} goes down by ${fmt(qty,2)} ${unit}, so that balance becomes pending again`);
     if(form.origin==='private'&&form.salesman) lines.push(`${form.salesman}'s sales are reduced by ${fmt(qty,2)} ${unit}`);
   }
@@ -3246,7 +3271,6 @@ function ReturnRoutes(){
 
   const finished=products.filter(p=>!p.is_raw_material);
   const destOptions=(prod)=>products.filter(m=>String(m.id)!==String(prod.id));
-  const destBlocked=(m)=>!m.is_raw_material&&m.include_in_production_log!==false;
   const routeOf=(pid,k)=>routes.find(x=>String(x.product_id)===String(pid)&&x.disposition===k);
   const nameOf=(id)=>{ const m=products.find(x=>String(x.id)===String(id)); return m?m.product_name:'(removed item)'; };
   const describe=(pid,k)=>{ const r=routeOf(pid,k); return r?`${nameOf(r.dest_product_id)}${r.dest_scheme?' ('+r.dest_scheme+')':''} · ${Number(r.kg_per_kg)} kg per 1 kg`:null; };
@@ -3265,7 +3289,6 @@ function ReturnRoutes(){
       if(!d.dest){ del.push(k); continue; }
       const m=products.find(x=>String(x.id)===d.dest);
       if(!m) return alert('The chosen destination no longer exists.');
-      if(destBlocked(m)) return alert(`${m.product_name} is tracked in the production log, so quantity cannot be sent into it. Choose another destination.`);
       if(m.has_schemes&&!d.scheme) return alert(`Choose the scheme for ${m.product_name}.`);
       const ratio=Number(d.ratio);
       if(!(ratio>0)||ratio>10) return alert('The quantity ratio must be above 0 (1 = same weight, 0.9 = only 90% is usable).');
@@ -3292,8 +3315,8 @@ function ReturnRoutes(){
       <select className="form-input" style={{width:220}} value={d.dest} onChange={e=>setDraft(p=>({...p,[k]:{dest:e.target.value,scheme:'',ratio:p[k].ratio}}))}>
         <option value="">{emptyLabel}</option>
         {destOptions(prod).map(x=>(
-          <option key={x.id} value={String(x.id)} disabled={destBlocked(x)}>
-            {x.product_name}{x.is_raw_material?' (raw material)':destBlocked(x)?' — production-log item, not allowed':' (by-product)'}
+          <option key={x.id} value={String(x.id)}>
+            {x.product_name}{x.is_raw_material?' (raw material)':isChainProd(x)?' (production product)':' (by-product / other)'}
           </option>
         ))}
       </select>
@@ -3311,7 +3334,7 @@ function ReturnRoutes(){
       <div className="page-title">Returns &amp; damage destinations</div>
     </div>
     <div style={{marginBottom:16,padding:'10px 16px',background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:6,fontSize:12,color:'var(--muted)'}}>
-      When a return or damage is logged, you choose: add back to stock, send to damage, or refeed. <strong>Add back to stock</strong> always goes to the product's own stock. Here you decide where <strong>damage</strong> and <strong>refeed</strong> quantities go for each product. Leave damage empty to simply write it off. Refeed needs a destination. Every product is listed. Products that are entered in the production log are shown greyed out, because their stock is rebuilt daily from production and cannot receive a destination quantity. The "kg per 1 kg" figure is how much usable quantity comes out of each 1 kg returned (1 = all of it).
+      When a return or damage is logged, you choose: add back to stock, send to damage, or refeed. <strong>Add back to stock</strong> always goes to the product's own stock. Here you decide where <strong>damage</strong> and <strong>refeed</strong> quantities go for each product. Leave damage empty to simply write it off. Refeed needs a destination. Every product is listed. If the destination is a production-log product (for example Atta or Sooji), the quantity appears in that product's Returns column in the Production log on the date of the return and adds to its stock. The "kg per 1 kg" figure is how much usable quantity comes out of each 1 kg returned (1 = all of it).
     </div>
     {err&&<Alert type="red" icon="⚠" title="Could not load" sub={err}/>}
     <TableWrap><table>
